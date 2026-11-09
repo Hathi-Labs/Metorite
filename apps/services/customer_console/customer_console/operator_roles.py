@@ -263,6 +263,15 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # bind's gate: admin AND a window ("Fix all" needs elevation, owner call
     # 5 of §6A.18).
     ("POST", "/catalog/health/fix"): _R(ADMIN, elevated=True),
+    # MS-2 (task 2482, §6A.18). Connect checks a key live and STORES it, so
+    # it takes the gate of `POST /providers/credentials`. Adopt declares,
+    # spends a Try on our platform key, and writes tier chains, so it takes
+    # the bind's gate. Undo writes a chain, and the H6 fix moves or revokes
+    # a platform key. Each one is admin AND a window.
+    ("POST", "/catalog/providers/{provider_id}/connect"): _R(ADMIN, elevated=True),
+    ("POST", "/catalog/providers/{provider_id}/adopt"): _R(ADMIN, elevated=True),
+    ("POST", "/catalog/adopt/undo"): _R(ADMIN, elevated=True),
+    ("POST", "/catalog/health/fix-key"): _R(ADMIN, elevated=True),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).
     # The model-keyed route is RETIRED (D67) and answers 410 — the row stays

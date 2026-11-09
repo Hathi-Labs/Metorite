@@ -26,8 +26,15 @@ The rules, in the order the fixes compose (H2, then H4, then H1 and H3):
   serve. The door counts a step with a key, and with a capability row except
   on ``chat`` and ``vision`` (those doors call ``acompletion`` whatever the
   row says). H5 is a chain line, not a step entry.
-* **H6.** Only the reason in MS-1: a fix is blocked because the key sits
-  under an alias. MS-2 adds the button.
+* **H6.** A fix is blocked because the key sits under an alias. MS-2 adds
+  one credential entry for each platform key under an alias, whether a
+  chain uses it or not (:func:`key_entries`), and the button that moves it.
+* **H7.** A registry model retires within 30 days, or has retired. The step
+  still works, so the window counts it. The fix is the registry successor.
+
+**The guards (MS-2).** :func:`pair_refusal` runs H1 to H4 on one pair at
+declare time and at bind time, so the Console refuses a bad pair before it
+is written. H8 and H7 never refuse: a key can come after the declare.
 
 🔴 **The exact-key rule.** A fix is offered only when a live PLATFORM key sits
 under the EXACT provider string of the fixed model id. The Router matches that
@@ -41,6 +48,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import date
 
 from customer_console import catalog, handlers
 from customer_console import provider_registry as registry
@@ -53,14 +61,23 @@ __all__ = [
     "Fix",
     "FixPlan",
     "FixRefused",
+    "KeyEntry",
+    "PairRefusal",
     "Report",
     "assess",
+    "key_entries",
+    "pair_refusal",
     "plan_fix",
+    "window",
 ]
 
 #: The order in which an entry picks the rule whose reason it shows. It is
-#: the order the fixes compose, then H8.
+#: the order the fixes compose, then H8. H7 shows only on a step that has no
+#: other rule.
 _PRECEDENCE = ("H2", "H4", "H1", "H3", "H8")
+
+#: The rules that refuse a pair at declare time and at bind time.
+_GUARD_RULES = ("H2", "H4", "H1", "H3")
 
 #: The doors that drop a step for a missing key only (`chat_completions`
 #: and the vision try). Every other door drops a step with no capability row
@@ -70,6 +87,11 @@ _KEY_ONLY_TASKS = frozenset({"chat", "vision"})
 
 #: What an entry with no fix tells the operator to do (H8).
 CONNECT_HELP = "Connect a provider to fix this"
+
+
+def move_help(target: str) -> str:
+    """What an H6 step entry tells the operator to do (MS-2 adds the button)."""
+    return f"Move the key to '{target}' to fix this"
 
 _SAME_ABOVE = "Remove: same as the fix above"
 _CHAIN_HAS = "Remove: the chain already has this model"
@@ -92,7 +114,7 @@ class Fix:
 
 @dataclass(frozen=True)
 class Entry:
-    """One bound step that cannot work."""
+    """One bound step that cannot work, or that retires soon (H7)."""
 
     kind: str
     rules: tuple[str, ...]
@@ -104,6 +126,14 @@ class Entry:
     reason: str
     fix: Fix | None
     help: str | None
+    #: True for an H7 entry: the step serves today. The window counts it,
+    #: and a fix keeps it as a working step until the operator replaces it.
+    works: bool = False
+    #: Organizations with their own live key (BYOK) under the exact prefix
+    #: of an H8 step. Health counts platform keys only, so the step is dead
+    #: to it and alive to them. A fix that drops it moves them to a platform
+    #: key, and the wire says so before the write.
+    byok_orgs: int = 0
 
 
 @dataclass(frozen=True)
@@ -117,12 +147,54 @@ class ChainHealth:
     reason: str
     #: H5's fix: the working steps alone. None when no step works.
     fix_chain: tuple[str, ...] | None
+    #: The dead steps that BYOK customers still use, with their org counts.
+    byok_steps: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class KeyEntry:
+    """One live platform key under an alias of a registry provider (H6).
+
+    ``action`` is ``revoke_alias`` when a live platform key already sits
+    under ``target``, and ``move_key`` when the key must be copied there.
+    """
+
+    provider: str
+    target: str
+    action: str
+    reason: str
+    label: str
 
 
 @dataclass(frozen=True)
 class Report:
     entries: tuple[Entry, ...]
     chains: tuple[ChainHealth, ...]
+    keys: tuple[KeyEntry, ...] = ()
+
+
+@dataclass(frozen=True)
+class PairRefusal:
+    """Why the Console refuses one ``(model, task, verb)`` pair, and the fix."""
+
+    rule: str
+    reason: str
+    #: ``(model, verb)`` that would work, or None when the registry has none.
+    fix: tuple[str, str] | None
+
+    def sentence(self, model: str) -> str:
+        """The 400 detail: the reason, then the fix in plain words."""
+        if self.fix is None:
+            if self.rule == "H2":
+                return (
+                    f"{self.reason}. Use a provider id that litellm or a Metorite "
+                    "handler knows"
+                )
+            return f"{self.reason}"
+        fixed, verb = self.fix
+        if fixed == model:
+            return f"{self.reason}. Fix: declare it with {verb}"
+        return f"{self.reason}. Fix: declare {fixed} with {verb}"
 
 
 @dataclass(frozen=True)
@@ -246,7 +318,10 @@ def _pair_ok(model: str, verb: str, task: str) -> bool:
     return True
 
 
-def _diagnose(model: str, task: str, declared: str | None, keys: frozenset[str]) -> _Diagnosis:
+def _diagnose(
+    model: str, task: str, declared: str | None, keys: frozenset[str],
+    today: date | None = None,
+) -> _Diagnosis:
     rules: list[str] = []
     if declared is None and task in _KEY_ONLY_TASKS:
         # The chat and vision doors call `acompletion` with no row.
@@ -262,8 +337,22 @@ def _diagnose(model: str, task: str, declared: str | None, keys: frozenset[str])
         verb = _target_verb(fixed, task, declared, native)
         if verb is not None and (fixed, verb) != (model, declared) and _pair_ok(fixed, verb, task):
             target = (fixed, verb)
+    if not rules and today is not None:
+        return _retiring(model, task, today)
     ordered = tuple(r for r in _PRECEDENCE if r in rules)
     return _Diagnosis(ordered, target)
+
+
+def _retiring(model: str, task: str, today: date) -> _Diagnosis:
+    """H7: a working registry model that retires within 30 days, or has retired."""
+    known = registry.registry_model(model, task)
+    if known is None or not registry.is_retiring(known, today):
+        return _Diagnosis((), None)
+    after = registry.registry_model(known.successor, task) if known.successor else None
+    target = None
+    if after is not None and _pair_ok(after.id, after.invocation, task):
+        target = (after.id, after.invocation)
+    return _Diagnosis(("H7",), target)
 
 
 def _alias_key(provider_id: str, keys: frozenset[str]) -> str | None:
@@ -274,8 +363,12 @@ def _alias_key(provider_id: str, keys: frozenset[str]) -> str | None:
     )
 
 
-def _reason(rule: str, *, task: str, provider_id: str) -> str:
+def _reason(rule: str, *, task: str, provider_id: str, model: str = "") -> str:
     job = job_label(task)
+    if rule == "H7":
+        known = registry.registry_model(model, task)
+        when = "soon" if known is None or known.retires is None else known.retires.isoformat()
+        return f"This model retires on {when}"
     return {
         "H1": f"This model needs a different call type for {job}",
         "H2": f"No key or handler matches '{provider_id}'",
@@ -287,7 +380,7 @@ def _reason(rule: str, *, task: str, provider_id: str) -> str:
 
 def _entry(
     *, tier: str, task: str, rank: int, model: str, declared: str | None,
-    diag: _Diagnosis, keys: frozenset[str],
+    diag: _Diagnosis, keys: frozenset[str], byok: Mapping[str, int],
 ) -> Entry:
     fix: Fix | None = None
     missing: str | None = None
@@ -301,7 +394,8 @@ def _entry(
         missing = _prefix(model)
 
     kind = diag.rules[0]
-    reason = _reason(kind, task=task, provider_id=_prefix(model))
+    reason = _reason(kind, task=task, provider_id=_prefix(model), model=model)
+    help_text: str | None = None if fix is not None else CONNECT_HELP
     if missing is not None:
         alias = _alias_key(missing, keys)
         kind = "H6" if alias is not None else "H8"
@@ -310,10 +404,15 @@ def _entry(
             if alias is not None
             else _reason("H8", task=task, provider_id=missing)
         )
+        if alias is not None:
+            help_text = move_help(missing)
+    works = diag.rules == ("H7",)
     return Entry(
         kind=kind, rules=diag.rules, tier=tier, task=task, rank=rank, model=model,
         invocation=declared, reason=reason, fix=fix,
-        help=None if fix is not None else CONNECT_HELP,
+        help=None if works else help_text,
+        works=works,
+        byok_orgs=byok.get(_prefix(model), 0) if diag.rules == ("H8",) else 0,
     )
 
 
@@ -352,42 +451,65 @@ def _counted(task: str, models: Sequence[str], capable: set[str], keys: frozense
     return counted[:MAX_CHAIN_ATTEMPTS]
 
 
+def window(
+    task: str, models: Sequence[str], capable: set[str], keys: frozenset[str]
+) -> list[str]:
+    """The steps the door tries, as the doors count them (§6A.18 "The window").
+
+    Adopt reads it to name a working step that a prepend pushes past the
+    third place in that count.
+    """
+    return _counted(task, models, capable, keys)
+
+
 def _assess_chain(
     tier: str,
     task: str,
     models: Sequence[str],
     capabilities: Mapping[tuple[str, str], str],
     keys: frozenset[str],
+    *,
+    byok: Mapping[str, int],
+    today: date | None,
 ) -> tuple[list[Entry], ChainHealth | None]:
     entries: list[Entry] = []
     working: set[str] = set()
     for rank, model in enumerate(models, start=1):
         declared = capabilities.get((model, task))
-        diag = _diagnose(model, task, declared, keys)
-        if not diag.rules:
+        diag = _diagnose(model, task, declared, keys, today)
+        if not diag.rules or diag.rules == ("H7",):
             working.add(model)
+        if not diag.rules:
             continue
         entries.append(_entry(
             tier=tier, task=task, rank=rank, model=model, declared=declared,
-            diag=diag, keys=keys,
+            diag=diag, keys=keys, byok=byok,
         ))
     entries = _dedupe(entries, working)
 
     capable = {m for m in models if (m, task) in capabilities}
-    window = _counted(task, models, capable, keys)
-    blocked = not any(m in working for m in window)
+    counted = _counted(task, models, capable, keys)
+    blocked = not any(m in working for m in counted)
     if not entries and not blocked:
         return entries, None
     count = len(entries)
-    noun = "entry" if count == 1 else "entries"
+    dead = sum(1 for e in entries if not e.works)
+    if dead or blocked:
+        noun = "entry" if dead == 1 else "entries"
+        reason = f"{dead} {noun} on {job_label(task)} cannot work"
+    else:
+        noun = "entry on" if count == 1 else "entries on"
+        verb = "retires" if count == 1 else "retire"
+        reason = f"{count} {noun} {job_label(task)} {verb} soon"
     alive = tuple(m for m in models if m in working)
     return entries, ChainHealth(
         tier=tier,
         task=task,
         entries=count,
         window_blocked=blocked,
-        reason=f"{count} {noun} on {job_label(task)} cannot work",
+        reason=reason,
         fix_chain=alive if blocked and alive else None,
+        byok_steps=tuple((e.model, e.byok_orgs) for e in entries if e.byok_orgs),
     )
 
 
@@ -395,21 +517,76 @@ def assess(
     chains: Mapping[tuple[str, str], Sequence[str]],
     capabilities: Mapping[tuple[str, str], str],
     keys: frozenset[str],
+    *,
+    byok: Mapping[str, int] | None = None,
+    today: date | None = None,
 ) -> Report:
     """Judge every in-force chain.
 
     *chains* maps ``(tier, task)`` to its models in rank order (no tombstone).
     *capabilities* maps ``(model, task)`` to the declared verb. *keys* holds
     the provider string of each live PLATFORM credential, exactly as stored.
+    *byok* maps a provider string to the count of organizations with a live
+    key of their own under it (MS-2). *today* turns on rule H7.
     """
     entries: list[Entry] = []
     reports: list[ChainHealth] = []
     for (tier, task) in sorted(chains):
-        found, chain = _assess_chain(tier, task, chains[(tier, task)], capabilities, keys)
+        found, chain = _assess_chain(
+            tier, task, chains[(tier, task)], capabilities, keys,
+            byok=byok or {}, today=today,
+        )
         entries.extend(found)
         if chain is not None:
             reports.append(chain)
-    return Report(entries=tuple(entries), chains=tuple(reports))
+    return Report(entries=tuple(entries), chains=tuple(reports), keys=key_entries(keys))
+
+
+def key_entries(keys: frozenset[str]) -> tuple[KeyEntry, ...]:
+    """One entry for each live platform key under an alias (H6, MS-2).
+
+    It needs no chain. A key that no chain uses still sits under the wrong
+    string, and the next adopt or fix of that provider would not find it.
+    """
+    out: list[KeyEntry] = []
+    for key in sorted(keys):
+        target = registry.alias_target(key)
+        if target is None:
+            continue
+        if target in keys:
+            out.append(KeyEntry(
+                provider=key, target=target, action="revoke_alias",
+                reason=f"The key is saved as '{key}', and a key under '{target}' exists too",
+                label=f"Revoke the key under '{key}'",
+            ))
+        else:
+            out.append(KeyEntry(
+                provider=key, target=target, action="move_key",
+                reason=f"The key is saved as '{key}'",
+                label=f"Move the key to '{target}'",
+            ))
+    return tuple(out)
+
+
+def pair_refusal(model: str, task: str, invocation: str) -> PairRefusal | None:
+    """Rules H1 to H4 on one pair, at declare time and at bind time (MS-2).
+
+    Task 2457 found that the declare checked the shape of the verb only, so
+    ``sarvam.ai/saaras:v4`` with ``acompletion`` on ``transcribe`` went in
+    and failed at the first customer call. This judges the pair by the rules
+    the health list uses. H8 (no key) never refuses: the key can come later.
+    The fix ignores the key rule too, because a declare is not a chain.
+    """
+    prefix = _prefix(model)
+    diag = _diagnose(model, task, invocation, frozenset({prefix}))
+    rules = [r for r in diag.rules if r in _GUARD_RULES]
+    if not rules:
+        return None
+    return PairRefusal(
+        rule=rules[0],
+        reason=_reason(rules[0], task=task, provider_id=prefix, model=model),
+        fix=diag.target,
+    )
 
 
 # ── The fix ──────────────────────────────────────────────────────────────────
@@ -461,7 +638,7 @@ def plan_fix(
         if line.fix_chain is None:
             raise FixRefused(400, f"the chain line of {tier} has no fix: {line.reason}")
 
-    working = {m for m in models if m not in by_model}
+    working = {m for m in models if m not in by_model or by_model[m].works}
     new: list[str] = []
     declares: list[tuple[str, str]] = []
     replaced: list[tuple[str, str]] = []
@@ -489,11 +666,15 @@ def plan_fix(
     chain = [m for m in chain if m in working] + [m for m in chain if m not in working]
     if tuple(chain) == tuple(models) and not declares:
         raise FixRefused(400, f"the fix changes nothing on {tier}")
+    # A model the chain keeps is never "removed" (MS-1 verifier, P3). In
+    # [nano, /en] with /en on the wrong verb, the /en entry is "same as the
+    # fix above". A pick of both writes [/en], so the response and the audit
+    # row must not say that /en went.
     return FixPlan(
         chain=tuple(chain),
         declares=tuple(dict.fromkeys(declares)),
         replaced=tuple(replaced),
-        removed=tuple(dict.fromkeys(removed)),
+        removed=tuple(m for m in dict.fromkeys(removed) if m not in chain),
     )
 
 
@@ -518,6 +699,30 @@ def entry_wire(e: Entry) -> dict[str, object]:
             "same_as": e.fix.same_as,
         },
         "help": e.help,
+        "byok_orgs": e.byok_orgs,
+        "byok_note": _byok_note(e.byok_orgs),
+    }
+
+
+def _byok_note(orgs: int) -> str | None:
+    """The sentence the screen shows before a fix that drops a BYOK step."""
+    if not orgs:
+        return None
+    noun = "organization uses its" if orgs == 1 else "organizations use their"
+    return (
+        f"{orgs} {noun} own key for this model. A fix that drops it sends "
+        "them to a platform key."
+    )
+
+
+def key_wire(k: KeyEntry) -> dict[str, object]:
+    """One H6 credential entry as ``GET /catalog/health`` returns it."""
+    return {
+        "kind": "H6",
+        "provider": k.provider,
+        "target": k.target,
+        "reason": k.reason,
+        "fix": {"action": k.action, "label": k.label},
     }
 
 
@@ -532,4 +737,5 @@ def chain_wire(c: ChainHealth) -> dict[str, object]:
         "window_blocked": c.window_blocked,
         "reason": c.reason,
         "fix": None if c.fix_chain is None else {"action": "reorder", "chain": list(c.fix_chain)},
+        "byok": [{"model": m, "orgs": n} for m, n in c.byok_steps],
     }

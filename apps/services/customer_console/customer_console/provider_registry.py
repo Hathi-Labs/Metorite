@@ -37,18 +37,25 @@ __all__ = [
     "JOB_LABELS",
     "JOB_VERBS",
     "PROVIDERS",
+    "RETIRES_WITHIN_DAYS",
+    "TRY_JOBS",
     "KeyCheck",
     "RegistryModel",
     "RegistryProvider",
+    "alias_target",
+    "closest",
     "default_model",
     "extension_of",
     "is_callable_provider",
+    "is_retiring",
     "litellm_providers",
     "native_vendors",
     "normalise",
+    "offer_refusal",
     "provider",
     "registry_model",
     "single_litellm_verb",
+    "vendor_id",
     "wire",
 ]
 
@@ -88,11 +95,27 @@ class KeyCheck:
 
     ``kind`` is ``list`` for a list-models call, or ``call`` for one cheap
     request. ``url`` is the full address. No operator input changes it.
+    ``customer_console.key_check`` reads it, and nothing else sends a key
+    to this address.
     """
 
     kind: str
     url: str
     verified: bool
+    #: How the key travels: ``bearer`` (``Authorization: Bearer``), ``token``
+    #: (``Authorization: Token``), or ``header:<name>`` (the bare key in that
+    #: header).
+    auth: str = "bearer"
+    #: Fixed headers the vendor needs, for example the Anthropic version.
+    headers: tuple[tuple[str, str], ...] = ()
+    #: ``GET``, or ``POST`` for a call that sends the bundled clip.
+    method: str = "GET"
+    #: The form fields of a ``POST`` that sends the clip.
+    form: tuple[tuple[str, str], ...] = ()
+    #: Where a list call keeps the model ids: ``data.id`` (the OpenAI shape),
+    #: ``models.name`` (Gemini, with ``models/`` removed), ``deepgram`` or
+    #: ``elevenlabs``.
+    ids: str = "data.id"
 
 
 @dataclass(frozen=True)
@@ -114,6 +137,8 @@ class RegistryModel:
     retires: date | None = None
     #: False for a (K) item the build could not confirm. Never a badge.
     verified: bool = True
+    #: The registry id that takes over when this model retires (rule H7).
+    successor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,17 +162,24 @@ class RegistryProvider:
 
 
 def _both(model_id: str, label: str, *, price: str = "", recommended: bool = False,
-          verified: bool = True) -> tuple[RegistryModel, RegistryModel]:
+          verified: bool = True, retires: date | None = None,
+          successor: str | None = None) -> tuple[RegistryModel, RegistryModel]:
     """One model offered for Chat and for Image understanding.
 
     Chat streams. ``vision`` does not (``catalog.STREAMABLE_TASKS``).
     """
     return (
         RegistryModel(model_id, label, "chat", "acompletion", streams=True, price_hint=price,
-                      recommended_for=("chat",) if recommended else (), verified=verified),
+                      recommended_for=("chat",) if recommended else (), verified=verified,
+                      retires=retires, successor=successor),
         RegistryModel(model_id, label, "vision", "acompletion", streams=False, price_hint=price,
-                      recommended_for=("vision",) if recommended else (), verified=verified),
+                      recommended_for=("vision",) if recommended else (), verified=verified,
+                      retires=retires, successor=successor),
     )
+
+
+#: The day the Gemini 2.5 ids retire (§6A.18 "The first providers").
+_GEMINI_25_RETIRES = date(2026, 12, 1)
 
 
 _SARVAM_PRICE = "about INR 0.49 per minute"
@@ -162,7 +194,11 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         key_url="https://indus.sarvam.ai/key-management",
         # No list call. One short request proves the key (MS-2). The host is
         # the speech handler's own (`stt_sarvam.SARVAM_API_BASE`).
-        key_check=KeyCheck("call", "https://api.sarvam.ai/speech-to-text", verified=True),
+        key_check=KeyCheck(
+            "call", "https://api.sarvam.ai/speech-to-text", verified=True,
+            auth="header:api-subscription-key", method="POST",
+            form=(("model", "saaras:v4"), ("mode", SARVAM_DEFAULT_MODE)),
+        ),
         no_list=True,
         default_mode=SARVAM_DEFAULT_MODE,
         models=(
@@ -194,7 +230,8 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         aliases=("assembly.ai",),
         key_url="https://www.assemblyai.com/dashboard/signup",
         key_check=KeyCheck(
-            "call", "https://api.assemblyai.com/v2/transcript?limit=1", verified=False
+            "call", "https://api.assemblyai.com/v2/transcript?limit=1", verified=False,
+            auth="header:authorization",
         ),
         no_list=True,
         models=(
@@ -223,7 +260,10 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         label="Anthropic",
         aliases=("claude",),
         key_url="https://console.anthropic.com/settings/keys",
-        key_check=KeyCheck("list", "https://api.anthropic.com/v1/models", verified=False),
+        key_check=KeyCheck(
+            "list", "https://api.anthropic.com/v1/models?limit=1000", verified=False,
+            auth="header:x-api-key", headers=(("anthropic-version", "2023-06-01"),),
+        ),
         models=(
             *_both("anthropic/claude-haiku-5-5", "Claude Haiku 5.5",
                    price="about $0.10 in and $0.50 out per million tokens",
@@ -240,12 +280,22 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         aliases=("google",),
         key_url="https://aistudio.google.com/apikey",
         key_check=KeyCheck(
-            "list", "https://generativelanguage.googleapis.com/v1beta/models", verified=False
+            "list", "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            verified=False, auth="header:x-goog-api-key", ids="models.name",
         ),
         models=(
             *_both("gemini/gemini-3.6-flash", "Gemini 3.6 Flash", verified=False),
             *_both("gemini/gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", verified=False),
             *_both("gemini/gemini-3.1-pro-preview", "Gemini 3.1 Pro preview", verified=False),
+            # Rule H7 (MS-2). The spec table says the 2.5 ids retire on
+            # 2026-12-01. They stay here so a chain that still names one gets
+            # an entry and a fix. The connect flow never offers them.
+            *_both("gemini/gemini-2.5-flash", "Gemini 2.5 Flash", verified=False,
+                   retires=_GEMINI_25_RETIRES, successor="gemini/gemini-3.6-flash"),
+            *_both("gemini/gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", verified=False,
+                   retires=_GEMINI_25_RETIRES, successor="gemini/gemini-3.5-flash-lite"),
+            *_both("gemini/gemini-2.5-pro", "Gemini 2.5 Pro", verified=False,
+                   retires=_GEMINI_25_RETIRES, successor="gemini/gemini-3.1-pro-preview"),
             RegistryModel("gemini/gemini-3.1-flash-image", "Gemini 3.1 Flash Image",
                           "image", "aimage_generation", verified=False),
             RegistryModel("gemini/gemini-embedding-2", "Gemini Embedding 2",
@@ -302,7 +352,10 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         label="ElevenLabs",
         aliases=(),
         key_url="https://elevenlabs.io/app/settings/api-keys",
-        key_check=KeyCheck("list", "https://api.elevenlabs.io/v1/models", verified=False),
+        key_check=KeyCheck(
+            "list", "https://api.elevenlabs.io/v1/models", verified=False,
+            auth="header:xi-api-key", ids="elevenlabs",
+        ),
         models=(
             # Speech out needs a voice id. Not offered until a voice setting exists.
             RegistryModel("elevenlabs/scribe_v2", "Scribe v2",
@@ -314,7 +367,10 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         label="Deepgram",
         aliases=(),
         key_url="https://console.deepgram.com/signup",
-        key_check=KeyCheck("list", "https://api.deepgram.com/v1/models", verified=False),
+        key_check=KeyCheck(
+            "list", "https://api.deepgram.com/v1/models", verified=False,
+            auth="token", ids="deepgram",
+        ),
         models=(
             RegistryModel("deepgram/nova-3", "Nova 3",
                           "transcribe", "atranscription", verified=False),
@@ -434,6 +490,59 @@ def is_callable_provider(provider_id: str) -> bool:
     return provider_id in native_vendors() or provider_id in litellm_providers()
 
 
+#: The jobs the connect flow offers (MS-2). Each one has a single-model Try
+#: in ``main.py``: platform key, one audit row, no ``usage_event`` row. A job
+#: with no Try is not offered (§6A.18 "The Try helpers"). Image creation,
+#: embeddings and speech out have no Try yet, so adopt refuses them.
+TRY_JOBS: frozenset[str] = frozenset({"chat", "vision", "transcribe"})
+
+#: How near a ``retires`` date makes a model retiring (rule H7).
+RETIRES_WITHIN_DAYS = 30
+
+
+def is_retiring(model: RegistryModel, today: date) -> bool:
+    """True when the model retires within 30 days, or has retired (rule H7)."""
+    return model.retires is not None and (model.retires - today).days <= RETIRES_WITHIN_DAYS
+
+
+def offer_refusal(model: RegistryModel, today: date) -> str | None:
+    """Why the connect flow does not offer this model, or None when it does."""
+    if model.job not in TRY_JOBS:
+        return f"Metorite has no test for {JOB_LABELS.get(model.job, model.job)} yet"
+    if is_retiring(model, today):
+        return f"This model retires on {model.retires.isoformat()}"
+    return None
+
+
+def alias_target(provider_id: str) -> str | None:
+    """The registry provider that *provider_id* is a spelling of, or None (H6).
+
+    ``sarvam.ai`` gives ``sarvam``. An exact registry id, an unknown id, and
+    a spelling that a handler or litellm can call give None. A key under a
+    callable id is not misplaced, so H6 never moves it.
+    """
+    target = normalise(provider_id)
+    if target == provider_id or target not in _BY_ID:
+        return None
+    if is_callable_provider(provider_id):
+        return None
+    return target
+
+
+def closest(provider_id: str) -> str | None:
+    """The registry id nearest to *provider_id*, for a 400 that names it."""
+    import difflib
+
+    names = [*_BY_ID, *ALIASES]
+    hit = difflib.get_close_matches(normalise(provider_id), names, n=1, cutoff=0.5)
+    return None if not hit else ALIASES.get(hit[0], hit[0])
+
+
+def vendor_id(model_id: str) -> str:
+    """The id after the provider prefix: what a vendor's model list names."""
+    return model_id.partition("/")[2]
+
+
 def single_litellm_verb(job: str) -> str | None:
     """The one litellm verb of a job, or None when it has none or several.
 
@@ -457,6 +566,7 @@ def _model_wire(m: RegistryModel) -> dict[str, Any]:
         "price_hint": m.price_hint,
         "recommended_for": list(m.recommended_for),
         "retires": None if m.retires is None else m.retires.isoformat(),
+        "successor": m.successor,
         "verified": m.verified,
     }
 

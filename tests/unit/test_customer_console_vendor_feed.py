@@ -41,6 +41,7 @@ from sqlalchemy import create_engine, text
 
 from tests.unit._customer_console_ladder import (
     apply_ladder,
+    callable_test_vendors,
     ensure_deployment,
 )
 
@@ -385,6 +386,9 @@ def db():
 
 @pytest.fixture
 def client(monkeypatch):
+    # MS-2 refuses a provider the Router cannot call (rule H2). The vendors
+    # here are made up per run (`vf<run>`), and no call reaches them.
+    callable_test_vendors(monkeypatch, starts=("vf",))
     monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
     from customer_console.main import app
     return TestClient(app)

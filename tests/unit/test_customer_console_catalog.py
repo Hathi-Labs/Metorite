@@ -27,7 +27,7 @@ from customer_console import catalog
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder
+from tests.unit._customer_console_ladder import apply_ladder, callable_test_vendors
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -171,6 +171,10 @@ class TestTheWriteContractIsInsertOnly:
         # MS-1 (§6A.18, 2026-11-09). A health fix writes a tier chain, so it
         # is a bind: a NEW chain row, never an update.
         "/catalog/health/fix",
+        # MS-2 (2026-11-09). Adopt and Undo write a tier chain too, each as
+        # a NEW chain row.
+        "/catalog/providers/{provider_id}/adopt",
+        "/catalog/adopt/undo",
     )
 
     #: ⚠️ **NOT insert-only, and never was.** These write FACTS about a model
@@ -199,6 +203,10 @@ class TestTheWriteContractIsInsertOnly:
         # either: they call the vendor and write one audit row.
         "/catalog/transcribe/try",
         "/catalog/vision/try",
+        # MS-2 (2026-11-09). Connect and the H6 fix write a provider key,
+        # not a catalog row. A key is not a commercial term.
+        "/catalog/providers/{provider_id}/connect",
+        "/catalog/health/fix-key",
     )
 
     def _catalog_routes(self) -> list[tuple[str, str]]:
@@ -326,6 +334,13 @@ def client(monkeypatch):
 @pytest.fixture
 def db():
     return create_engine(_URL, future=True)
+
+
+@pytest.fixture(autouse=True)
+def _made_up_vendors(monkeypatch):
+    """MS-2 refuses a provider the Router cannot call (rule H2). This suite's
+    vendors are made up, and a fake answers for them, so they pass."""
+    callable_test_vendors(monkeypatch, "test", "a", "strandco")
 
 
 #: Prefixes this suite invents. Everything it writes is namespaced so

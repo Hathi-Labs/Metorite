@@ -126,6 +126,10 @@ _K_MODELS = {
     "deepseek/deepseek-v4-pro",
     "elevenlabs/scribe_v2",
     "deepgram/nova-3",
+    # MS-2, rule H7: the retiring Gemini 2.5 ids of the spec table.
+    "gemini/gemini-2.5-flash",
+    "gemini/gemini-2.5-flash-lite",
+    "gemini/gemini-2.5-pro",
 }
 
 

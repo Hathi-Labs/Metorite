@@ -35,7 +35,10 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import (
+    apply_ladder,
+    callable_test_vendors,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -72,6 +75,13 @@ def db():
     eng = create_engine(_URL, future=True)
     yield eng
     eng.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _made_up_vendors(monkeypatch):
+    """MS-2 refuses a provider the Router cannot call (rule H2). This suite's
+    vendors are made up, and a fake answers for them, so they pass."""
+    callable_test_vendors(monkeypatch, "vendor")
 
 
 @pytest.fixture
@@ -153,9 +163,8 @@ class TestUnbindingTakesTheJobOffTheAir:
             "DELETE", "/catalog/bindings",
             headers=OP, json={"tier": tier, "task": "chat"},
         )
-        with db.begin() as c:
-            with pytest.raises(rt.TierUnknown):
-                rt.resolve_tier(c, tier, "chat")
+        with db.begin() as c, pytest.raises(rt.TierUnknown):
+            rt.resolve_tier(c, tier, "chat")
 
     def test_HISTORY_SURVIVES_because_this_appends_and_never_deletes(
         self, client, db, bound

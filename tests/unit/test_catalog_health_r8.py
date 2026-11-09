@@ -126,7 +126,8 @@ def _assert_production_entries(entries) -> None:
     assert sarvam["kind"] == "H6"
     assert sarvam["reason"] == "The key is saved as 'sarvam.ai'"
     assert sarvam["fix"] is None
-    assert sarvam["help"] == health.CONNECT_HELP
+    # MS-2 adds the H6 button, so the help names the move, not a connect.
+    assert sarvam["help"] == health.move_help("sarvam")
 
     assert _vision(entries) == []
 
@@ -367,6 +368,35 @@ class TestAFixIntoAModelTheChainHas:
         assert plan.chain == (groq, AAI_EN)
         _, plan = self._plan([NANO, AAI_EN, groq])
         assert plan.chain == (AAI_EN, groq)
+
+
+class TestAKeptModelIsNeverRemoved:
+    """MS-1 verifier, P3 note 2 (fixed in MS-2).
+
+    In ``[nano, /en]`` with ``/en`` on the wrong verb, both entries map to
+    the fix ``/en`` on ``native_assemblyai``, so the ``/en`` entry reads
+    "Remove: same as the fix above". A pick of both writes ``[/en]``. The
+    response and the audit row used to say that ``/en`` was removed.
+    """
+
+    def test_a_pick_of_both_removes_nothing_the_chain_keeps(self):
+        caps = {(NANO, "transcribe"): "atranscription", (AAI_EN, "transcribe"): "atranscription"}
+        models = [NANO, AAI_EN]
+        report = health.assess(
+            {("tier-stt", "transcribe"): models}, caps, frozenset({"assemblyai"})
+        )
+        by_model = {e.model: e for e in report.entries}
+        assert by_model[AAI_EN].fix.action == "remove"
+        assert by_model[AAI_EN].fix.label == "Remove: same as the fix above"
+
+        plan = health.plan_fix(
+            report, tier="tier-stt", task="transcribe", models=models, picked=[NANO, AAI_EN]
+        )
+        assert plan.chain == (AAI_EN,)
+        assert plan.declares == ((AAI_EN, "native_assemblyai"),)
+        assert plan.replaced == ((NANO, AAI_EN),)
+        assert AAI_EN not in plan.removed
+        assert plan.removed == ()
 
 
 def _calls_in(func: str) -> set[str]:
@@ -633,6 +663,7 @@ class TestTheProductionState:
             "kind": "H5", "tier": "tier-stt", "task": "transcribe",
             "job": "Speech to text", "entries": 3, "window_blocked": True,
             "reason": "3 entries on Speech to text cannot work", "fix": None,
+            "byok": [],
         }]
         assert not [c for c in body["chains"] if c["tier"] == "tier-vision"]
         _assert_no_secret(r.text)
@@ -958,6 +989,61 @@ class TestTheUnbindRace:
         # A second unbind finds the tier already off the air.
         again = main.unbind_tier(main.UnbindRequest(tier=tier, task="chat"), staff)
         assert again["already"] is True
+
+    def test_an_unbind_of_an_unbound_tier_sees_the_bind_it_waited_for(self, db, ghost):
+        """MS-1 verifier, P3 note 1: the READ side of the race, as a fence.
+
+        The tier starts unbound (a tombstone). A bind queues on the lock
+        first, and an unbind queues behind it. The unbind must read the chain
+        the bind wrote, end it, and say ``already: False``. With its read at
+        ``now()`` it saw only the old tombstone, answered ``already: True``,
+        and the bind stayed on the air.
+        """
+        from customer_console import main
+
+        tier, _, second = ghost
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO tier_binding (tier, task, model, rank, effective_from) "
+                "VALUES (:t, 'chat', NULL, 1, now() - interval '2 seconds')"), {"t": tier})
+        assert _chain(db, tier, "chat") == []
+        staff = SimpleNamespace(actor="ms1-race-fence")
+        results: dict[str, object] = {}
+        errors: list[BaseException] = []
+
+        def _run(name, call):
+            try:
+                results[name] = call()
+            except BaseException as exc:  # reported below, never swallowed
+                errors.append(exc)
+
+        bind = threading.Thread(target=_run, args=("bind", lambda: main.bind_tier(
+            main.BindingRequest(tier=tier, task="chat", models=[second]), staff)))
+        unbind = threading.Thread(target=_run, args=("unbind", lambda: main.unbind_tier(
+            main.UnbindRequest(tier=tier, task="chat"), staff)))
+
+        holder = db.connect()
+        tx = holder.begin()
+        try:
+            holder.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": main._chain_lock_key(tier, "chat")},
+            )
+            bind.start()
+            _wait_for_waiters(db, 1)
+            unbind.start()
+            _wait_for_waiters(db, 2)
+        finally:
+            tx.rollback()
+            holder.close()
+        bind.join(30)
+        unbind.join(30)
+        assert not errors, errors
+        assert not bind.is_alive() and not unbind.is_alive()
+
+        assert results["bind"]["chain"] == [second]
+        assert results["unbind"]["already"] is False
+        assert _chain(db, tier, "chat") == []
 
 
 @_DB

@@ -4758,6 +4758,105 @@ def capability_rows(conn: Connection) -> dict[tuple[str, str], tuple[str, bool]]
     return {(str(r[0]), str(r[1])): (str(r[2]), bool(r[3])) for r in rows}
 
 
+# ── MS-2: connect, adopt, Undo and the H6 fix (§6A.18) ──────────────────────
+
+
+def byok_credential_counts(conn: Connection) -> dict[str, int]:
+    """How many organizations hold a live key of their own, per provider string.
+
+    🔴 The count only, never the organizations. The health list shows it
+    beside a fix that drops a step those customers still use (§6A.18,
+    "Deferred to MS-2"). ``secret_enc`` is not selected.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT provider, count(DISTINCT organization_id)
+              FROM provider_credential
+             WHERE organization_id IS NOT NULL AND revoked_at IS NULL
+             GROUP BY provider
+            """
+        )
+    ).all()
+    return {str(r[0]): int(r[1]) for r in rows}
+
+
+def live_credential_id(
+    conn: Connection, *, provider: str, organization_id: str | None = None, lock: bool = False
+) -> str | None:
+    """The id of the live credential for one provider and one scope, or None.
+
+    ``lock`` takes the row lock, so the H6 fix can check that the row it
+    read before the key check is still the live one. ``secret_enc`` is not
+    selected.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id FROM provider_credential "
+            "WHERE provider = :provider "
+            "  AND organization_id IS NOT DISTINCT FROM CAST(:org AS uuid) "
+            "  AND revoked_at IS NULL"
+            + (" FOR UPDATE" if lock else "")
+        ),
+        {"provider": provider, "org": organization_id},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def newest_chain_date(conn: Connection, *, tier: str, task: str) -> datetime | None:
+    """The ``effective_from`` of the newest set of one chain, staged ones too.
+
+    Undo compares it with the date the adopt wrote. A later set, in force or
+    staged for a future date, means the chain moved, and Undo answers 409.
+    """
+    return conn.execute(
+        text(
+            "SELECT max(effective_from) FROM tier_binding "
+            "WHERE tier = :tier AND task = :task"
+        ),
+        {"tier": tier, "task": task},
+    ).scalar()
+
+
+def chain_before(conn: Connection, *, tier: str, task: str, before: datetime) -> list[str]:
+    """The models of the newest set dated before *before*, in rank order.
+
+    Empty when that set is a tombstone, or when no set came before. Undo
+    writes it back as a new set (§6A.5, insert only).
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT model FROM tier_binding
+             WHERE tier = :tier AND task = :task AND model IS NOT NULL
+               AND effective_from = (
+                   SELECT max(effective_from) FROM tier_binding
+                    WHERE tier = :tier AND task = :task
+                      AND effective_from < :before)
+             ORDER BY rank
+            """
+        ),
+        {"tier": tier, "task": task, "before": before},
+    ).all()
+    return [str(r[0]) for r in rows]
+
+
+def tiers_of_task(conn: Connection, task: str) -> list[str]:
+    """The tiers that ``tier_catalog`` registers for one task, in board order."""
+    rows = conn.execute(
+        text("SELECT slug FROM tier_catalog WHERE task = :t ORDER BY sort_order, slug"),
+        {"t": task},
+    ).all()
+    return [str(r[0]) for r in rows]
+
+
+def tier_task(conn: Connection, tier: str) -> str | None:
+    """The task ``tier_catalog`` registers for one tier, or None."""
+    return conn.execute(
+        text("SELECT task FROM tier_catalog WHERE slug = :s"), {"s": tier}
+    ).scalar_one_or_none()
+
+
 def spend_by_provider(
     conn: Connection,
     *,
