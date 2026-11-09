@@ -231,7 +231,8 @@ describe("the count follows a rule change", () => {
     const view = readFileSync(join(__dirname, "..", "components", "AutoRunNotice.tsx"), { encoding: "utf-8" });
     expect(view).toMatch(/onRulesChanged\(read\)/);
     const api = readFileSync(join(__dirname, "api.ts"), { encoding: "utf-8" });
-    for (const fn of ["createRule", "updateRule", "deleteRule", "installPresetRules", "copyRules", "resetRules"]) {
+    const writers = ["createRule", "updateRule", "deleteRule", "generateRules", "installPresetRules", "copyRules", "resetRules"];
+    for (const fn of writers) {
       const start = api.indexOf(`export async function ${fn}(`);
       const end = api.indexOf("\nexport ", start + 10);
       expect(api.slice(start, end), fn).toContain("announceRulesChanged()");

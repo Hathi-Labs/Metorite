@@ -1639,10 +1639,13 @@ export async function generateRules(
   accountId: string,
   prompt: string,
 ): Promise<{ created: AutomationRule[]; error?: string }> {
-  return gatewayFetch("/email/rules/generate", {
+  const res = await gatewayFetch<{ created: AutomationRule[]; error?: string }>("/email/rules/generate", {
     method: "POST",
     body: JSON.stringify({ account_id: accountId, prompt }),
   });
+  // The route saves the rules it makes (task 2451).
+  announceRulesChanged();
+  return res;
 }
 
 export async function installPresetRules(
