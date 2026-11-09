@@ -9159,6 +9159,31 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 
 **Order.** The epic slices SP-6 to SP-10 and the `blocks` tool (SW-16) come first. The engine and SP-12 follow. The cycle slices SP-1 to SP-5 read the engine. This order follows §10 of the design. The first HathiLabs cycle starts when SP-4 lands (Q9).
 
+### 13.6a The Goal and the roadmap rows (replan 2026-11-09, tasks 984 and 2528)
+
+The owner decided the Goal on 2026-11-09, in chat. These rows replace the old text of WM-5. The old text named a company, team or personal goal, key results and a weekly check-in. D199.2 refuses those words. The rows follow the shape of §13.6.
+
+A Goal is a task type with a rank. It has an owner and a target date. A Goal is the parent of epics. One epic serves one Goal (D199.6). An epic never sits inside an epic (D195). An epic in any project links to a Goal (SW-21, task 352). Progress and health roll up from the linked epics and their tasks. A member sees Goal, Epic and Task only (D199.2). There is no team goal, no key result and no check-in record.
+
+| Row | Task | Scope | Done when | Risk | Depends on |
+|---|---|---|---|---|---|
+| **WM-5** | 984 | The Goal type, as the paragraph above defines it. The Goal has an owner and a target date. The chat and the MCP make and read a Goal through the one manifest (D136). Progress and health come from the roll-up of SP-9 over the linked epics | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. `tests/unit/test_goal_rollup_r8.py` (new) passes | STANDARD | SP-8, SP-9, SW-21 |
+| **RM-1** | 2528 | The Roadmap view (D199.3 and D199.5). It lists the Goals of a space in rank order, with live progress from epics in any project. A Goal has a rank field. The view adds no initiative record and no milestone record | The Roadmap shows 3 Goals in rank order. A change of rank moves the Goal and writes one `pm_activities` row. `tests/unit/test_goal_rank_r8.py` (new) passes | HIGH if the rank field needs a column, else STANDARD. Gate: the R8 test and the full loop | WM-5, SW-21 |
+
+Proposed, owner review in this pull request: the plan id RM-1 for task 2528. The rank is a whole number, and a lower number ranks first.
+
+### 13.6b Resolved 2026-11-09 (Proposed, owner review in this pull request)
+
+The plan review found five contradictions. Each now has one owner.
+
+1. **WM-3 builds no maths.** WM-3 (task 982) reads the one engine of PJP-6 (§13.4). Its done-when does not say "a pure test pins the critical path on a fixture graph" for its own maths. It pins the display only. The module tests of PJP-6 pin the maths.
+2. **WM-1 and PJP-9 measure one thing.** WM-1 (task 980) defines the flow numbers. PJP-9 (task 1486) reads those numbers and builds no second measure. Fence: advisory until WM-1 names its test.
+3. **PC-5 owns the weekly review.** PC-5 (task 974) is the one weekly review. Task 504 folds into PC-5.
+4. **PB-2 owns the retro text.** PB-2 (task 1948, the MCP prompt) owns the retro text. PC-4 (task 973), SW-98 and SW-99 point to it. They build no second retro.
+5. **The copy rule (task 2529).** A member sees Goal, Epic and Task only. Story, Slice, Workstream and Appetite stay in specs and agent text. Sprint and Cycle are one record, and the member-facing name is "Cycle". Fence: `workbench/control_plane/src/lib/memberWords.test.ts` (new) fails when a member-visible string uses a hidden word. Until it lands, the rule is advisory (R7).
+
+The name "Cycle" replaces the "sprint" copy that §13.2 allows for a Scrum team. Proposed, owner review in this pull request.
+
 ### 13.7 Open question for the owner (task 849)
 
 **How does a total count a task that the member cannot see?** The board has no answer yet. Task 849 holds the question for the space summary. The same call binds a cycle total.
@@ -9703,6 +9728,31 @@ The apply is quiet, as the file import is (§6.10 of `project_import.md`). It em
 **MCP and chat.** The chat has the three tools: `list_templates` is class A, and `save_as_template` and `create_project_from_template` are class C, so the chat asks one card for each. They are in the `projects-structure` pack. The MCP has `list_templates` only. The two writes stay off the MCP in TPL-1a, because rule 2 of `external_agent_access.md` §9.5 keeps a class C pair off the edge. An MCP write of a template needs a preview and a confirm step first, as `move_tasks` has (EA3-53). A later row adds them.
 
 **Not in TPL-1a.** The web UI is TPL-1b. A rename, an edit and a delete of a template, the library of work styles, the task template kind and the Mira path wait for later rows.
+
+### 14.9 Teams (epic E7, task 2530, replan 2026-11-09)
+
+Proposed, owner review in this pull request. A team is a group (`group:<slug>`, D12). There is no team object (D87, D49). A member sees two words: Team and Space.
+
+1. **One team has many spaces.** A grant of a space to a group in `pm_project_grants` makes the space part of that team's view.
+2. **A space shared with no team of the member is hidden from that team's view.**
+3. **A member in several teams picks one team scope or "All my teams".** These are the altitudes of D87 (`navigation_shell.md` §4.1).
+4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
+5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
+
+Fence: `tests/unit/test_team_scope_isolation_r8.py` (new, T-7) binds rules 2 and 4. Until T-7 lands, the rules are advisory (R7).
+
+| Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
+|---|---|---|---|---|---|---|---|
+| **T-0** | 2531 | This section | The section and the D204 record are merged | `tests/unit/test_doc_names_resolve.py` | LOW | none | none |
+| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | R8 tests | STANDARD | `TEAMS_ORGS` | T-0 |
+| **T-2** | 2533 | The team chip on the Projects board. It folds in PX-2 (task 967) | The chip filters the board to the spaces of one team. "All my teams" shows every space the member may open | Component test and the R8 test of T-1 | STANDARD | `TEAMS_ORGS` | T-1 |
+| **T-3** | 2534 | Share a space with a team. Check the existing grants route first and build only the gap | A lead shares a space with a group. The space shows in that team's view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-1 |
+| **T-4** | 2535 | The team scope in the shell. One contract of one value: a team slug or "all" (`navigation_shell.md` §4.2a) | The shell holds one scope value, and every app reads it | `src/lib/shell/teamScope.test.ts` (new) | STANDARD | `TEAMS_ORGS` | T-2, T-3, T-7 |
+| **T-5** | 2536 | Apps adopt the scope. One task for each app. Planning only | Each app has a task that names its adopt step | Advisory | LOW | none | T-4 |
+| **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
+| **T-7** | 2538 | The isolation fence: two teams, three spaces and every surface | Each surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` (new) | R8, full loop | HIGH | none | T-1 |
+
+**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 
