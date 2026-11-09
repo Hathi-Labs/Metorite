@@ -56,7 +56,17 @@ import {
   projectWatchersApi,
   type ProjectWatchState,
   PROJECTS_CACHE,
+  ProjectsApiError,
+  templatesApi,
 } from "./lib/api";
+import {
+  appliedMessage,
+  newApplyKey,
+  refusalText,
+  type TemplateRow,
+} from "./lib/templates";
+import { NewFromTemplateDialog } from "./components/NewFromTemplateDialog";
+import { SaveAsTemplateDialog } from "./components/SaveAsTemplateDialog";
 import { FieldManager } from "./components/FieldManager";
 import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
@@ -1259,6 +1269,18 @@ function ProjectsWorkspace() {
   const [convertingNode, setConvertingNode] = useState<ProjectRow | null>(null);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
+  //: WS-39 TPL-1b — project templates. `templates` is null while the flag
+  //: `PROJECTS_TEMPLATES_ORGS` does not hold the org (the list answers 404),
+  //: and then the menu item and the picker do not exist. The two dialogs
+  //: hold their own refusal, shown in place.
+  const [templates, setTemplates] = useState<TemplateRow[] | null>(null);
+  const [templatesOn, setTemplatesOn] = useState(false);
+  const [savingTemplateOf, setSavingTemplateOf] = useState<ProjectRow | null>(null);
+  const [saveTemplateBusy, setSaveTemplateBusy] = useState(false);
+  const [saveTemplateError, setSaveTemplateError] = useState<string | null>(null);
+  const [pickingUnder, setPickingUnder] = useState<{ parent: ProjectRow; noun: string } | null>(null);
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   //: WS-27bl — the tasks whose move card is open. One state for both entry
   //: points: a single row from its menu, and the whole bulk selection.
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
@@ -1279,6 +1301,22 @@ function ProjectsWorkspace() {
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
+
+  // TPL-1b — one read tells whether the flag holds the org. A failure other
+  // than 404 leaves the feature hidden: a menu item must not appear on a guess.
+  const loadTemplates = useCallback(async () => {
+    try {
+      const rows = await templatesApi.list();
+      setTemplatesOn(rows !== null);
+      setTemplates(rows);
+    } catch {
+      setTemplatesOn(false);
+      setTemplates(null);
+    }
+  }, []);
+  useEffect(() => {
+    void loadTemplates();
+  }, [loadTemplates]);
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
   // is only a highlight: applying a view copies its config into these two, so
@@ -1863,8 +1901,23 @@ function ProjectsWorkspace() {
         setConvertError(null);
         setConvertingNode(project);
       },
+      // WS-39 TPL-1b. Present only with the flag, so the entries are absent
+      // otherwise. Each raises a dialog and writes nothing.
+      ...(templatesOn
+        ? {
+            onSaveAsTemplate: (project: ProjectRow) => {
+              setSaveTemplateError(null);
+              // On a phone the tree sheet would sit over the dialog.
+              setSheet(null);
+              setSavingTemplateOf(project);
+            },
+            // Only a marker: the create option reaches `openTemplatePicker`
+            // through `onAddChild`, with the level's own word.
+            onNewFromTemplate: (parent: ProjectRow) => openTemplatePicker(parent, "project"),
+          }
+        : {}),
     }),
-    [toast]
+    [toast, templatesOn, loadTemplates]
   );
 
   /**
@@ -2123,6 +2176,10 @@ function ProjectsWorkspace() {
               setSelected(project);
             }}
             onAddChild={(parent, option) => {
+              if (option.template) {
+                openTemplatePicker(parent, option.level);
+                return;
+              }
               setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
             }}
             onOpenSettings={setSettingsFor}
@@ -3576,7 +3633,9 @@ function ProjectsWorkspace() {
     Boolean(managingFields) ||
     Boolean(managingTags) ||
     Boolean(managingStatuses) ||
-    Boolean(managingLifecycle);
+    Boolean(managingLifecycle) ||
+    Boolean(savingTemplateOf) ||
+    Boolean(pickingUnder);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -3803,6 +3862,75 @@ function ProjectsWorkspace() {
    * because the level of every project inside it changed. A refusal stays in
    * the dialog: the 422 names the projects that are too deep.
    */
+  function openTemplatePicker(parent: ProjectRow, noun: string) {
+    setPickError(null);
+    setSheet(null);
+    setPickingUnder({ parent, noun });
+    void loadTemplates();
+  }
+
+  /** TPL-1b — save a project as a template. A refusal shows in the dialog. */
+  async function saveTemplate(project: ProjectRow, name: string, description: string) {
+    setSaveTemplateBusy(true);
+    setSaveTemplateError(null);
+    try {
+      const saved = await templatesApi.save({
+        project_id: project.id,
+        name,
+        description: description || null,
+      });
+      setSavingTemplateOf(null);
+      void loadTemplates();
+      toast.show({ variant: "success", title: `Saved the template “${saved.name}”` });
+    } catch (err) {
+      setSaveTemplateError(
+        err instanceof ProjectsApiError
+          ? refusalText(err.status, err.message)
+          : refusalText(0, null),
+      );
+    } finally {
+      setSaveTemplateBusy(false);
+    }
+  }
+
+  /** TPL-1b — make a project from a template, or a blank one, under `parent`. */
+  async function makeFromPicker(
+    parent: ProjectRow,
+    template: TemplateRow | null,
+    name: string,
+    startDate: string,
+  ) {
+    setPickBusy(true);
+    setPickError(null);
+    try {
+      let createdName = name;
+      if (template) {
+        const res = await templatesApi.apply(template.id, {
+          idempotency_key: newApplyKey(),
+          parent_project_id: parent.id,
+          name: name || null,
+          start_date: startDate,
+        });
+        createdName = res.project.name;
+        toast.show({ variant: "success", title: appliedMessage(res, parent.name) });
+      } else {
+        await projectsApi.createProject({ name, parent_project_id: parent.id });
+        toast.show({ variant: "success", title: `Made “${createdName}”` });
+      }
+      setPickingUnder(null);
+      setTreeKey((k) => k + 1);
+      openFolds([parent.id]);
+    } catch (err) {
+      setPickError(
+        err instanceof ProjectsApiError
+          ? refusalText(err.status, err.message)
+          : refusalText(0, null),
+      );
+    } finally {
+      setPickBusy(false);
+    }
+  }
+
   async function convertNode(node: ProjectRow) {
     setConverting(true);
     setConvertError(null);
@@ -5690,6 +5818,33 @@ function ProjectsWorkspace() {
         }
       />
 
+      <SaveAsTemplateDialog
+        project={savingTemplateOf}
+        error={saveTemplateError}
+        busy={saveTemplateBusy}
+        onClose={() => {
+          setSavingTemplateOf(null);
+          setSaveTemplateError(null);
+        }}
+        onSave={(project, name, description) => void saveTemplate(project, name, description)}
+      />
+
+      <NewFromTemplateDialog
+        parent={pickingUnder?.parent ?? null}
+        noun={pickingUnder?.noun ?? "project"}
+        templates={templates}
+        error={pickError}
+        busy={pickBusy}
+        onClose={() => {
+          setPickingUnder(null);
+          setPickError(null);
+        }}
+        onBlank={(name) => pickingUnder && void makeFromPicker(pickingUnder.parent, null, name, "")}
+        onTemplate={(template, name, startDate) =>
+          pickingUnder && void makeFromPicker(pickingUnder.parent, template, name, startDate)
+        }
+      />
+
       <ConvertFolderDialog
         project={convertingNode}
         childNames={
@@ -6011,7 +6166,11 @@ function ProjectsWorkspace() {
                 setSelected(project);
               }}
               onAddChild={(parent, option) => {
-                setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
+                if (option.template) {
+                openTemplatePicker(parent, option.level);
+                return;
+              }
+              setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
               }}
               onOpenSettings={setSettingsFor}
               onMove={setMovingNode}
