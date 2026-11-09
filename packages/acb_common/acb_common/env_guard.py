@@ -226,6 +226,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
+    # changes which task an agent takes first, so only the operator writes it.
+    "MY_WORK_PLAN_ORDER_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
@@ -250,6 +253,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. A tenant must not open it for another org, so only the owner
     # writes it.
     "PROJECTS_SPRINTS_ORGS",
+    # WS-39 TPL-1a: PROJECTS_TEMPLATES_ORGS opens the templates of Projects
+    # for an org. A tenant must not open it for another org, so only the
+    # owner writes it.
+    "PROJECTS_TEMPLATES_ORGS",
     # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.

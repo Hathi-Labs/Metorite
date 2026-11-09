@@ -262,6 +262,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("PUT", "/projects/views/{view_id}/positions", "", "X", _UI_STATE_REASON),
     # ── me.py · personal.py ──────────────────────────────────────────────
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
+    # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
+    Route("GET", "/projects/plan/order", "my_work", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -575,6 +577,13 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/intake/{task_id}/snooze", "triage_intake", "B"),
     Route("GET", "/projects/notifications", "notifications", "A"),
     Route("POST", "/projects/notifications/read", "mark_notifications_read", "B"),
+    # ── templates.py (WS-39 TPL-1a, task 18) ─────────────────────────────
+    # Dark behind PROJECTS_TEMPLATES_ORGS. A template is org-wide. The save
+    # and the apply are class C: one card each, and neither has an undo in
+    # the app. The MCP edge reaches the same three routes.
+    Route("GET", "/projects/templates", "list_templates", "A"),
+    Route("POST", "/projects/templates", "save_as_template", "C"),
+    Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template", "C"),
 )
 
 #: Tools the manifest names that no slice has built yet, with the slice that
@@ -736,6 +745,11 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # WS-46 P11 — what the page shows: the node read, and the views read for a
     # saved view by name. It writes nothing.
     "show_view": frozenset({"project_summary", "project_views"}),
+    # WS-39 TPL-1a: each template write reads the template list before its
+    # card, the save for a taken name and the apply for its one template by
+    # id. Each also reads the project (project_summary's route).
+    "save_as_template": frozenset({"list_templates", "project_summary"}),
+    "create_project_from_template": frozenset({"list_templates", "project_summary"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do
@@ -1271,6 +1285,25 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "fire_at": "reschedule_reminder.at",
         "tz": "reschedule_reminder",
     },
+    # ── templates (WS-39 TPL-1a) ─────────────────────────────────────────
+    # The apply reads its one template by id before the card.
+    ("GET", "/projects/templates"): {
+        "template_id": "create_project_from_template.template_id",
+    },
+    # The tool makes the key itself, one for each approved card.
+    ("POST", "/projects/templates"): {
+        "project_id": "save_as_template.project_id",
+        "name": "save_as_template.name",
+        "description": "save_as_template.description",
+        "start_date": "save_as_template.start_date",
+    },
+    ("POST", "/projects/templates/{template_id}/apply"): {
+        "idempotency_key": "create_project_from_template",
+        "parent_project_id": "create_project_from_template.parent_id",
+        "name": "create_project_from_template.name",
+        "description": "create_project_from_template.description",
+        "start_date": "create_project_from_template.start_date",
+    },
 }
 
 _ORDER_REASON = "The order of rows on screen, which a person drags in the app."
@@ -1344,6 +1377,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     # is a web planner override, and the chat has no use for it.
     ("GET", "/projects/plan/analysis"): {
         "start": "A web planner override of the first working day. The chat and the MCP plan from today (SP-12).",
+    },
+    # SW-68a: `my_work` sends the ids of the rows it just listed. The member sets no id.
+    ("GET", "/projects/plan/order"): {
+        "task_ids": "The ids of the rows that `my_work` just read, in their order. The tool has no argument for it (SW-68a).",
     },
     ("GET", "/projects/tasks/stats"): {
         "assigned": _STATS_ROUTE_REASON,

@@ -138,6 +138,49 @@ async def project_authorities(project_id: str, include_removed: bool = False) ->
     return "\n".join(out)
 
 
+#: What the member reads while PROJECTS_TEMPLATES_ORGS is off for the
+#: organization (WS-39 TPL-1a). The routes answer 404, and a tool makes no card.
+TEMPLATES_OFF = "Project templates are not on for this organization yet. Nothing was changed."
+
+
+def _template_line(row: dict[str, Any]) -> str:
+    """One template as one line: the name, what it holds, and its id."""
+    counts = row.get("counts") or {}
+    line = (
+        f"- {data(row.get('name'))} · {int(counts.get('tasks') or 0)} starter tasks"
+        f" · {int(counts.get('statuses') or 0)} statuses"
+        f" · {int(counts.get('types') or 0)} task types"
+        f" · {int(counts.get('fields') or 0)} fields"
+        f" · {int(counts.get('tags') or 0)} tags · template_id {row.get('id')}"
+    )
+    if row.get("description"):
+        line += f"\n  {data(row.get('description'))}"
+    return line
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def list_templates() -> str:
+    """The project templates of the organization, by name (WS-39 TPL-1a).
+    Each row has its template_id and what it holds: the statuses, task types,
+    fields, tags and starter tasks. Every member of the organization sees
+    the same list. create_project_from_template makes a new project from one,
+    and save_as_template saves a project as a new one, each behind a card."""
+    try:
+        got = (await get("/projects/templates")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return TEMPLATES_OFF
+        raise
+    rows = got.get("rows") or []
+    out = [legend(), f"Project templates ({len(rows)}):"]
+    out.extend(_template_line(row) for row in rows)
+    if not rows:
+        out.append("(no template yet. save_as_template saves a project as one)")
+    if got.get("more"):
+        out.append("(more templates exist. This list shows the first ones by name)")
+    return "\n".join(out)
+
+
 #: What the member reads while DECISIONS_ORGS is off for the organization.
 DECISIONS_OFF = "Decisions are not on for this organization yet."
 

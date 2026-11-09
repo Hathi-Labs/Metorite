@@ -2,6 +2,7 @@ import {
   Email, EmailAccount,
   AnalyticsOverview, SenderStat, NewsletterStatus, UnsubscribeResult,
   AutomationRule, RuleTestResult, ExecutedRule, AssistantSettings,
+  AssistantSettingsSave,
   RecentTestResult, ColdSender, KnowledgeEntry,
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
@@ -2121,8 +2122,10 @@ export async function getAssistantSettings(
   );
 }
 
+/** The settings PUT. Only the member's own Auto-run act sends the marker
+ *  `auto_run_choice` (task 2305, `autoRunChoiceBody`). */
 export async function saveAssistantSettings(
-  settings: AssistantSettings
+  settings: AssistantSettingsSave
 ): Promise<AssistantSettings> {
   return gatewayFetch<AssistantSettings>("/email/assistant/settings", {
     method: "PUT",

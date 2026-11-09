@@ -51,7 +51,7 @@ Each agent session follows the same six steps. The server instructions and the c
 
 1. The runs of this connection that wait. You queued work for it, you answered its question, or you asked it to stop.
 2. The tasks of a run of this connection whose session went quiet for five minutes. The agent can take that work back. A run that another session of this connection works on now does not show.
-3. The tasks assigned to you that no AI session holds and that no open task blocks.
+3. The tasks assigned to you that no AI session holds and that no open task blocks. Metorite ranks a task under an epic by the plan of the epic, when your organization has this on. A ready slice comes before a held slice. Then the least slack comes first, then the best priority. A task under no epic keeps its place. A row under an epic has a `plan` field. It holds `ready`, `slack_mins`, `blocked_by` (task ids) and `blocked_by_hidden`. The last one counts the blockers that you cannot see, and it never names them.
 
 It never gives a task that is not assigned to you and that this connection does not hold. A run of another client or of another connection does not show. Each computer that you connect gets its own connection, so the work of your other computer stays with it. Two terminals on one connection share it, so `my_work` cannot tell them apart until the MCP sessions of spec §12.5 are on.
 
@@ -176,6 +176,16 @@ The agent can also do these three things:
 - **Delete a task that you can delete.** You cannot undo a delete. Most agent apps ask you before each delete. Metorite cannot make an app ask, so an app that you set to allow the tool asks nothing. The agent must name the exact task and say which subtasks to delete. The other subtasks stay.
 
 **The delete switch is on by default.** The switch **Let my AI agents delete tasks** is in **Integrations**, in the **AI agents** view. To stop all deletes by your agents, turn it off there. Your agents cannot change this switch.
+
+### Project templates
+
+When your organization has project templates turned on, one more tool shows:
+
+| Tool | What it reads |
+|---|---|
+| `list_templates` | The project templates of your organization, or one template by its id. Each template gives its name, its description and how many statuses, task types, fields, tags and starter tasks it holds. Every member sees the same list. An agent that you pinned to some projects sees only a template whose source project it can see |
+
+The agent cannot save a template or make a project from one. Do that in Metorite, in the chat or in the app.
 
 ## Ask an agent in Metorite
 

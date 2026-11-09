@@ -873,6 +873,9 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "update_type", "vocabulary", "watch", "watchers",
     "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
     "reopen_reminder", "reschedule_reminder", "promote_reminder",
+    # WS-39 TPL-1a: the templates. Each act is the member's own, through the
+    # gateway, and says open_world=False.
+    "list_templates", "save_as_template", "create_project_from_template",
 })
 
 

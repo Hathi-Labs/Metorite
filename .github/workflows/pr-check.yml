@@ -72,7 +72,7 @@ jobs:
   # Fence: tests/unit/test_fence_lists.py.
   changes:
     name: "Changed areas"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     outputs:
       frontend: ${{ steps.diff.outputs.frontend }}
       operator: ${{ steps.diff.outputs.operator }}
@@ -130,13 +130,23 @@ jobs:
 
   lint:
     name: "Lint"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
     permissions:
       contents: read
       pull-requests: read
     steps:
       - uses: actions/checkout@v5
+
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -293,6 +303,9 @@ jobs:
   # reaches pytest as an empty list, because pytest then collects everything.
   test:
     name: "Unit tests (shard ${{ matrix.shard }})"
+    # CIV-23 (D201). The unit shards stay on ubuntu-24.04: on the box they ran 40+ min against 14 on
+    # hosted, with a quiet box. Fence: tests/unit/test_box_runner_routing.py.
+    # The other jobs but e2e and backup-restore may reach the box.
     runs-on: ubuntu-24.04
     needs: changes
     # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
@@ -322,8 +335,9 @@ jobs:
           POSTGRES_PASSWORD: cc
           POSTGRES_DB: cc_platform
         ports:
-          - 5433:5432
+          - 5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U cc"
           --health-interval 5s
           --health-timeout 5s
@@ -345,13 +359,18 @@ jobs:
           POSTGRES_PASSWORD: acb
           POSTGRES_DB: acb_tenant
         ports:
-          - 5434:5432
+          - 5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U acb"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
+      # CIV-23 (D201). The ports in these two DSNs are PLACEHOLDERS that match
+      # deploy.yml's `r8-suite` (fixed ports, the fence compares them). The
+      # first step overrides both DSNs through GITHUB_ENV with the host port
+      # that Docker picked, because the box runners share ONE Docker daemon.
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
       # A full run of this job covers the WHOLE tests/unit/ directory, and a
@@ -370,6 +389,24 @@ jobs:
       TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
     steps:
       - uses: actions/checkout@v5
+
+      - name: Point the tests at the service containers
+        env:
+          CC_PORT: ${{ job.services.platform-postgres.ports['5432'] }}
+          TENANT_PORT: ${{ job.services.tenant-postgres.ports['5432'] }}
+        run: |
+          echo "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform" >> "$GITHUB_ENV"
+          echo "TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant" >> "$GITHUB_ENV"
+
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -471,6 +508,7 @@ jobs:
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
             -o faulthandler_timeout=900 \
+            --basetemp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pytest" \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
           if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
             echo "this shard drew no test from the selection"
@@ -513,7 +551,7 @@ jobs:
   # Fence: tests/unit/test_ci_unit_guard.py.
   unit-tests:
     name: "Unit tests"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
     # it. A skipped required check counts as satisfied (#1077).
@@ -701,6 +739,9 @@ jobs:
   backup-restore:
     name: "Backup/restore rehearsal"
     runs-on: ubuntu-24.04
+    # CIV-23 (D201). Stays hosted. The verify container count and the EXIT trap
+    # of scripts/rehearse_verify_scratch.sh work on the WHOLE Docker daemon, so two
+    # runs on the box daemon would kill each other (CIV-6).
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
@@ -710,7 +751,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: rehearsal
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -719,10 +760,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       # The runner's client must not be OLDER than the server: pg_dump refuses
       # to dump a newer server, which would fail the job for a reason that has
       # nothing to do with our scripts.
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -733,7 +780,6 @@ jobs:
       - name: Rehearse
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_restore.sh
@@ -750,7 +796,6 @@ jobs:
       - name: Rehearse the scratch-database drop and sweep
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_verify_scratch.sh
@@ -766,7 +811,7 @@ jobs:
   # about 152 files nobody had checked together; now it is a build step.
   migrations:
     name: "Migration ladder replay"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # The ladder is infra/, and its appliers are under scripts/. The R1
     # number guard runs in the shards and in push-check on every PR anyway.
     needs: changes
@@ -776,15 +821,15 @@ jobs:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: ladder
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       PGHOST: localhost
-      PGPORT: "5432"
       PGUSER: postgres
       PGPASSWORD: ladder
       PG_MODE: local
@@ -794,7 +839,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -840,7 +891,7 @@ jobs:
         run: |
           set -euo pipefail
           createdb console
-          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:5432/console"
+          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:${PGPORT:-5432}/console"
           for i in 1 2 3; do
             echo "--- console ladder run $i ---"
             bash scripts/apply_customer_console_migrations.sh | tail -1
@@ -866,7 +917,7 @@ jobs:
   # build` — that stays a deploy-time step.
   frontend:
     name: "Frontend (typecheck + unit tests)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # ⚠️ NOT filtered by path. Its unit tests read files across the whole
     # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
@@ -967,7 +1018,7 @@ jobs:
   # authority check first), which is the only fence on that ordering.
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
     permissions:
@@ -1122,7 +1173,7 @@ jobs:
 
   caddy:
     name: "Caddy config (validate)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
@@ -1146,7 +1197,7 @@ jobs:
 
   secret-scan:
     name: "Secret scan"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # Report-only initially (ratchet, like mypy/ruff-full above): surfaces any
     # credential in a PR's NEW commits without blocking on an install/config
     # hiccup. Graduate to blocking once proven on a few PRs. Scans only the PR's
@@ -1159,6 +1210,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install gitleaks
+        if: runner.environment == 'github-hosted'
         # `go install github.com/gitleaks/gitleaks/v8` broke: that tag's go.mod
         # still declares the module path as github.com/zricethezav/gitleaks/v8,
         # so `go install` errors on the path mismatch and the scan never ran.
@@ -1169,6 +1221,10 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
+
+      # A missing tool must be loud. `continue-on-error` hides exit 127 otherwise.
+      - name: Check that gitleaks is on the PATH
+        run: command -v gitleaks || { echo "::error::gitleaks is not installed on this runner"; exit 1; }
 
       - name: Scan PR commits for secrets
         run: |

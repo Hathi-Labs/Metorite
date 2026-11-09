@@ -4493,6 +4493,15 @@ WAITING_REASONS: Mapping[str, str] = {
 REASON_HELD = "held_by_you"
 REASON_ASSIGNED = "assigned"
 MY_WORK_REASONS: tuple[str, ...] = (*WAITING_REASONS.values(), REASON_HELD, REASON_ASSIGNED)
+#: SW-68a. The route that ranks the assigned rows by the plan engine, and the
+#: key of the row that it adds: ``{epic_id, ready, slack_mins, blocked_by,
+#: blocked_by_hidden}``. Ids and counts only. The key is absent on a row that
+#: sits under no epic, and on every row while the route answers nothing.
+PLAN_ORDER_ROUTE = "/projects/plan/order"
+#: The seconds that the plan read may take (SW-68a). Over it, `my_work` keeps
+#: today's order.
+PLAN_ORDER_BUDGET_S = 2.0
+PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
 #: ``claim_task`` sends back as ``expected_version``.
@@ -4520,9 +4529,54 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "yours": {"type": "boolean"},
     "external_link": _SHAPED_OR_NULL,
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
+_MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
+    "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
+    "slack_mins": _NULLABLE_INTEGER,
+    "blocked_by": {"type": "array", "items": {"type": "string"}},
+    "blocked_by_hidden": {"type": "integer", "minimum": 0},
+}))
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+
+
+async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """SW-68a: *ids* in the order of the plan engine, and the plan of each
+    task that sits under an epic. The gateway ranks, so the chat ``my_work``
+    and this tool use one rule. A failed read (busy, or an old gateway) and
+    an answer of the wrong shape keep the order of *ids* and give no plan."""
+    if not ids:
+        return ids, {}
+    try:
+        # Its own short limit, so a hung read never turns `my_work` into
+        # "busy" (the pattern of `_after_write`). The plan is an aid.
+        async with asyncio.timeout(PLAN_ORDER_BUDGET_S):
+            found = await _get(ctx, PLAN_ORDER_ROUTE, TEXT_TASK_NOT_FOUND,
+                               query=[("task_ids", ",".join(ids))],
+                               timeout_s=PLAN_ORDER_BUDGET_S)
+    except (ToolError, GatewayUnauthorized, TimeoutError):
+        return ids, {}
+    order = found.get("order") if isinstance(found, dict) else None
+    plans = found.get("plan") if isinstance(found, dict) else None
+    if (not isinstance(order, list) or not isinstance(plans, dict)
+            or sorted(order, key=str) != sorted(ids, key=str)):
+        return ids, {}
+    shaped: dict[str, dict[str, Any]] = {}
+    for task_id, plan in plans.items():
+        if task_id not in ids or not isinstance(plan, dict):
+            continue
+        slack, hidden = plan.get("slack_mins"), plan.get("blocked_by_hidden")
+        blockers = [b for b in plan.get("blocked_by") or [] if _id(b) is not None]
+        epic = _id(plan.get("epic_id"))
+        if (epic is None or not isinstance(plan.get("ready"), bool)
+                or isinstance(hidden, bool) or not isinstance(hidden, int)):
+            continue
+        shaped[task_id] = {
+            "epic_id": epic, "ready": plan["ready"],
+            "slack_mins": slack if isinstance(slack, int) and not isinstance(slack, bool) else None,
+            "blocked_by": blockers, "blocked_by_hidden": max(hidden, 0),
+        }
+    return order, shaped
 
 
 async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
@@ -4731,10 +4785,22 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
-    for row in assigned:
-        task_id = _id(row.get("id"))
-        if (task_id is None or task_id in seen or _live_holder(row.get("held_by"))
-                or _blocked(row)):
+    # SW-68a: the plan ranks the WHOLE assigned list of this tool, before any
+    # row is hidden. Then this tool hides the rows that it never offers. So a
+    # blocked slice keeps its slot. The slices of one epic get the same
+    # relative order as in the chat. The plain rows keep the base order of each
+    # surface (the chat reads `assigned-to-me`, this tool reads `/projects/tasks`).
+    # The edge reads no flag: the gateway route does, and it reloads on SIGHUP.
+    # While the org is off, the route answers the input order and no plan.
+    # The run rows stay put.
+    every = list(dict.fromkeys(
+        i for i in (_id(r.get("id")) for r in assigned) if i is not None))
+    ranked, plans = await _plan_of(ctx, every)
+    hidden_rows = {
+        _id(r.get("id")) for r in assigned
+        if _live_holder(r.get("held_by")) or _blocked(r)}
+    for task_id in ranked:
+        if task_id in seen or task_id in hidden_rows:
             continue
         seen.add(task_id)
         listed.append((task_id, REASON_ASSIGNED, None, False))
@@ -4748,6 +4814,9 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     names = await _status_names(ctx, _distinct_projects(shown))
     out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t))
            for t, reason, run_id, mine in listed]
+    for item in out:
+        if item["reason"] == REASON_ASSIGNED and item["task_id"] in plans:
+            item[PLAN_KEY] = plans[item["task_id"]]
     # SW-31a: one read of the refs for all rows. No body: the agent reads the
     # blocks with get_task_context.
     refs = await _guidance_refs(
@@ -4774,7 +4843,11 @@ MY_WORK = Tool(
         " yours only when yours is true) or run_stopping"
         " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
-        " (assigned). Take the top row. For a waiting run, read it with"
+        " (assigned). When the organization has plan order on, a task under an"
+        " epic is ranked by the plan: a ready slice before a held one, then the least slack. Its plan field then says"
+        " ready, slack_mins and blocked_by (ids), and blocked_by_hidden counts"
+        " the blockers you cannot see. A task under no epic keeps its place."
+        " Take the top row. For a waiting run, read it with"
         " get_agent_run and its run_id. For a task, with projects:write, claim"
         " the task with claim_task, the task_id and the version.[[ROWS]]"
         "[[ANSWER]] The"
@@ -4789,7 +4862,7 @@ MY_WORK = Tool(
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_my_work,
     routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, TASK_ROUTE, STATUSES_ROUTE,
-            GUIDANCE_REFS_ROUTE),
+            GUIDANCE_REFS_ROUTE, PLAN_ORDER_ROUTE),
     edge_inputs=frozenset({"limit"}),
 )
 
@@ -7780,6 +7853,90 @@ MOVE_TASKS = Tool(
 )
 
 
+# ── The templates of Projects (WS-39 TPL-1a, project_management_app.md §14.8) ─
+#
+# The read only. The save and the apply stay off the edge in TPL-1a: an MCP
+# write of a template comes later, with a preview and a confirm step, as
+# `move_tasks` has (EA3-53). The chat has both writes, behind one card each.
+
+TEMPLATES_ROUTE = "/projects/templates"
+
+#: The numbers of a template, in the order of the gateway's ``counts``.
+TEMPLATE_COUNT_KEYS: tuple[str, ...] = ("statuses", "types", "fields", "tags", "tasks")
+TEMPLATE_KEYS: tuple[str, ...] = ("id", "kind", "name", "description", "counts", "created_at")
+
+TEXT_TEMPLATES_OFF = "Project templates are not on for this organization."
+
+_COUNTS_SCHEMA = _object({name: {"type": "integer"} for name in TEMPLATE_COUNT_KEYS})
+_TEMPLATE_SCHEMA = _object({
+    "id": {"type": "string"}, "kind": _NULLABLE_STRING, "name": _UNTRUSTED_SCHEMA,
+    "description": _UNTRUSTED_OR_NULL, "counts": _COUNTS_SCHEMA,
+    "created_at": _NULLABLE_STRING,
+})
+
+
+def _template(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One template, in the keys of :data:`TEMPLATE_KEYS` only. Its name and
+    its description are text that a member wrote, so each is untrusted."""
+    counts = _dict(row.get("counts"))
+    return {
+        "id": str(row.get("id")),
+        "kind": _str_or_none(row.get("kind")),
+        "name": untrusted(row.get("name") or ""),
+        "description": untrusted(row.get("description")),
+        "counts": {name: int(counts.get(name) or 0) if _number(counts.get(name)) else 0
+                   for name in TEMPLATE_COUNT_KEYS},
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+_LIST_TEMPLATES_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "template_id": {"type": "string", "pattern": _UUID_PATTERN,
+                        "description": "Read one template by its id. Leave it out to"
+                                       " list the templates by name."},
+    },
+    "additionalProperties": False,
+}
+_LIST_TEMPLATES_OUTPUT: dict[str, Any] = _object({
+    "templates": {"type": "array", "items": _TEMPLATE_SCHEMA},
+    "more": {"type": "boolean"},
+})
+
+
+async def _list_templates(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One GET of the list, or of one template by its id. A 404 is the flag off."""
+    query = [("template_id", str(args["template_id"]))] if "template_id" in args else []
+    body = await _get(ctx, TEMPLATES_ROUTE, TEXT_TEMPLATES_OFF, query=query)
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    rows = [r for r in _rows_of(body) if isinstance(r, dict)]
+    return {"templates": [_template(r) for r in rows], "more": body.get("more") is True}
+
+
+LIST_TEMPLATES = Tool(
+    name="list_templates",
+    title="List project templates",
+    description=(
+        "List the project templates of this member's organization, by name, or"
+        " read one by its template_id. Each template gives its id, its description"
+        " and its counts: the statuses, task types, fields, tags and starter tasks"
+        " that a new project gets from it. Every member of the organization sees the"
+        " same list. A person makes a project from a template, or saves a project as"
+        " one, in the Metorite chat or app." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_TEMPLATES_INPUT,
+    output_schema=_LIST_TEMPLATES_OUTPUT,
+    route=TEMPLATES_ROUTE,
+    params={"template_id": "template_id"},
+    not_found=TEXT_TEMPLATES_OFF,
+    run=_list_templates,
+    routes=(TEMPLATES_ROUTE,),
+)
+
+
 # ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
 
 _RUN_ID_INPUT: dict[str, Any] = {
@@ -9417,7 +9574,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``update_comment`` and ``delete_comment`` of MCP-G9, and ``claim_task`` of EA-6b, then
 #: ``set_assignees`` of MCP-G2, then the four tools of MCP-G1:
 #: ``create_project``, ``update_project``, ``preview_move_tasks`` and
-#: ``move_tasks``. The six agent-run
+#: ``move_tasks``. WS-39 TPL-1a adds the read ``list_templates`` after
+#: ``get_attachment``. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
 #: shows only while the runs flag is on too. ``record_outside_decision`` of
 #: MCP-G15 follows it, on the same flag. ``delete_task`` of EA-6h is last.
@@ -9430,6 +9588,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
+    LIST_TEMPLATES,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,

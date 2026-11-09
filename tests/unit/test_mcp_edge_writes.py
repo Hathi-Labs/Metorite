@@ -536,8 +536,9 @@ class TestTheWriteToolsAtTheEdge:
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
         # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21,
-        # `get_plan` of SP-12 and `list_project_updates` of WS-39 LP-1a.
-        assert len(off) == 15
+        # `get_plan` of SP-12, `list_project_updates` of WS-39 LP-1a and
+        # `list_templates` of WS-39 TPL-1a.
+        assert len(off) == 16
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),
