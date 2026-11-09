@@ -118,6 +118,9 @@ gateway_env() {
     "REDIS_URL=redis://127.0.0.1:$REDIS_PORT/0" \
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
     "EXECUTIVE_EMAILS=$ME"
+  grep -E "^LITELLM_(BASE_URL|API_KEY)=" "$HOME/.metorite/secrets/eval.env" | tr -d "\r"
+  grep -E "^LITELLM_API_KEY=" "$HOME/.metorite/secrets/eval.env" | tr -d "\r" | sed "s/^LITELLM_API_KEY=/LITELLM_MASTER_KEY=/"
+  printf "%s\n" ROUTER_SERVING_ENABLED=false "GATEWAY_URL=http://127.0.0.1:$GW_PORT" "TOOL_PACKS=email,email-setup,crm-records,projects,projects-plan,projects-structure,projects-bulk,projects-reminders" "TOOL_PACKS_ORGS=*" CALENDAR_REMINDERS=true
 }
 
 web_env() {

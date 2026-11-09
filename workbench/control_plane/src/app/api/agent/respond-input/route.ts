@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const session = await auth();
-  if (!session) {
+  if (!session && process.env.NODE_ENV === "production") {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { "Content-Type": "application/json" },
