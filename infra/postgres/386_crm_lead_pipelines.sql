@@ -1,5 +1,5 @@
 -- ============================================================================
--- 365_crm_lead_pipelines.sql — lead pipelines on the one pipeline table
+-- 386_crm_lead_pipelines.sql — lead pipelines on the one pipeline table
 -- (WS-CRM CRM-M4a, Metorite task mt-a53987cf).
 --
 -- What: the schema of a lead pipeline. No row of data changes.
@@ -65,9 +65,9 @@
 -- path writes `kind` on an UPDATE.
 --
 -- The number is taken at build time (R1). It was 360 until 2026-11-08 15:30
--- UTC, when a signature-images branch moved to 360 too. Branches and worktrees
--- then held 360 to 364, 366 and 367, so this file took 365. Check it again at
--- merge.
+-- UTC, when a signature-images branch moved to 360 too. It was then 365. At
+-- merge on 2026-11-09, main held 384, so premerge refused 365. A worktree held
+-- 385, and branches held 388 and 390, so this file took 386.
 -- Pinned by tests/unit/test_crm_lead_pipelines.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

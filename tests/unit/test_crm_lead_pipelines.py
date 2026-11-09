@@ -1,7 +1,7 @@
 """R5 + R6 + R7 + R8 fence — lead pipelines on the one pipeline seam (WS-CRM CRM-M4a).
 
-Spec: ``project-docs/specs/crm_conversational.md`` §8 CRM-M4. Migration 365
-(``infra/postgres/365_crm_lead_pipelines.sql``, found here by CONTENT, R1).
+Spec: ``project-docs/specs/crm_conversational.md`` §8 CRM-M4. Migration 386
+(``infra/postgres/386_crm_lead_pipelines.sql``, found here by CONTENT, R1).
 Route: ``POST /crm/pipelines`` with ``kind=lead``, its preview and
 ``GET /crm/pipelines?kind=lead`` in
 ``apps/services/gateway/gateway/routes/crm/pipelines.py``.

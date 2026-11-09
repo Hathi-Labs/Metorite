@@ -1629,7 +1629,7 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
     return default is not None and str(default).lower() == str(pipeline_id).strip().lower()
 
 
-#: CRM-M4a (migration 365): ``crm_pipelines`` holds the deal pipelines AND the
+#: CRM-M4a (migration 386): ``crm_pipelines`` holds the deal pipelines AND the
 #: lead pipelines, told apart by ``kind``. Each reader that means a deal
 #: pipeline names this term: the list, the board, a deal's own pipeline, the
 #: default, the reports, the switch and the sync. A lead pipeline never
