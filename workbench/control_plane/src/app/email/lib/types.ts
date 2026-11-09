@@ -727,9 +727,10 @@ export interface AssistantSettings {
    *  so the editor turns its upload button off (§23.3.9). */
   signature_image_upload?: boolean;
   auto_run: boolean;
-  /** Read-only: true when the mailbox has a stored settings row, so the member
-   *  chose (task 2267). False: no stored choice. The PUT ignores it. Absent on
-   *  an older server. */
+  /** Read-only: true when the member chose Auto-run (task 2267). The server
+   *  reads a stored choice stamp or a stored `auto_run: true` (task 2305). A
+   *  row that a save of another field wrote is no choice. False: no stored
+   *  choice. The PUT ignores it. Absent on an older server. */
   auto_run_chosen?: boolean;
   cold_email_blocker: ColdBlockerMode;
   // No model or tier field: our code picks the tier of each email AI task
@@ -779,6 +780,14 @@ export interface AssistantSettings {
    *  Returned by GET/PUT for display; never sent back to change it. */
   own_domain?: string;
 }
+
+/**
+ * The body of a settings save (task 2305). `auto_run_choice` is the
+ * write-only marker of the member's own Auto-run act. With it, the PUT stamps
+ * the choice. Only `autoRunChoiceBody` (`lib/assistantSettings.ts`) sets it,
+ * and no answer carries it.
+ */
+export type AssistantSettingsSave = AssistantSettings & { auto_run_choice?: true };
 
 export type DraftConfidence = "ALL_EMAILS" | "STANDARD" | "HIGH_CONFIDENCE";
 

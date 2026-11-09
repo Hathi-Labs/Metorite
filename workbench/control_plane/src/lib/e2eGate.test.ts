@@ -85,6 +85,26 @@ describe("the browser gate CI runs", () => {
     );
   });
 
+  it("runs on a PR that changes the control plane, and a CI-only change does not force it (CIV-24, D203)", () => {
+    // The `frontend` output comes from the control-plane path alone. The `all`
+    // switch (a change under .github/) must not set it.
+    const diff = LF.slice(LF.indexOf("- id: diff"), LF.indexOf("- id: diff") + 2500);
+    expect(diff).toMatch(/echo "frontend=\$\(echo "\$files" \| grep -qE '\^workbench\/control_plane\/'/);
+    expect(diff).not.toMatch(/frontend=\$\(hit /);
+  });
+
+  it("is covered in full every night on main (CIV-24, D203)", () => {
+    const nightly = readFileSync(HERE("../../../../.github/workflows/e2e-nightly.yml"), "utf8").replace(/\r\n/g, "\n");
+    expect(nightly).toMatch(/playwright test --project=ci --shard=\$\{\{ matrix\.shard \}\}\/3/);
+    expect(nightly).toMatch(/shard: \[1, 2, 3\]/);
+    // Same project as the PR gate, so the quarantine register is the same.
+    // No --grep and no --ignore flag: every spec of the project runs.
+    expect(nightly).not.toMatch(/--grep|--list|testIgnore/);
+    expect(nightly).not.toMatch(/continue-on-error:\s*true/);
+    expect(nightly).toMatch(/^ {2}schedule:$/m);
+    expect(SPECS.length).toBeGreaterThan(0);
+  });
+
   it("has no push trigger, so no push run can twin a required check", () => {
     // 🔴 A push run created a SKIPPED "Unit tests" on the PR's head SHA, and
     // GitHub counts a skipped check as passed (measured on #1077). The push
