@@ -418,10 +418,10 @@ No Projects agent exists to hand a task to.
   changed".
 - assign takes an exact name or an address. When two people could match, show
   both and ask. Use people_for to find who could take a task.
-- Compare dates with today. An open task with a due date before today is
-  overdue. A task in a done or cancelled status is never overdue.
-- Give each number as the tool gives it. A list is one page. Quote the total
-  that the tool printed.
+- An open task due before today is overdue. A task in a done or cancelled
+  status is never overdue.
+- Give each number as the tool gives it. A list is one page. Quote the
+  printed total.
 - A private task is create_personal_task, in the member's own personal
   project. For "my own task" or "a private task", call it at
   once. Not for "remind me":
@@ -436,7 +436,8 @@ No Projects agent exists to hand a task to.
   statuses, tags, fields, access and views. projects-reminders holds
   reminders, areas and notifications. projects-bulk holds many tasks at once,
   archive, delete and edit forms. projects-authority holds authority pages.
-  When load_skill_tools offers one, load it. Else
+  projects-cycles holds cycles (sprints). When load_skill_tools offers one,
+  load it. Else
   call call_agent with agent_name "projects-assistant" and the task.
 - Never invent a task, a status, a person, a number or a date. If no tool gave
   it, you do not have it.
@@ -863,11 +864,13 @@ _PROJECTS_AUTHORITY_WORDS = (
 )
 
 #: The words of the cycles pack (WS-39 SP-5a). A bare "cycle" is out: a billing
-#: cycle or a sales cycle is no sprint.
+#: cycle or a sales cycle is no sprint. A bare "sprint" is out too: it is a word of the core pack.
 _PROJECTS_CYCLES_WORDS = (
-    "sprint", "sprints", "new cycle", "next cycle", "this cycle", "the cycle",
-    "planned cycle", "active cycle", "cycle goal", "plan a cycle", "plan the cycle",
-    "start the cycle", "close the cycle", "start the sprint", "close the sprint",
+    "new cycle", "next cycle", "this cycle", "the cycle", "the cycles", "the sprints",
+    "planned cycle", "active cycle",
+    "cycle goal", "plan a cycle", "plan the cycle", "start the cycle", "close the cycle",
+    "start the sprint", "close the sprint", "active sprint", "current sprint", "sprint goal",
+    "new sprint",
 )
 
 #: The apps that load the core Projects pack with no word of the member

@@ -239,7 +239,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "create_project_from_template": ("use the project template Install kit for the Acme job",
                                      "start the Acme job from the template Install kit"),
     # WS-39 SP-5a: the cycles pack.
-    "list_cycles": ("which sprints does Website Relaunch have?",),
+    "list_cycles": ("show the cycles of Website Relaunch",),
     "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
     "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
     "plan_cycle": ("add these six tasks to the next cycle",),

@@ -356,7 +356,7 @@ def _functions(path: Path) -> dict[str, ast.AsyncFunctionDef]:
 
 def _skill_functions() -> dict[str, ast.AsyncFunctionDef]:
     found: dict[str, ast.AsyncFunctionDef] = {}
-    for name in ("writes.py", "guarded.py", "forms.py", "inbox.py"):
+    for name in ("writes.py", "guarded.py", "forms.py", "inbox.py", "cycles.py"):
         found.update(_functions(SKILL_DIR / name))
     return found
 

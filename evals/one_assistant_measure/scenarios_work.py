@@ -315,7 +315,7 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     )),
     # projects-cycles: a read of the cycles of a project (WS-39 SP-5a).
     _pm("pm_cycles", "Cycles pack: the cycles of a project", (
-        Turn("Which sprints does Website Relaunch have?",
+        Turn("Show the cycles of Website Relaunch",
              (Check("ran_tool", ("list_cycles",), "read_the_cycles"),
               Check("right_pack", "projects-cycles"), Check("no_unasked_write", 0)),
              Plan((("list_cycles", {"project_id": NODE_WEB}),),

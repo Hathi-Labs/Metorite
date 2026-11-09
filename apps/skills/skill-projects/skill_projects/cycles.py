@@ -240,7 +240,9 @@ async def create_cycle(project_id: str, name: str, starts_on: str, ends_on: str,
         context=_fields_block(card),
     ):
         return CANCELLED
-    row = (await post(f"/projects/nodes/{pid}/cycles", payload)) or {}
+    made = (await post(f"/projects/nodes/{pid}/cycles", payload)) or {}
+    # The route answers {"cycle": {...}}, as the other cycle routes do.
+    row = made.get("cycle") if isinstance(made.get("cycle"), dict) else made
     return (
         f"Planned the cycle {data(title)} on {data(node.get('name'))} ({first} to {last}).\n"
         f"  cycle_id: {row.get('id')}\n  project_id: {pid}"
@@ -344,6 +346,14 @@ async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str
 # ── Class C: start, and close with a carry-over ──────────────────────────────
 
 
+def _names(tasks: list[dict[str, Any]]) -> str:
+    """The first tasks of *tasks* as a card names them, and how many more there are."""
+    page = paged(tasks, 0, CLOSE_CARD_NAMES, default=CLOSE_CARD_NAMES)
+    shown = [_ref({"task_number": t.get("task_number"), "title": t.get("title")}) for t in page.items]
+    more = len(tasks) - len(shown)
+    return "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
+
+
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def start_cycle(cycle_id: str, goal: str = "") -> str:
     """Start a planned cycle (sprint). A start needs a goal: the stored one, or
@@ -386,10 +396,14 @@ async def start_cycle(cycle_id: str, goal: str = "") -> str:
         + (f" and {hidden} more that are hidden from you" if hidden else "")
         + ". The committed list does not change after the start"
     )
+    shown = _names(tasks)
+    rest: dict[str, Any] = {"cycle": name, "goal": aim}
+    if shown:
+        rest["tasks"] = shown
     if not await _confirm(
         title="Start this cycle?",
         detail=name,
-        context=_guard_card(impact, {"cycle": name, "goal": aim, "tasks": len(tasks)}),
+        context=_guard_card(impact, rest),
     ):
         return CANCELLED
     body: dict[str, Any] = {"goal": aim} if str(goal or "").strip() else {}
@@ -445,16 +459,13 @@ async def close_cycle(cycle_id: str, carry_over: str = "") -> str:
             return f"The cycle {data((nxt.get('cycle') or {}).get('name'))} is closed. Pick a planned or an active cycle."
         place = f"the cycle {data((nxt.get('cycle') or {}).get('name'))}"
         choice = {"choice": "next", "cycle_id": nid}
-    shown = [_ref({"task_number": t.get("task_number"), "title": t.get("title")})
-             for t in paged(unfinished, 0, CLOSE_CARD_NAMES, default=CLOSE_CARD_NAMES).items]
-    more = len(unfinished) - len(shown)
     impact = (
         f"The close ends {name}. {finished} finished or filed tasks stay in it. "
         f"{len(unfinished)} unfinished tasks move to {place}"
     )
     rest: dict[str, Any] = {"cycle": name, "unfinished": len(unfinished), "carry to": place}
-    if shown:
-        rest["tasks"] = "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
+    if unfinished:
+        rest["tasks"] = _names(unfinished)
     if not await _confirm(
         title="Close this cycle?",
         detail=f"{name}: {len(unfinished)} unfinished to {place}",

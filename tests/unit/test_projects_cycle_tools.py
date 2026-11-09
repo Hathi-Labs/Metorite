@@ -45,6 +45,7 @@ PID = str(uuid.uuid4())
 PLANNED = str(uuid.uuid4())
 ACTIVE = str(uuid.uuid4())
 NEXT = str(uuid.uuid4())
+NEW = str(uuid.uuid4())
 T1, T2, T3 = (str(uuid.uuid4()) for _ in range(3))
 NODE = {"id": PID, "name": "Launch", "parent_project_id": str(uuid.uuid4())}
 BASE = {"goal": "Ship it", "starts_on": "2026-11-16", "ends_on": "2026-11-27"}
@@ -72,7 +73,7 @@ def _gateway(monkeypatch, *, tasks=None, cycles=None, off=False, post_refusal=No
             return {"project_id": PID, "cycles": cycles if cycles is not None else [
                 {**ACTIVE_ROW, "tasks": 2, "hidden": 0}, {**NEXT_ROW, "tasks": 0, "hidden": 0}]}
         if path == f"/projects/nodes/{PID}/cycles" and method == "POST":
-            return {**PLANNED_ROW, "id": str(uuid.uuid4()), **call["json"]}
+            return {"cycle": {**PLANNED_ROW, "id": NEW, **call["json"]}}
         for cid, row in rows.items():
             if path == f"/projects/cycles/{cid}" and method == "GET":
                 return {"cycle": row, "tasks": members, "hidden": 0, "committed": None, "capacity": []}
@@ -160,7 +161,7 @@ async def test_a_new_cycle_shows_one_card_then_posts(monkeypatch) -> None:
     sent = [(c["method"], c["path"], c["json"]) for c in writes(calls)]
     assert sent == [("POST", f"/projects/nodes/{PID}/cycles", {
         "name": "Sprint 9", "starts_on": "2026-11-30", "ends_on": "2026-12-11", "goal": "Ship"})]
-    assert "Planned the cycle" in out
+    assert "Planned the cycle" in out and f"cycle_id: {NEW}" in out, out
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -270,6 +271,7 @@ async def test_a_start_shows_the_counts_on_one_card(monkeypatch) -> None:
     out = await skill_projects.start_cycle(PLANNED)
     assert len(asked) == 1
     assert "impact: The start commits 2 tasks" in asked[0]["context"]
+    assert "«Task 1»" in asked[0]["context"], "the start card names the tasks it commits"
     assert [(c["method"], c["path"], c["json"]) for c in writes(calls)] == [
         ("POST", f"/projects/cycles/{PLANNED}/start", {})]
     assert "Started the cycle" in out and "2 tasks committed" in out

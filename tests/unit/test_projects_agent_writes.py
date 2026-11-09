@@ -511,7 +511,7 @@ def _sp5a_answers(call: dict) -> Any:
                 "committed": {"tasks": 2, "hidden": 0, "estimate_mins": 120},
                 "capacity": [{"member_email": "pm@fracktal.in", "review_minutes": 240}]}
     if method == "POST" and path == f"/projects/nodes/{UUID}/cycles":
-        return {**CYCLE_PLANNED, "id": OTHER, **(call["json"] or {})}
+        return {"cycle": {**CYCLE_PLANNED, "id": OTHER, **(call["json"] or {})}}
     if method == "POST" and path == f"/projects/cycles/{PLANNED_CYCLE}/tasks":
         return {"cycle_id": PLANNED_CYCLE, "task_id": call["json"]["task_id"], "added": True}
     if method == "DELETE" and path.startswith(f"/projects/cycles/{PLANNED_CYCLE}/tasks/"):
