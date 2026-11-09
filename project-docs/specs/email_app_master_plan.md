@@ -22907,6 +22907,9 @@ change with no restart.
 - The resolver cannot see a change of a template FIELD between a draft and its send. The draft
   holds the old text, so the send adds the new one under it. SG-3 owns this case, because its
   writer changes the fields. `_in_body` also searches the quoted text. SG-5 owns that case.
+  The stored-form rule makes it wider. After a change from `custom` to `template`, a reply
+  whose quote holds the old custom signature gets no signature at the send. SG-5 must
+  search only the text above the quote.
 - Keep the flag off until SG-5 merges. Until then `short` and `none` change only the reply card
   and a forward with no signature in its body.
 - A layout image must have the address shape of a hosted image of SG-1

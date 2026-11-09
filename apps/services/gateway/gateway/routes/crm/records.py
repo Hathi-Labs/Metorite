@@ -71,6 +71,7 @@ from gateway.routes.crm.core import (
     pipeline_takes_unset,
     record_zoho_tombstone,
     related_filters,
+    require_deal_pipeline,
     require_row,
     resolve_owner,
     router,
@@ -286,7 +287,8 @@ async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> 
         return
     stated = values.get("pipeline_id")
     if stated:
-        await require_row(db, "crm_pipelines", str(stated), "Pipeline")
+        # CRM-M4a: a lead pipeline is never the pipeline of a deal.
+        await require_deal_pipeline(db, str(stated))
     elif "pipeline_id" not in values:
         found = await default_pipeline_id(db)
         if found:

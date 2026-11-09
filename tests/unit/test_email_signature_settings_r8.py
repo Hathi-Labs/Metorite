@@ -278,8 +278,10 @@ class TestTheResolverOnRealSql:
     async def test_rule_7_the_draft_readers_and_the_settings_answers(
         self, promoted, app_engine, monkeypatch, stored,  # noqa: F811
     ):
-        """No row and the flag off: each reader gets the stored bytes, and the
-        GET and the PUT answer carry them, as on main."""
+        """No row and the flag off: each reader gets the stored bytes, as on
+        main. The GET and the PUT answer carry them too. One change from main:
+        for a NULL signature the GET answers ``""``, where main answered
+        ``null``. Every reader maps both to ``""`` (§23.6)."""
         _flag(monkeypatch, "")
         owner, acc = _box(promoted)
         _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,

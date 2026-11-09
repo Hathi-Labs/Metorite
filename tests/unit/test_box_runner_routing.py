@@ -20,6 +20,11 @@ _RUNS_ON = (
     "github.event.pull_request.head.repo.full_name == github.repository)) "
     "&& 'metorite-box' || 'ubuntu-24.04' }}"
 )
+_NIGHTLY_RUNS_ON = (
+    "${{ (vars.USE_BOX_RUNNERS == '1' && github.repository == 'Hathi-Labs/Metorite' && "
+    "github.ref == 'refs/heads/main') && 'metorite-box' || 'ubuntu-24.04' }}"
+)
+_REVIEWED = (_RUNS_ON, _NIGHTLY_RUNS_ON)
 _BOX = "metorite-box"
 
 
@@ -39,13 +44,14 @@ def test_a_box_job_has_the_switch_and_the_same_repo_check() -> None:
     box = [(w, j, r) for w, j, r in _jobs() if _BOX in r]
     assert box, "no job routes to the box: remove this fence or restore CIV-23"
     for w, j, r in box:
-        assert r == _RUNS_ON, f"{w}:{j} runs-on is not the one reviewed expression"
+        want = _NIGHTLY_RUNS_ON if w == "e2e-nightly.yml" else _RUNS_ON
+        assert r == want, f"{w}:{j} runs-on is not the one reviewed expression"
 
 
 def test_a_runs_on_that_is_not_a_literal_cannot_hide_the_box() -> None:
     """`runs-on: ${{ matrix.runner }}` would reach the box with no label text."""
     for w, j, r in _jobs():
-        if r != _RUNS_ON:
+        if r not in _REVIEWED:
             assert "${{" not in r, f"{w}:{j} has a computed runs-on that is not reviewed"
 
 
@@ -61,7 +67,17 @@ def test_every_pr_check_job_but_e2e_may_reach_the_box_and_e2e_never_does() -> No
 
 
 def test_no_other_workflow_reaches_the_box() -> None:
-    assert {w for w, _j, r in _jobs() if _BOX in r} == {"pr-check.yml"}
+    assert {w for w, _j, r in _jobs() if _BOX in r} == {"pr-check.yml", "e2e-nightly.yml"}
+
+
+def test_the_nightly_reaches_the_box_only_from_main_and_never_from_a_pull_request() -> None:
+    """CIV-24. A dispatch from another branch must get a hosted runner."""
+    doc = yaml.safe_load((_ROOT / ".github" / "workflows" / "e2e-nightly.yml").read_text(encoding="utf-8"))
+    assert set(doc[True] if True in doc else doc["on"]) == {"schedule", "workflow_dispatch"}
+    runs_on = str(doc["jobs"]["e2e"]["runs-on"])
+    assert "vars.USE_BOX_RUNNERS == '1'" in runs_on
+    assert "github.ref == 'refs/heads/main'" in runs_on
+    assert runs_on.rstrip(" }").endswith("|| 'ubuntu-24.04'")
 
 
 def test_a_sudo_step_in_a_box_job_runs_only_on_github_hosted() -> None:

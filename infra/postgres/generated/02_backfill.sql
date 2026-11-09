@@ -711,5 +711,8 @@ UPDATE pm_templates SET organization_id = (SELECT id FROM organization WHERE slu
 UPDATE pm_template_applies SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE crm_lead_pipeline_stages SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE email_signature_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;

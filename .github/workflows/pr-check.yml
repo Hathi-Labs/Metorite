@@ -122,7 +122,9 @@ jobs:
           all=false; echo "$files" | grep -qE '^\.github/' && all=true
           hit() { $all && echo true || { echo "$files" | grep -qE "$1" && echo true || echo false; }; }
           {
-            echo "frontend=$(hit '^workbench/control_plane/')"
+            # CIV-24 (D203). `frontend` ignores the `all` switch: a change to CI alone
+            # does not run the browser suite. e2e-nightly.yml runs it on main.
+            echo "frontend=$(echo "$files" | grep -qE '^workbench/control_plane/' && echo true || echo false)"
             echo "operator=$(hit '^workbench/operator_console/')"
             echo "database=$(hit '^(infra/|scripts/|deploy/)')"
             echo "caddy=$(hit '^deploy/hostinger/caddy/')"
@@ -701,6 +703,7 @@ jobs:
               tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_crm_pipelines_native.py \
+              tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
@@ -710,6 +713,7 @@ jobs:
               tests/unit/test_mcp_edge_comment_edit_r8.py \
               tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_pm_project_updates_r8.py \
+              tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run

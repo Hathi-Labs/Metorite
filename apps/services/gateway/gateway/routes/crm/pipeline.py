@@ -67,6 +67,7 @@ from gateway.routes.crm.core import (
     project_joined,
     read_statuses,
     record_activity,
+    require_deal_pipeline,
     require_row,
     resolve_owner,
     router,
@@ -564,7 +565,8 @@ async def get_pipeline(
         wanted: str | None = None
         if pipeline_id:
             wanted = checked_uuid(pipeline_id, "pipeline_id")
-            await require_row(db, "crm_pipelines", wanted, "Pipeline")
+            # CRM-M4a: the board of a deal pipeline only.
+            await require_deal_pipeline(db, wanted)
             where += " AND " + pipeline_scope_sql(
                 await pipeline_takes_unset(db, wanted),
             )
@@ -900,7 +902,8 @@ async def _create_deal(
     wanted = body.deal or ConvertDeal()
     stated = (body.pipeline_id or "").strip()
     if stated:
-        await require_row(db, "crm_pipelines", checked_uuid(stated, "pipeline_id"), "Pipeline")
+        # CRM-M4a: the deal of a convert joins a deal pipeline only.
+        await require_deal_pipeline(db, checked_uuid(stated, "pipeline_id"))
     pipeline_id = stated or await default_pipeline_id(db)
     status = await load_pipeline_start_status(
         db, DEALS.status_table or "crm_deal_statuses", pipeline_id,
