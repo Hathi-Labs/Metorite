@@ -151,6 +151,11 @@ _PROBES: dict[tuple[str, str], dict] = {
     # route's own refusal before any vendor is called.
     ("POST", "/catalog/transcribe/try"): {"files": {"file": ("x.wav", b"x")}},
     ("POST", "/catalog/vision/try"): {"files": {"file": ("x.png", b"x")}},
+    # MS-1. Two reads, and a fix whose empty list an admin meets as a 422
+    # before any chain is read.
+    ("GET", "/catalog/providers"): {},
+    ("GET", "/catalog/health"): {},
+    ("POST", "/catalog/health/fix"): {"json": {"entries": []}},
 }
 
 _CELLS = [
