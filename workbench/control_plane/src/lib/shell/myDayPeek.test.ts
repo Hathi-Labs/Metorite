@@ -32,6 +32,7 @@ import { NO_ACCESS } from "@/lib/access";
 import {
   PEEK_DEPTH_KEY,
   PEEK_KINDS,
+  barTapCloses,
   closeMove,
   peekDepthOf,
   peekFromParam,
@@ -195,9 +196,13 @@ describe("the seams (source)", () => {
     expect(panel).toContain("useTaskById(id, { followMerge: true })");
   });
 
-  it("closes on a phone bar tap, with the hook above every return", () => {
+  it("closes on a phone bar tap, but Ask, with the hook above every return", () => {
+    expect(barTapCloses("menu")).toBe(true);
+    expect(barTapCloses(null)).toBe(true);
+    expect(barTapCloses("ask")).toBe(false);
     const body = panel.slice(panel.indexOf("export default function MyDayPeekPanel"));
-    const hookAt = body.indexOf("useCloseOnBarTap(onLeave, isMobile)");
+    const hookAt = body.indexOf("useBarTap((tab) => {");
+    expect(body).toContain("if (barTapCloses(tab)) onLeave();");
     expect(hookAt).toBeGreaterThan(0);
     expect(hookAt).toBeLessThan(body.indexOf("return"));
     // The phone frame is the task card's own (`lib/layers.ts`), never a new layer.
@@ -212,8 +217,23 @@ describe("the seams (source)", () => {
 
   it("gives nothing with the flag off: no handler, no reader, no panel", () => {
     expect(hook).toMatch(
-      /if \(!enabled\) \{\s*return \{ pageRef, onClickCapture: undefined, peek: null, reader: null, panel: null \};/,
+      /if \(!enabled\) \{\s*return \{ pageRef, onClickCapture: undefined, peek: null, reader: null, panel: null, docked: false \};/,
     );
+  });
+
+  it("keeps the count of its history entries when another part replaces the state", () => {
+    // `useTaskTab` mirrors `?ttab=` with `replaceState(null, …)`, which drops
+    // our key. The hook keeps the count in a ref and writes it back.
+    expect(hook).toContain("const depth = useRef(0);");
+    expect(hook).toMatch(/window\.history\.replaceState\(\{ \.\.\.state, \[PEEK_DEPTH_KEY\]: depth\.current \}, ""\)/);
+    expect(hook).toContain("const move = closeMove(depth.current);");
+  });
+
+  it("draws My Day in one column while the panel is docked, and as before when it is not", () => {
+    const page = code(read("./MyDayPage.tsx"));
+    expect(page).toContain('const wide = (classes: string) => (peek.docked ? "" : classes);');
+    expect(page.match(/\$\{wide\("xl:grid-cols-3"\)\}/g)).toHaveLength(2);
+    expect(page).toContain('wide("xl:col-span-2 xl:col-start-1 xl:row-start-1")');
   });
 
   it("sends the feed's phone menu through useMyDayGo, not router.push", () => {
@@ -264,5 +284,6 @@ describe("/ with the panel flag off and on", () => {
     expect(off).toContain('data-testid="my-day"');
     expect(on).toBe(off);
     expect(on).not.toContain("data-my-day-peek");
-  });
+    // Two cold imports of the whole page, as `myDayPage.test.ts` allows.
+  }, 30_000);
 });

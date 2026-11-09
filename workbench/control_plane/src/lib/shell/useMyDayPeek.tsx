@@ -41,6 +41,7 @@ import {
 } from "react";
 
 import { cardEscape } from "@/components/CardPanel";
+import { useViewMode } from "@/components/ViewModeProvider";
 
 import type { PeekOpener } from "./myDayGo";
 import {
@@ -60,11 +61,15 @@ import {
 /** The panel and the task body, loaded on the first open only. */
 const MyDayPeekPanel = dynamic(() => import("./MyDayPeekPanel"), { ssr: false });
 
-/** The `peek` value of the address bar, through Next's own search params. */
-function PeekParamReader({ onParam }: { onParam: (value: string | null) => void }) {
+/**
+ * The `peek` value of the address bar, through Next's own search params,
+ * and the whole query, so the page hears any change to the address.
+ */
+function PeekParamReader({ onParam }: { onParam: (value: string | null, search: string) => void }) {
   const params = useSearchParams();
   const value = params?.get(PEEK_PARAM) ?? null;
-  useEffect(() => onParam(value), [value, onParam]);
+  const search = params?.toString() ?? "";
+  useEffect(() => onParam(value, search), [value, search, onParam]);
   return null;
 }
 
@@ -83,6 +88,12 @@ export interface MyDayPeek {
   /** The reader of the address bar, and the panel when it is open. */
   reader: ReactNode;
   panel: ReactNode;
+  /**
+   * The panel stands as a column beside the page: open, on a desktop. The
+   * page's grid is set by the WINDOW width (`xl:`), so with the column
+   * open My Day draws its cards in one column (`wide` in `MyDayPage.tsx`).
+   */
+  docked: boolean;
 }
 
 export function useMyDayPeek(
@@ -90,8 +101,10 @@ export function useMyDayPeek(
   options: { me?: string; onSettled: () => void },
 ): MyDayPeek {
   const [param, setParam] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const target = enabled ? peekFromParam(param) : null;
   const targetKey = target ? peekParamOf(target) : null;
+  const { isMobile } = useViewMode();
   const pageRef = useRef<HTMLDivElement | null>(null);
   const changed = useRef(false);
   const settle = useRef(options.onSettled);
@@ -99,22 +112,57 @@ export function useMyDayPeek(
     settle.current = options.onSettled;
   });
 
+  /**
+   * How many entries the page pushed for the panel, up to the one shown.
+   *
+   * ⚠️ `history.state` alone cannot hold it. A part that mirrors its own key
+   * in the address calls `replaceState(null, …)`: the task card's tab
+   * (`useTaskTab`, `?ttab=`) does, and that drops our key. So this ref keeps
+   * the count, a `popstate` reads the count of the entry it lands on, and the
+   * effect below writes the count back after another part dropped it.
+   */
+  const depth = useRef(0);
+  useEffect(() => {
+    const onPop = () => {
+      depth.current = peekDepthOf(window.history.state);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  useEffect(() => {
+    if (!targetKey) {
+      depth.current = 0;
+      return;
+    }
+    const state = window.history.state as Record<string, unknown> | null;
+    // A reload keeps `history.state`, so a panel that opens from the address
+    // takes the count its entry carries.
+    if (depth.current === 0) depth.current = peekDepthOf(state);
+    // A state that carries `__NA` passes Next's patch as its own, so this
+    // moves no URL and starts no navigation.
+    if (depth.current > 0 && state?.__NA && peekDepthOf(state) !== depth.current) {
+      window.history.replaceState({ ...state, [PEEK_DEPTH_KEY]: depth.current }, "");
+    }
+  }, [targetKey, search]);
+
   const open = useCallback((next: PeekTarget) => {
     // The same task again is no new entry: Back must not need two presses.
     const shown = peekInAddress();
     if (shown && shown.kind === next.kind && shown.id === next.id) return;
-    const depth = peekDepthOf(window.history.state);
-    window.history.pushState({ [PEEK_DEPTH_KEY]: depth + 1 }, "", peekHref(window.location, next));
+    const below = shown ? depth.current : 0;
+    depth.current = below + 1;
+    window.history.pushState({ [PEEK_DEPTH_KEY]: depth.current }, "", peekHref(window.location, next));
     setParam(peekParamOf(next));
   }, []);
 
   const close = useCallback(() => {
-    const move = closeMove(peekDepthOf(window.history.state));
+    const move = closeMove(depth.current);
     if ("go" in move) {
       // Back over the page's own entries. Next's reader then sees no panel.
       window.history.go(move.go);
       return;
     }
+    depth.current = 0;
     window.history.replaceState({}, "", peekHref(window.location, null));
     setParam(null);
   }, []);
@@ -123,6 +171,7 @@ export function useMyDayPeek(
   // race that push, so the panel closes in place (`MyDayPeekPanel`'s
   // `onLeave`).
   const leave = useCallback(() => {
+    depth.current = 0;
     window.history.replaceState({}, "", peekHref(window.location, null));
     setParam(null);
   }, []);
@@ -180,12 +229,17 @@ export function useMyDayPeek(
     [open],
   );
 
+  const onParam = useCallback((value: string | null, query: string) => {
+    setParam(value);
+    setSearch(query);
+  }, []);
+
   const markChanged = useCallback(() => {
     changed.current = true;
   }, []);
 
   if (!enabled) {
-    return { pageRef, onClickCapture: undefined, peek: null, reader: null, panel: null };
+    return { pageRef, onClickCapture: undefined, peek: null, reader: null, panel: null, docked: false };
   }
   return {
     pageRef,
@@ -194,11 +248,12 @@ export function useMyDayPeek(
     // `useSearchParams` needs a Suspense boundary at build (`OrgLinkGate.tsx`).
     reader: (
       <Suspense fallback={null}>
-        <PeekParamReader onParam={setParam} />
+        <PeekParamReader onParam={onParam} />
       </Suspense>
     ),
     panel: target ? (
       <MyDayPeekPanel target={target} onClose={close} onLeave={leave} onOpen={open} onChanged={markChanged} me={options.me} />
     ) : null,
+    docked: !!target && !isMobile,
   };
 }

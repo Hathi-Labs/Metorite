@@ -210,6 +210,12 @@ export default function MyDay() {
       today.refresh();
     },
   });
+  // The grid below steps by the WINDOW width (`xl:`). With the panel docked
+  // beside it, the page column is 384 px narrower, and at 1280 three grid
+  // columns left a feed title two letters long (PK-1 visual review). So while
+  // the panel is docked, the cards stand in one column and Today goes last.
+  // Closed, every class is as before.
+  const wide = (classes: string) => (peek.docked ? "" : classes);
 
   return (
     <MyDayPeekContext.Provider value={peek.peek}>
@@ -221,7 +227,7 @@ export default function MyDay() {
         open (PK-1). With the flag off the row holds the column alone. */}
     <div className="flex min-h-0 flex-1">
     <div className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
-    <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-guide="home.my-day" data-testid="my-day">
+    <div className={`mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 ${wide("xl:max-w-6xl")}`} data-guide="home.my-day" data-testid="my-day">
       <div>
         {now ? (
           // The one page header (`pageHeading.test.ts`): the same title
@@ -282,9 +288,13 @@ export default function MyDay() {
         // start classes place each one at `xl`, whatever the order.
         <>
         {showTodayBand(bandOn, feedOn, cards.needs) ? <TodayBand feed={feed} visit={feedVisit} className="mt-6" /> : null}
-        <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
+        <div className={`mt-6 grid grid-cols-1 items-start gap-4 ${wide("xl:grid-cols-3")}`}>
           {cards.today ? (
-            <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
+            <TodayCard
+              today={today}
+              now={now}
+              className={peek.docked ? "order-last" : "xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1"}
+            />
           ) : null}
           {cards.needs ? (
             <FeedColumn
@@ -292,14 +302,14 @@ export default function MyDay() {
               now={now}
               ai={aiWaiting}
               onTakeNew={() => setFeedVisit((n) => n + 1)}
-              className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
+              className={wide("xl:col-span-2 xl:col-start-1 xl:row-start-1")} />
           ) : null}
         </div>
         </>
       ) : (
         // One column in the order of the question. From `xl`, Today is a
         // right rail that spans both rows, and the other two stack left.
-        <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
+        <div className={`mt-6 grid grid-cols-1 items-start gap-4 ${wide("xl:grid-cols-3")}`}>
           {/* Each card keeps its place in the grid at `xl`: Today is the right
               rail whatever its order. The order sets the one column, and
               the order of the two cards on the left. */}
@@ -310,17 +320,22 @@ export default function MyDay() {
                 needs={needs}
                 now={now}
                 first={shell.enabled ? shell.layout.needsFirst : undefined}
-                className="xl:col-span-2"
+                className={wide("xl:col-span-2")}
               />
             ) : key === "today" ? (
-              <TodayCard key={key} today={today} now={now} className="xl:col-start-3 xl:row-span-2 xl:row-start-1" />
+              <TodayCard
+                key={key}
+                today={today}
+                now={now}
+                className={peek.docked ? "order-last" : "xl:col-start-3 xl:row-span-2 xl:row-start-1"}
+              />
             ) : key === "next" ? (
               <NextActionsCard
                 key={key}
                 enabled
                 needs={needs.items ?? []}
                 needsSettled={!cards.needs || needs.items !== undefined || !needs.loading}
-                className="xl:col-span-2"
+                className={wide("xl:col-span-2")}
               />
             ) : null,
           )}

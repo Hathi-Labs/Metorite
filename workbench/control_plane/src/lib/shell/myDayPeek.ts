@@ -190,6 +190,18 @@ export function peekTakesClick(click: ClickFacts, link: LinkFacts): boolean {
   return true;
 }
 
+/** The phone bar tab that opens the assistant (`AppShell`'s `sendBarTap("ask")`). */
+export const ASK_TAB = "ask";
+
+/**
+ * Whether a tap on a phone bar tab closes the panel. Every tab does, but
+ * Ask: the assistant's sheet paints above a task card (D172.4,
+ * `lib/layers.ts`), so the member asks about the task and comes back to it.
+ */
+export function barTapCloses(tab: string | null): boolean {
+  return tab !== ASK_TAB;
+}
+
 /** How many entries the page pushed for the panel, read off `history.state`. */
 export function peekDepthOf(state: unknown): number {
   if (!state || typeof state !== "object") return 0;

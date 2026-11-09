@@ -17,7 +17,8 @@
  *   stays live, so the member can open the next row.
  * - **Phone:** the task card's own phone frame (`TASK_CARD_FRAME.phone`). It
  *   ends at the top edge of the phone bar, and a tap on a bar tab closes it
- *   (`useCloseOnBarTap`).
+ *   (`useBarTap`). Ask is the one tab that keeps it: the assistant's sheet
+ *   paints above a task card (D172.4), so the member can ask about the task.
  * - **"Open in Projects"** in the header, the act D101 point 3 keeps: the
  *   member can always open the app.
  *
@@ -35,9 +36,9 @@ import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { TASK_CARD_FRAME } from "@/lib/layers";
 import { PANEL_WIDTH_CLASS } from "@/lib/panelMode";
-import { useCloseOnBarTap } from "@/lib/phoneBarTap";
+import { useBarTap } from "@/lib/phoneBarTap";
 
-import { OPEN_IN_PROJECTS, PEEK_FRAME_ATTR, type PeekTarget } from "./myDayPeek";
+import { OPEN_IN_PROJECTS, PEEK_FRAME_ATTR, type PeekTarget, barTapCloses } from "./myDayPeek";
 
 export interface MyDayPeekPanelProps {
   target: PeekTarget;
@@ -67,7 +68,9 @@ export default function MyDayPeekPanel({ target, onClose, onLeave, onOpen, onCha
   const { isMobile } = useViewMode();
   // ⚠️ Above every return (rules of hooks). On a phone the frame covers the
   // page, so a tap on a bar tab closes it, as every overlay does.
-  useCloseOnBarTap(onLeave, isMobile);
+  useBarTap((tab) => {
+    if (barTapCloses(tab)) onLeave();
+  }, isMobile);
   return (
     <div {...{ [PEEK_FRAME_ATTR]: target.kind }} className={peekFrameClass(isMobile)}>
       {/* PK-1 knows one kind. PK-2 and PK-3 add a branch each. */}
