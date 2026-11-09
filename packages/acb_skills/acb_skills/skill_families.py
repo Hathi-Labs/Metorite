@@ -559,18 +559,20 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Projects structure",
         "summary": (
             "Shape a project: the statuses, types, fields and tags, who can "
-            "see a project, saved views and watchers."
+            "see a project, saved views, watchers and project templates."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools to shape a "
             "project, for the main assistant to load when a turn needs "
             "them. It holds the tools for statuses, task types, fields and "
-            "tags, who can see a project, saved views and watchers. "
+            "tags, who can see a project, saved views, watchers and the "
+            "project templates of the organization. "
             "A run loads a pack only where tool packs are on, so until "
             "then this switch has no effect."
         ),
         "tools": (
             "create_field",
+            "create_project_from_template",
             "create_status",
             "create_tag",
             "create_tags",
@@ -582,10 +584,12 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "delete_type",
             "delete_view",
             "grant_access",
+            "list_templates",
             "merge_tags",
             "project_access",
             "project_views",
             "revoke_access",
+            "save_as_template",
             "save_view",
             "set_status_set",
             "show_view",
@@ -725,24 +729,31 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
-    # measured turns.
+    # measured turns. WS-39 LP-1a adds the two tools of a project update here,
+    # for the same reason: the reports pack fills the room of a measured turn.
     "projects-authority": {
-        "label": "Projects authority page",
+        "label": "Projects authority page and updates",
         "summary": (
-            "The authority page of a project: read which pages are pinned "
-            "as the rules of the project, pin one, or remove a pin."
+            "The authority page and the updates of a project: read the pinned "
+            "pages, pin or unpin one, and read, post or delete an update."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
-            "authority page of a project, for the main assistant to load "
-            "when a turn names the authority page. The pack holds the tools "
-            "to read the pins of a project, to pin a page and to remove a "
-            "pin. Each change asks the member first. A run loads a pack "
-            "only where tool packs are on, so until then this switch has "
-            "no effect."
+            "authority page and the updates of a project, for the main "
+            "assistant to load when a turn names them. The pack holds the "
+            "tools to read the pins of a project, to pin a page and to "
+            "remove a pin. It also holds the tools to read the updates of a "
+            "project, to post one with the health that the member picks, and "
+            "to delete one. "
+            "Each change asks the member first. A run loads a pack only "
+            "where tool packs are on, so until then this switch has no "
+            "effect."
         ),
         "tools": (
+            "delete_project_update",
+            "list_project_updates",
             "pin_authority",
+            "post_project_update",
             "project_authorities",
             "unpin_authority",
         ),

@@ -37,6 +37,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import ProjectToolCards, { PROJECT_CARD_TOOLS, projectEvidence } from "@/components/projects/ProjectToolCards";
 import TaskToolCards, { TASK_CARD_TOOLS, taskEvidence } from "@/components/tasks/TaskToolCards";
 import { PROFILE_CARD_TOOLS } from "@/components/profile/ProfileToolCards";
+import { STUDIO_CARD_TOOLS } from "@/lib/studio/studioCardState";
 import { ToolStepRow, TrailStartsOpen } from "@/components/ThinkingContainer";
 import {
   CACHED_SEGMENTS_MAX_CHARS,
@@ -59,9 +60,15 @@ function ev(name: string, result: string, status: ToolEvent["status"] = "done"):
 
 describe("one map classifies every tool a card file draws", () => {
   it("every tool a card file draws is classified", () => {
-    const unnamed = [...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS, ...CRM_CARD_TOOLS, ...PROFILE_CARD_TOOLS]
-      .filter((n) => placementOf(n) === undefined);
+    const unnamed = [
+      ...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS, ...CRM_CARD_TOOLS, ...PROFILE_CARD_TOOLS,
+      ...STUDIO_CARD_TOOLS,
+    ].filter((n) => placementOf(n) === undefined);
     expect(unnamed).toEqual([]);
+  });
+
+  it("a Studio record write asks the member: its card waits (STU-B2c-2c)", () => {
+    for (const n of STUDIO_CARD_TOOLS) expect(placementOf(n), n).toBe("ask");
   });
 
   it("every skill-projects tool is classified", () => {

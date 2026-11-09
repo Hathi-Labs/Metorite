@@ -993,6 +993,15 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── Project updates with health (WS-39 LP-1a, project_management_app.md §14.2a)
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the two update routes answer 404, the two MCP tools
+    # say that the feature is off, and the web line does not draw. The one
+    # reader is `gateway.routes.projects.updates.updates_allowed`. A SIGHUP
+    # reload applies a change. Fence: tests/unit/test_pm_project_updates_r8.py.
+    projects_updates_orgs: str = ""
+
     # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1036,6 +1045,27 @@ class Settings(BaseSettings):
     # applies a change (`gateway/flag_reload.py`). Only the owner writes the
     # value. Fence: tests/unit/test_project_rules.py.
     project_rules_orgs: str = ""
+
+    # ── The cycles of Projects (WS-39 SP-1, D195) ───────────────────────────
+    #
+    # The flag `PROJECTS_SPRINTS` of the board, as a per-org list
+    # (project_management_app.md §13.2a). A comma list of organization ids,
+    # or `*` for each one. Empty means off, the default. Off, each cycle route
+    # of `/projects` answers 404 and no cycle row is written. The one reader
+    # is `gateway.routes.projects.cycles.sprints_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_sprint_store_r8.py.
+    projects_sprints_orgs: str = ""
+
+    # ── The templates of Projects (WS-39 TPL-1a, task 18) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/projects/templates` route answers 404 and no
+    # template row is written. The one reader is
+    # `gateway.routes.projects.templates.templates_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_pm_templates_r8.py.
+    projects_templates_orgs: str = ""
 
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
@@ -2272,6 +2302,20 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.is_first_party` is the one reader. Only the
     # gateway reads it. 🔴 A change on a box is gate `enforcement-flip`.
     agent_first_party_client_ids: str = ""
+    # MCP-G20 (external_agent_access.md §9.2, EA3-30): the write cap of one
+    # agent connection. A connection makes at most `agent_write_cap` writes
+    # in `agent_write_window_s` seconds, counted from its first write of the
+    # window. Each item of `update_tasks` is one write. The defaults are the
+    # EA-6a values, 120 in 600 s, so nothing changes until the owner sets
+    # them. A value below 1 reads as the default. The gateway counts
+    # (branch 0) and the edge names the numbers in each write tool, so both
+    # units need the same value. Neither key is a `*_ORGS` or `*_MODES` key,
+    # so a SIGHUP reload does not apply it: restart `acb-gateway` and
+    # `acb-agent-edge` (`docs/flag_reload.md`). `acb_auth.agent_oauth.write_cap`
+    # and `write_window_s` are the one readers. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    agent_write_cap: int = 120
+    agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

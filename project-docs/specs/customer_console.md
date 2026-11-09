@@ -8936,6 +8936,55 @@ clauses above. Each other clause holds as written.
    at 20 parts for each request, by the 600-second wall. The handler logs
    `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
 
+#### VOX-6 · AssemblyAI, beside Sarvam — BUILT 2026-11-08
+
+`native_assemblyai` is the second native verb for `transcribe`. It copies the
+`native_sarvam` pattern, and the clauses above apply to it with these changes.
+
+1. **The dispatch.** `native_assemblyai` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_assemblyai.py` holds the handler.
+   - The credential provider is `assemblyai`.
+2. **The prefix ties the verb.** An `assemblyai/` model on `transcribe` takes
+   `native_assemblyai` only, because litellm cannot call the Sync API.
+3. **The id carries the languages.** The id is `assemblyai/universal-3-5-pro`
+   or `assemblyai/universal-3-5-pro/hi,en`.
+   - The declare route refuses an unknown model, an unknown code, a repeated
+     code and an empty part with a 400.
+   - The vendor takes 32 codes, listed in `stt_assemblyai.LANGUAGES`.
+   - An id with no codes sends no `config` part.
+4. **One request for each clip.** The Sync API takes 20 minutes, and the door
+   caps a WAV clip at 600 seconds. So the handler never cuts a clip.
+5. **The bill.** The door bills the seconds it measures from the WAV bytes.
+   The vendor field `audio_duration_ms` never sets a quantity.
+6. **The 415.** The handler takes PCM WAV only, so the door answers 415 for
+   any other clip when no step is left. The vendor takes more formats, but the
+   bill needs the measure.
+7. **Failover.** The handler passes the vendor status to the chain.
+   - A 5xx, a 504, a 429 and a network error fall to the next step.
+   - A 400 and a 413 stop the walk.
+   - A 401 says the key is bad. The walk strikes the vendor and takes the
+     next step (`router.CREDENTIAL_STATUSES`), as it does for a Sarvam 403.
+   - A 200 with no `text` is terminal.
+8. **The key stays private.** The handler sends the key in `Authorization`.
+   It logs the status only, and never the key, the audio or an error body.
+
+**The vendor facts for VOX-6.** We read them on 2026-11-08 at
+`https://www.assemblyai.com/docs/api-reference/sync-api/transcribe.md`.
+The endpoint is `POST https://sync.assemblyai.com/v1/transcribe`. The
+headers are `Authorization` and `X-AAI-Model: universal-3-5-pro`. The
+multipart parts are `audio` and `config`. The 200 body holds `text`, `words`, `confidence`,
+`audio_duration_ms`, `session_id` and `request_time_ms`. The handler uses the
+global host only.
+
+| Rule | Fence |
+|---|---|
+| The request carries the URL, both headers, the `audio` part, and a `config` part only when the id names languages | `test_customer_console_stt_assemblyai.py::TestTheRequestShape` |
+| The declare route refuses an unknown language | `test_customer_console_stt_assemblyai.py::TestTheIdSplit` |
+| A WAV clip bills the measured minutes, and the door writes one `transcribe` row | `test_customer_console_stt_assemblyai.py::TestAssemblyAIOnTheTranscribeDoor` (R8) |
+| A 5xx or 504 fails over, and a 400 does not | `test_customer_console_stt_assemblyai.py::TestTheFailures` |
+| The key never reaches a log line or an error | `test_customer_console_stt_assemblyai.py::TestTheKeyStaysOutOfEveryRecord` |
+
 **The vendor facts**, read on 2026-11-08 at
 `https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
 `POST https://api.sarvam.ai/speech-to-text`, the header
@@ -10246,7 +10295,7 @@ facts the table did not state:
   Without it, `(model, decide, acompletion)` would answer 502 on the first
   customer call.
   📌 **VOX-2 changed the first half on 2026-11-08.** From that date, each
-  `native_*` verb serves the ONE task of its handler. `native_sarvam` serves `transcribe`, and a
+  `native_*` verb serves the ONE task of its handler. `native_sarvam` and `native_assemblyai` serve `transcribe`, and a
   System One verb still serves `decide` only. `decide` still takes a native
   verb only (`catalog.NATIVE_ONLY_TASKS`). §6A.10a holds the transcribe half.
 - **A 200 that the handler cannot read STOPS the chain.** The vendor has
@@ -10394,6 +10443,9 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
   `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
   `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
+  📌 VOX-6 (2026-11-08) added `native_assemblyai` to the three mirrors and
+  to the `assemblyai` card. `test_operator_console_vendor_slugs.py` lets that
+  slug stay native while litellm lists it, because litellm cannot call it.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.
@@ -11238,6 +11290,23 @@ door too, and its index degrades. The owner accepts this. A zero-credit org
 gets no embeddings, and the premium features of a zero-credit org are decided
 later. The door keeps the shared prelude. A page saved during the refusal
 keeps NULL vectors until its next edit.
+
+### 6A.17 Sampling values per step — BUILT (task 2450)
+
+The Router runs litellm with no `drop_params`. A step whose model refuses a sampling value would answer 400 for the whole request.
+
+- Measured on 2026-11-08, litellm 1.103.0: `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-opus-4-8` refuse `temperature=0.2`. The error reads "Only temperature=1 is supported."
+- `claude-sonnet-4-6` and `claude-haiku-4-5` take the value.
+- Metorite sends `temperature=0.2` by default, so Claude 5.5 failed on every chat tier and on `tier-vision`.
+- `reasoning.sampling_params_for(kwargs, model)` drops `temperature`, `top_p` and `top_k` for a refusing step. It keeps `temperature` when the value is 1.
+- For an Anthropic model, it asks litellm's own rule, `AnthropicModelInfo._supports_sampling_params`. For any provider, it also honours `supports_sampling_params: false` in `litellm.model_cost`.
+- A model that litellm cannot place keeps its values. The function never sets `drop_params`.
+- The last wall is a version rule. A Claude id at version 5 or later, or a Fable or Mythos id, takes no sampling value. It covers a Claude id that is newer than the litellm map, for example `claude-sonnet-5-6`. Claude 5 and later accept only `temperature=1`, so the drop is always safe for them.
+- The chat `_kwargs_for` calls it for each step, beside `reasoning_params_for` (task 1128). A chain with Claude 5.5 first and Gemini second gives each step its own body. The stream path and the image path use the same `_kwargs_for`.
+- A drop writes one INFO line, `router.sampling_params_dropped`, with the model and the dropped names. It never logs message content.
+- The line fires once per pair of model and dropped names in each process, so a busy chat writes no line per call. A set of at most 256 pairs holds the memory.
+- A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
+- Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 

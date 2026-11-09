@@ -2430,6 +2430,12 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 403:
             return []
         resp.raise_for_status()
+        # Google can also answer 200 with an EMPTY body for a mailbox with no
+        # filter (production, 2026-11-08, task 2268). That means no filter,
+        # the same as {}. A body that is not empty and not JSON still raises,
+        # so the rules screen logs a real fault.
+        if not resp.content.strip():
+            return []
         filters = resp.json().get("filter") or []
         if any(self._filter_user_label_ids(f) for f in filters):
             # Fills ``_label_names_by_id`` with the names of the user labels.

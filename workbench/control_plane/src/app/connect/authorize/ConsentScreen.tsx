@@ -66,7 +66,10 @@ import {
   initialChoice,
   isCheckView,
   isContinueView,
+  isReadOnly,
   OFFLINE_ACCESS,
+  offersReadOnly,
+  readOnlyChoice,
   grantedScopes,
   organizationName,
   refusalFor,
@@ -467,7 +470,22 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
 
       <fieldset className="border-b border-border p-6">
         <legend className="sr-only">What the agent may do</legend>
-        <h2 className="text-sm font-semibold text-foreground">What it may do</h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-foreground">What it may do</h2>
+          {/* SW-34b: one click keeps the read permissions and turns each change off. A second click gives back what the agent asked for. */}
+          {offersReadOnly(view) && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Eye"
+              selected={isReadOnly(chosen)}
+              onClick={() => setChosen(isReadOnly(chosen) ? initialChoice(view) : readOnlyChoice(view))}
+              data-testid="consent-read-only"
+            >
+              Read only
+            </Button>
+          )}
+        </div>
         <ul className="mt-3 space-y-3">
           {rows.map((row) => (
             <li key={row.scope} className="flex items-start justify-between gap-3">
