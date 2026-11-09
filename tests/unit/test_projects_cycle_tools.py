@@ -38,6 +38,7 @@ pytest.importorskip("skill_projects", reason="skill-projects not installed")
 import skill_projects
 from skill_projects import cycles as C
 from skill_projects import manifest
+from skill_projects.client import GatewayRefusal
 
 from tests.unit._projects_agent_fakes import FakeResponse, approve, deny, fake_gateway, writes
 
@@ -82,7 +83,7 @@ def _gateway(monkeypatch, *, tasks=None, cycles=None, off=False, post_refusal=No
             if tid == T3:
                 return FakeResponse({"detail": "Task not found"}, 404)
             return {"id": tid, "title": f"Task {tid[:4]}", "task_number": 9}
-        if method in ("POST", "DELETE") and post_refusal and path.endswith(f"/tasks") \
+        if method in ("POST", "DELETE") and post_refusal and path.endswith("/tasks") \
                 and call["json"] and call["json"].get("task_id") == post_refusal:
             return FakeResponse({"detail": {"error": "task_in_cycle",
                                             "message": 'This task is in the cycle "Sprint 5".'}}, 409)
@@ -148,7 +149,7 @@ async def test_a_missing_cycle_is_not_the_flag(monkeypatch) -> None:
         return FakeResponse({"detail": "Cycle not found"}, 404)
 
     fake_gateway(monkeypatch, answer)
-    with pytest.raises(Exception) as err:
+    with pytest.raises(GatewayRefusal) as err:
         await skill_projects.cycle_detail(PLANNED)
     assert "Cycle not found" in str(err.value) and C.CYCLES_OFF not in str(err.value)
 
@@ -233,9 +234,9 @@ async def test_bad_plan_input_is_a_sentence_before_any_call(monkeypatch) -> None
     assert "too many" in await skill_projects.plan_cycle(PLANNED, add_task_ids=many)
     assert "both lists" in await skill_projects.plan_cycle(PLANNED, add_task_ids=T1, remove_task_ids=T1)
     assert "Name the tasks" in await skill_projects.plan_cycle(PLANNED)
-    with pytest.raises(Exception):
+    with pytest.raises(GatewayRefusal):
         await skill_projects.plan_cycle("not-a-uuid", add_task_ids=T1)
-    with pytest.raises(Exception):
+    with pytest.raises(GatewayRefusal):
         await skill_projects.plan_cycle(PLANNED, add_task_ids="nope")
     assert asked == [] and calls == []
 

@@ -273,6 +273,22 @@ async def _refs(ids: list[str]) -> tuple[list[str], str]:
     return names, ""
 
 
+async def _apply(cid: str, ids: list[str], *, remove: bool) -> tuple[int, str]:
+    """Send one route call for each of *ids*, in order. Returns how many went
+    through, and the sentence of the first refusal (``""`` when none)."""
+    done = 0
+    for tid in ids:
+        try:
+            if remove:
+                await delete(f"/projects/cycles/{cid}/tasks/{tid}")
+            else:
+                await post(f"/projects/cycles/{cid}/tasks", {"task_id": tid})
+        except GatewayRefusal as exc:
+            return done, f"Stopped at task {tid}: {getattr(exc, 'detail', '') or exc}"
+        done += 1
+    return done, ""
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str = "") -> str:
     """Put tasks into a cycle (sprint) or take tasks out of it, at most 50 per
@@ -322,23 +338,10 @@ async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str
     # The removes first, then the adds in id order: one lock order for every
     # bulk add. Each task is its own transaction in the route, so a stop
     # leaves the earlier tasks in, and the answer says how many.
-    done_add = done_drop = 0
-    stopped = ""
-    for tid in sorted(drops):
-        try:
-            await delete(f"/projects/cycles/{cid}/tasks/{tid}")
-            done_drop += 1
-        except GatewayRefusal as exc:
-            stopped = f"Stopped at task {tid}: {getattr(exc, 'detail', '') or exc}"
-            break
+    done_drop, stopped = await _apply(cid, sorted(drops), remove=True)
+    done_add = 0
     if not stopped:
-        for tid in sorted(adds):
-            try:
-                await post(f"/projects/cycles/{cid}/tasks", {"task_id": tid})
-                done_add += 1
-            except GatewayRefusal as exc:
-                stopped = f"Stopped at task {tid}: {getattr(exc, 'detail', '') or exc}"
-                break
+        done_add, stopped = await _apply(cid, sorted(adds), remove=False)
     head = f"{data(cycle.get('name'))}: added {done_add} of {len(adds)}, removed {done_drop} of {len(drops)}."
     return f"{head} {stopped}\n  cycle_id: {cid}" if stopped else f"{head}\n  cycle_id: {cid}"
 
