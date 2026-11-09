@@ -8,6 +8,11 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-51 BUILT 2026-11-09** (task 2500, no flag). Every chat turn carries one
+language rule (§5.3). The assistant answers in the member's language and
+saves every record in English. The style line names the language. Fence:
+`tests/unit/test_assistant_profile_language.py`.
+
 **PZ-39 MERGED 2026-11-08** (task 1823, 5ba0e3147, no flag). One
 greeting table (`acb_common.today.GREETING_TABLE`) is mirrored in `myDay.ts`.
 Fence: `tests/unit/test_greeting_table.py`. The part-of-day line uses the zone
@@ -488,6 +493,34 @@ in the block, in `LENGTH_LINES` and `_style_line`. A style key or a
 formality adds `HOUSE_VOICE_LINE` before the footer of the block. That line
 tells the assistant to follow the member over the house voice. The orchestrator
 prompt gets no new text, so `test_orchestrator_voice.py` stays as it was.
+
+**The language rule (PZ-51, 2026-11-09).** The owner said: "set a preferred
+language of instruction so that the chat actually defaults to that language".
+The owner also said: "the core truth itself should be saved in English. Say,
+for example, somebody is chatting with it in Kannada or Hindi, the actual
+task, data, or email should be written in English, but only on the chat will
+it actually give it out as the regional language."
+
+So every chat turn carries `LANGUAGE_RULE_LINE` (`acb_common.assistant_profile`).
+`executor._context_preamble_parts` adds it. That builder serves both channels
+and every agent, so the rule holds with or without a language set, and with
+the profile block on or off. The assistant answers in the language of the
+setting, else the language of the message. It writes every saved record in
+English: task and project titles and descriptions, comments, notes, CRM
+records, calendar events, and email or message drafts. The one exception is
+the member's explicit request for another language in that record.
+
+The style line now names the language: `Language: Kannada (kn). Answer in it,
+unless they write in another language.` `LANGUAGE_NAMES` has the nine
+languages of `LANGUAGES` in `settings/assistant/lib/profile.ts`, and a tag
+outside the map stays bare. `block_language` still returns the tag.
+Fence: `tests/unit/test_assistant_profile_language.py` pins the rule text,
+the line, the round trip and the equality of the two maps.
+
+**Open owner question (PZ-51).** The Email app's automatic reply drafts
+(`gateway/routes/email/automation/drafting.py`) "match the language of the
+email". This slice leaves them as they are. Should an automatic draft be in
+English, as the rule says, or in the language of the email?
 
 ### 5.4 Names and aliases
 
@@ -3547,6 +3580,7 @@ does not exist yet is advisory until its slice builds (R7).
 | **PZ-47** · task 1472 | The picker in Settings, Assistant settings, with the presets, the free line, a preview and one switch. The chat path covers WhatsApp too | The preview shows a nudge in the chosen voice before the save. The switch turns the persona off. The save-time check of §17.5 refuses a character or a person | Planned `tests/unit/test_persona_picker.py` and a vitest file, advisory until PZ-47 builds | AGENT-SAFE · STANDARD |
 | **PZ-48** · task 1473 | The line on reminders and nudges, from the bank, with the 14-day rotation | Each message picks one line. No line repeats within 14 days. No model runs at send time. Over 3 lines a day, the member gets the plain message | Planned `tests/unit/test_persona_lines.py`, advisory until PZ-48 builds. It also fails when a send path imports a model client | AGENT-SAFE · STANDARD |
 | **PZ-49** · task 1474 | The guards of §17.7 and a flattery test | Each guard has a test. A failed check gives a plain message. The evaluation set of PZ-10 covers each guard | Planned `tests/unit/test_persona_guards.py`, advisory until PZ-49 builds | AGENT-SAFE · STANDARD |
+| **PZ-51** · task 2500 | The language rule on every turn, and the style line that names the language | A turn with no profile block carries the rule. The line reads `Language: Kannada (kn).` and `block_language` returns `kn` | `tests/unit/test_assistant_profile_language.py`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
 | **PZ-50** · task 1475 | None. D-PZ-43 decided it: one persona and one tick list | The rows of §17.4 hold | No build | Decided |
 
 Verification commands for the spec slice. Run from the repository root:
