@@ -21946,6 +21946,14 @@ already see. Three stores own such a file. Each reference names its store.
   reads the file again and checks the digest.
 - A held chat refuses a file of the `email-assistant` workspace, because the
   held run can write there.
+- **Each file resolves before its card (task 2491).** Status: built on
+  2026-11-09 on the branch `email-files-before-card-mt-5575616a`, not merged.
+  The plain card, the new-mail card and the held card each resolve every file
+  first, the way the send resolves it. `POST /email/metorite-files/resolve`
+  checks a workspace path with `send.refused_artifacts`, and reads no bytes.
+  A file that does not resolve shows no card. The tool answer names the file
+  and the next step. Before, the member approved a card, and then the send
+  refused the file (production, 2026-11-09).
 
 **The tick boxes of the reply card.** Each To and Cc on the reply card has a
 tick box. The gateway stays the only source of the lists.
@@ -21981,6 +21989,7 @@ tick box. The gateway stays the only source of the lists.
 | Hidden text in a draft | `tests/unit/test_held_hidden_text.py` |
 | A card never shows less than the send | `tests/unit/test_held_card_shows_less.py` |
 | A Metorite file, as the member (21.11) | `tests/unit/test_email_metorite_files.py` |
+| A file resolves before its card (21.11, task 2491) | `tests/unit/test_email_files_before_card.py` |
 | The tick boxes of the reply card (21.11) | `tests/unit/test_email_chat_reply.py`, `workbench/control_plane/src/lib/replyCard.test.ts`, `workbench/control_plane/e2e/email-chat-reply.spec.ts` |
 
 ### 21.12 Recipient intent (2026-10-24)
