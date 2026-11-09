@@ -522,8 +522,10 @@ async def test_get_pipelines_has_the_contract_shape(q) -> None:
     assert first["is_default"] is True and body[1]["is_default"] is False
     assert first["ext_url"] == "https://crm.zoho.in/crm/orgA/tab/Potentials"
     assert [s["name"] for s in first["stages"]] == ["Qualify", "Won It"]
+    # CRM-M3b adds `max_dwell_days`: the warning days of the stage in this pipeline.
     assert set(first["stages"][0]) == {
-        "id", "name", "position", "type", "probability", "forecast_category"}
+        "id", "name", "position", "type", "probability", "forecast_category",
+        "max_dwell_days"}
     assert first["stages"][1]["type"] == "won"
     assert first["stages"][1]["forecast_category"] == "Closed Won"
     assert first["stages"][0]["probability"] == 10
