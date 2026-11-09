@@ -47,6 +47,7 @@ from acb_auth import AgentScope, UserContext, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL as _ARCHIVED_PROJECT_REFUSAL
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 # The shared seam (BO-10 → MT-1c/H2). `_tenant_session` IS
@@ -569,9 +570,7 @@ def assert_not_archived(node: Any, *, then: str) -> None:
 #: ARC-2b (spec ``one_projects_app.md`` §9b.6 rule 2). The one sentence that a
 #: task write into an archived project answers, over HTTP 409. Chat and MCP
 #: reach the same routes and so show the same words.
-ARCHIVED_PROJECT_REFUSAL = (
-    "This project is archived. Restore it to change its work."
-)
+ARCHIVED_PROJECT_REFUSAL = _ARCHIVED_PROJECT_REFUSAL
 
 
 def assert_project_open_for_writes(project: Any) -> None:

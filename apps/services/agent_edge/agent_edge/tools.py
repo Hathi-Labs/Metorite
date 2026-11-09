@@ -93,6 +93,7 @@ from typing import Any
 from acb_auth import agent_oauth
 from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL
 
 from agent_edge import cursor as cursor_mod
 from agent_edge import idempotency, prompts
@@ -364,6 +365,10 @@ def task_held_text(detail: Mapping[str, Any]) -> str:
 TEXT_RELEASE_FORBIDDEN = "You can release only your own agent run."
 #: The code of the gateway's 409 for a held task (``agent_runs.TASK_HELD``).
 TASK_HELD_CODE = "task_held"
+
+#: ARC-2b. The 409 detail of a task write into an archived project. One source
+#: with the gateway and the chat: ``acb_common.tool_refusals``.
+TEXT_PROJECT_ARCHIVED = ARCHIVED_PROJECT_REFUSAL
 #: The fixed texts of ``delete_task`` (EA-6h, EA3-51).
 TEXT_DELETE_OFF = (
     "The member has not let agents delete tasks. The member can turn this on"
@@ -640,6 +645,9 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
     detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if answer.status == 409 and detail == TEXT_PROJECT_ARCHIVED:
+        # ARC-2b: before `details` and `texts`, so no per-tool 409 text hides it.
+        raise ToolError(TEXT_PROJECT_ARCHIVED)
     if details and isinstance(detail, str) and (answer.status, detail) in details:
         raise ToolError(details[(answer.status, detail)])
     if prefixes and isinstance(detail, str):
