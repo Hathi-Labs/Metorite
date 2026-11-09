@@ -6,7 +6,7 @@ MS-1 row of its slice table. Board: task 2481 (epic 2458).
 🔴 **The done-when, against a real database.** The production state of
 2026-11-08 gives three Speech to text entries:
 
-* ``assemblyai/nano`` gets the fix ``assemblyai/universal-3-5-pro/hi,en`` on
+* ``assemblyai/nano`` gets the fix ``assemblyai/universal-3-5-pro/en`` on
   ``native_assemblyai``;
 * ``assemblyai/best`` shows "Remove: same as the fix above";
 * ``sarvam.ai/saaras:v4`` shows the H6 reason and no model fix;
@@ -30,8 +30,12 @@ import json
 import logging
 import os
 import pathlib
+import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -67,7 +71,9 @@ SARVAM_ALIAS = "sarvam.ai/saaras:v4"
 NANO = "assemblyai/nano"
 BEST = "assemblyai/best"
 HAIKU = "anthropic/claude-haiku-4-5"
-U35 = "assemblyai/universal-3-5-pro/hi,en"
+AAI_EN = "assemblyai/universal-3-5-pro/en"
+#: Not a default: it writes Hindi in Devanagari script (production, 2026-11-09).
+AAI_HI_EN = "assemblyai/universal-3-5-pro/hi,en"
 
 #: The production keys of 2026-11-08: platform rows, exact provider strings.
 PROD_KEYS = ("anthropic", "assemblyai", "deepseek", "sarvam.ai", "aimlapi")
@@ -107,7 +113,7 @@ def _assert_production_entries(entries) -> None:
 
     nano = stt[NANO]
     assert nano["fix"]["action"] == "replace"
-    assert nano["fix"]["model"] == U35
+    assert nano["fix"]["model"] == AAI_EN
     assert nano["fix"]["invocation"] == "native_assemblyai"
     assert nano["help"] is None
 
@@ -205,7 +211,7 @@ class TestTheRules:
         )
         (entry,) = report.entries
         assert entry.fix is not None
-        assert entry.fix.model == U35
+        assert entry.fix.model == AAI_EN
         report = health.assess(
             {("tier-stt", "transcribe"): [BEST]},
             {(BEST, "transcribe"): "atranscription"},
@@ -269,16 +275,27 @@ class TestThePlan:
             self._report(), tier="tier-stt", task="transcribe",
             models=PROD_CHAINS[("tier-stt", "transcribe")], picked=[NANO, BEST],
         )
-        assert plan.chain == (U35, SARVAM_ALIAS)
-        assert plan.declares == ((U35, "native_assemblyai"),)
+        assert plan.chain == (AAI_EN, SARVAM_ALIAS)
+        assert plan.declares == ((AAI_EN, "native_assemblyai"),)
         assert plan.removed == (BEST,)
 
     def test_the_chain_fix_drops_every_dead_step(self):
-        plan = health.plan_fix(
-            self._report(), tier="tier-stt", task="transcribe",
-            models=PROD_CHAINS[("tier-stt", "transcribe")], picked=[NANO, BEST, None],
+        """A working Groq step sits past a dead window, so the H5 line has a fix."""
+        groq = "groq/whisper-large-v3-turbo"
+        models = [*PROD_CHAINS[("tier-stt", "transcribe")], groq]
+        caps = {**PROD_CAPS, (groq, "transcribe"): "atranscription"}
+        report = health.assess(
+            {("tier-stt", "transcribe"): models}, caps, frozenset({*PROD_KEYS, "groq"})
         )
-        assert plan.chain == (U35,)
+        (line,) = report.chains
+        assert line.window_blocked is True
+        assert line.fix_chain == (groq,)
+        plan = health.plan_fix(
+            report, tier="tier-stt", task="transcribe", models=models,
+            picked=[NANO, BEST, None],
+        )
+        assert plan.chain == (AAI_EN, groq)
+        assert set(plan.removed) == {BEST, SARVAM_ALIAS}
 
     def test_an_entry_with_no_fix_is_a_400(self):
         with pytest.raises(health.FixRefused) as refused:
@@ -296,13 +313,60 @@ class TestThePlan:
             )
         assert refused.value.status == 409
 
-    def test_the_chain_fix_with_nothing_working_is_a_400(self):
+    def test_the_chain_line_with_no_fix_is_a_400(self):
+        """`model: null` is legal only when the H5 line has a fix."""
         with pytest.raises(health.FixRefused) as refused:
             health.plan_fix(
                 self._report(), tier="tier-stt", task="transcribe",
                 models=PROD_CHAINS[("tier-stt", "transcribe")], picked=[None],
             )
         assert refused.value.status == 400
+        assert "has no fix" in refused.value.detail
+
+    def test_a_fix_after_which_nothing_works_is_a_400(self):
+        """Removing `best` alone leaves two dead steps. No chain is written."""
+        with pytest.raises(health.FixRefused) as refused:
+            health.plan_fix(
+                self._report(), tier="tier-stt", task="transcribe",
+                models=PROD_CHAINS[("tier-stt", "transcribe")], picked=[BEST],
+            )
+        assert refused.value.status == 400
+        assert refused.value.detail == health.NOTHING_WORKS
+
+
+class TestAFixIntoAModelTheChainHas:
+    """The nano fix is `/en`. When `/en` already serves, nano is removed."""
+
+    CAPS: ClassVar[dict] = {
+        (NANO, "transcribe"): "atranscription",
+        (AAI_EN, "transcribe"): "native_assemblyai",
+        ("groq/whisper-large-v3-turbo", "transcribe"): "atranscription",
+    }
+
+    def _plan(self, models):
+        chains = {("tier-stt", "transcribe"): models}
+        report = health.assess(chains, self.CAPS, frozenset({"assemblyai", "groq"}))
+        (entry,) = report.entries
+        return entry, health.plan_fix(
+            report, tier="tier-stt", task="transcribe", models=models, picked=[NANO]
+        )
+
+    @pytest.mark.parametrize("models", [[NANO, AAI_EN], [AAI_EN, NANO]])
+    def test_the_entry_is_a_remove_and_the_chain_holds_one_copy(self, models):
+        entry, plan = self._plan(models)
+        assert entry.fix.action == "remove"
+        assert entry.fix.label == "Remove: the chain already has this model"
+        assert entry.fix.same_as == AAI_EN
+        assert plan.chain == (AAI_EN,)
+        assert plan.declares == ()
+        assert plan.removed == (NANO,)
+
+    def test_no_other_model_moves_ahead(self):
+        groq = "groq/whisper-large-v3-turbo"
+        _, plan = self._plan([groq, NANO, AAI_EN])
+        assert plan.chain == (groq, AAI_EN)
+        _, plan = self._plan([NANO, AAI_EN, groq])
+        assert plan.chain == (AAI_EN, groq)
 
 
 def _calls_in(func: str) -> set[str]:
@@ -332,6 +396,56 @@ class TestTheSource:
         from customer_console import main
 
         assert frozenset({"40P01", "40001", "55P03"}) == main._FIX_RETRY_SQLSTATES
+
+    def test_no_tier_binding_insert_uses_now(self):
+        """A chain or a tombstone dated `now()` is dated BEFORE the wait on
+        the chain lock, so a write it waited for wins in silence. The verifier
+        caught this in `unbind_tier` (MS-1 fix round)."""
+        tree = ast.parse(MAIN_SRC.read_text(encoding="utf-8"))
+        inserts = [
+            n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and "INSERT INTO tier_binding" in n.value
+        ]
+        # The guard on the guard: the tombstone and the chain writer.
+        assert len(inserts) >= 2, inserts
+        assert not [s for s in inserts if "now()" in s], inserts
+        assert any("clock_timestamp()" in s for s in inserts), inserts
+
+    @pytest.mark.parametrize("func", ["unbind_tier", "_write_chain", "_fix_one_tier"])
+    def test_no_chain_writer_reads_or_dates_at_now(self, func):
+        tree = ast.parse(MAIN_SRC.read_text(encoding="utf-8"))
+        node = next(
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == func
+        )
+        sql = [
+            n.value for n in ast.walk(node)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and ("tier_binding" in n.value or "SELECT" in n.value)
+        ]
+        assert not [s for s in sql if "now()" in s], (func, sql)
+
+    def test_the_chain_reads_after_the_lock_use_the_statement_clock(self):
+        import inspect
+        import textwrap
+
+        from customer_console import main, store
+
+        def _sql(func) -> str:
+            """The string constants of *func*, its docstring left out."""
+            node = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
+            doc = node.body[0]
+            return "\n".join(
+                n.value for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and n is not getattr(doc, "value", None)
+            )
+
+        for func in (store.in_force_chain, store.in_force_chains, main.unbind_tier):
+            sql = _sql(func)
+            assert "statement_timestamp()" in sql, func.__name__
+            assert "now()" not in sql, func.__name__
+        assert "clock_timestamp()" in _sql(main.unbind_tier)
 
     def test_the_fix_is_gated_as_a_bind(self):
         from customer_console.operator_roles import MATRIX, VIEWER
@@ -418,14 +532,14 @@ class _Production:
                 "VALUES ('sarvam', :s, :l, CAST(:o AS uuid))"),
                 {"s": router_mod.encrypt_secret(BYOK_SECRET), "l": _LABEL, "o": self.org_id})
 
-            for pair in [*PROD_CAPS, (U35, "transcribe")]:
+            for pair in [*PROD_CAPS, (AAI_EN, "transcribe")]:
                 row = c.execute(text(
                     "SELECT invocation, streams FROM model_capability "
                     "WHERE model = :m AND task = :t"), {"m": pair[0], "t": pair[1]}).first()
                 self.caps[pair] = None if row is None else (row[0], bool(row[1]))
             c.execute(text(
                 "DELETE FROM model_capability WHERE model = :m AND task = 'transcribe'"),
-                {"m": U35})
+                {"m": AAI_EN})
             for (model, task), verb in PROD_CAPS.items():
                 c.execute(text(
                     "INSERT INTO model_capability (model, task, invocation, streams) "
@@ -557,16 +671,16 @@ class TestTheFix:
         assert r.status_code == 200, r.text
         (fixed,) = r.json()["fixed"]
         assert fixed["was"] == [SARVAM_ALIAS, NANO, BEST]
-        assert fixed["chain"] == [U35, SARVAM_ALIAS]
-        assert fixed["replaced"] == [{"from": NANO, "to": U35}]
+        assert fixed["chain"] == [AAI_EN, SARVAM_ALIAS]
+        assert fixed["replaced"] == [{"from": NANO, "to": AAI_EN}]
         assert fixed["removed"] == [BEST]
-        assert _chain(prod.db, "tier-stt", "transcribe") == [U35, SARVAM_ALIAS]
+        assert _chain(prod.db, "tier-stt", "transcribe") == [AAI_EN, SARVAM_ALIAS]
 
         with prod.db.begin() as c:
             # A new declare for the fixed id. The old declare stays as it was.
             assert c.execute(text(
                 "SELECT invocation FROM model_capability WHERE model = :m AND task = 'transcribe'"),
-                {"m": U35}).scalar_one() == "native_assemblyai"
+                {"m": AAI_EN}).scalar_one() == "native_assemblyai"
             assert c.execute(text(
                 "SELECT invocation FROM model_capability WHERE model = :m AND task = 'transcribe'"),
                 {"m": NANO}).scalar_one() == "atranscription"
@@ -583,11 +697,11 @@ class TestTheFix:
         assert sorted(a[0] for a in audits) == ["catalog.binding", "catalog.capability"]
         by_action = {a[0]: a[1] for a in audits}
         assert by_action["catalog.capability"] == {
-            "model": U35, "task": "transcribe", "invocation": "native_assemblyai"}
+            "model": AAI_EN, "task": "transcribe", "invocation": "native_assemblyai"}
         binding = by_action["catalog.binding"]
         assert binding["tier"] == "tier-stt"
         assert binding["task"] == "transcribe"
-        assert binding["chain"] == [U35, SARVAM_ALIAS]
+        assert binding["chain"] == [AAI_EN, SARVAM_ALIAS]
         assert binding["via"] == "health_fix"
         assert binding["was"] == [SARVAM_ALIAS, NANO, BEST]
         _assert_no_secret(r.text)
@@ -667,11 +781,183 @@ class TestTheFix:
             c.execute(text(
                 "INSERT INTO model_capability (model, task, invocation, streams) "
                 "VALUES (:m, 'transcribe', 'native_assemblyai', FALSE) "
-                "ON CONFLICT (model, task) DO NOTHING"), {"m": U35})
+                "ON CONFLICT (model, task) DO NOTHING"), {"m": AAI_EN})
         r = client.post("/catalog/bindings", headers=OP, json={
-            "tier": "tier-stt", "task": "transcribe", "models": [U35, NANO]})
+            "tier": "tier-stt", "task": "transcribe", "models": [AAI_EN, NANO]})
         assert r.status_code == 200, r.text
-        assert _chain(prod.db, "tier-stt", "transcribe") == [U35, NANO]
+        assert _chain(prod.db, "tier-stt", "transcribe") == [AAI_EN, NANO]
+
+    def test_a_fix_after_which_no_step_works_is_a_400(self, client, prod):
+        """Remove `best` alone, and both steps left are dead. Nothing is written."""
+        headers, _ = _operator(prod.db, "admin")
+        r = client.post("/catalog/health/fix", headers=headers, json={"entries": [
+            {"tier": "tier-stt", "task": "transcribe", "model": BEST}]})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == health.NOTHING_WORKS
+        assert _chain(prod.db, "tier-stt", "transcribe") == [SARVAM_ALIAS, NANO, BEST]
+
+    def test_model_is_a_required_field(self, client, prod):
+        headers, _ = _operator(prod.db, "admin")
+        r = client.post("/catalog/health/fix", headers=headers, json={"entries": [
+            {"tier": "tier-stt", "task": "transcribe"}]})
+        assert r.status_code == 422, r.text
+        assert _chain(prod.db, "tier-stt", "transcribe") == [SARVAM_ALIAS, NANO, BEST]
+
+    def test_the_chain_line_with_no_fix_is_a_400(self, client, prod):
+        """`model: null` names the H5 line. In production it has no fix."""
+        headers, _ = _operator(prod.db, "admin")
+        r = client.post("/catalog/health/fix", headers=headers, json={"entries": [
+            {"tier": "tier-stt", "task": "transcribe", "model": None}]})
+        assert r.status_code == 400, r.text
+        assert "has no fix" in r.json()["detail"]
+        assert _chain(prod.db, "tier-stt", "transcribe") == [SARVAM_ALIAS, NANO, BEST]
+
+    @pytest.mark.parametrize("sqlstate", ["40P01", "40001", "55P03"])
+    def test_a_retryable_sqlstate_is_a_409_and_rolls_back(
+        self, client, prod, monkeypatch, sqlstate
+    ):
+        """The chain write raises a deadlock, a serialization failure or a lock
+        wait. The answer is 409 "try again", and the declare rolls back too."""
+        from customer_console import main
+
+        monkeypatch.setattr(main, "_write_chain", _raising(sqlstate))
+        headers, _ = _operator(prod.db, "admin")
+        r = client.post("/catalog/health/fix", headers=headers, json={"entries": [
+            {"tier": "tier-stt", "task": "transcribe", "model": NANO}]})
+        assert r.status_code == 409, r.text
+        assert "Try again" in r.json()["detail"]
+        assert _chain(prod.db, "tier-stt", "transcribe") == [SARVAM_ALIAS, NANO, BEST]
+        with prod.db.begin() as c:
+            assert c.execute(text(
+                "SELECT count(*) FROM model_capability WHERE model = :m AND task = 'transcribe'"),
+                {"m": AAI_EN}).scalar_one() == 0
+
+    def test_another_sqlstate_is_not_a_409(self, client, prod, monkeypatch):
+        """Only the three retryable states become a 409. A real fault stays one."""
+        from customer_console import main
+        from sqlalchemy.exc import OperationalError
+
+        monkeypatch.setattr(main, "_write_chain", _raising("XX000"))
+        headers, _ = _operator(prod.db, "admin")
+        with pytest.raises(OperationalError):
+            client.post("/catalog/health/fix", headers=headers, json={"entries": [
+                {"tier": "tier-stt", "task": "transcribe", "model": NANO}]})
+        assert _chain(prod.db, "tier-stt", "transcribe") == [SARVAM_ALIAS, NANO, BEST]
+
+
+class _PgError(Exception):
+    """What psycopg raises: an error that carries its SQLSTATE."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"sqlstate {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+def _raising(sqlstate: str):
+    from sqlalchemy.exc import OperationalError
+
+    def _write_chain(*_args, **_kwargs):
+        raise OperationalError("INSERT INTO tier_binding", {}, _PgError(sqlstate))
+
+    return _write_chain
+
+
+def _advisory_waiters(db) -> int:
+    with db.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' "
+            "  AND datname = current_database() "
+            "  AND query LIKE '%pg_advisory_xact_lock%'")).scalar_one())
+
+
+def _wait_for_waiters(db, count: int) -> None:
+    deadline = time.monotonic() + 15
+    while _advisory_waiters(db) < count:
+        assert time.monotonic() < deadline, f"fewer than {count} writers queued on the lock"
+        time.sleep(0.05)
+
+
+@_DB
+class TestTheUnbindRace:
+    """The verifier's probe, as a fence (MS-1 fix round).
+
+    A bind queues on the chain lock first, and an unbind queues behind it.
+    Both commit. The unbind must end the chain the bind wrote: the tier is
+    off the air, and the unbind says ``already: False``. Before the fix the
+    unbind read the chain at ``now()`` and dated its tombstone at ``now()``,
+    both BEFORE the wait. So the bind's chain stayed in force.
+    """
+
+    @pytest.fixture
+    def ghost(self, db, monkeypatch):
+        monkeypatch.setenv("CUSTOMER_CONSOLE_DATABASE_URL", _URL)
+        tier = f"tier-ms1race-{uuid.uuid4().hex[:8]}"
+        first = f"deepseek/ms1race-a-{uuid.uuid4().hex[:6]}"
+        second = f"deepseek/ms1race-b-{uuid.uuid4().hex[:6]}"
+        with db.begin() as c:
+            for model in (first, second):
+                c.execute(text(
+                    "INSERT INTO model_capability (model, task, invocation, streams) "
+                    "VALUES (:m, 'chat', 'acompletion', FALSE)"), {"m": model})
+            c.execute(text(
+                "INSERT INTO tier_binding (tier, task, model, rank, effective_from) "
+                "VALUES (:t, 'chat', :m, 1, now() - interval '5 seconds')"),
+                {"t": tier, "m": first})
+        yield tier, first, second
+        with db.begin() as c:
+            c.execute(text("DELETE FROM tier_binding WHERE tier = :t"), {"t": tier})
+            c.execute(text(
+                "DELETE FROM model_capability WHERE model IN (:a, :b)"),
+                {"a": first, "b": second})
+
+    def test_an_unbind_that_waited_behind_a_bind_still_takes_the_tier_off(self, db, ghost):
+        from customer_console import main
+
+        tier, _, second = ghost
+        staff = SimpleNamespace(actor="ms1-race-fence")
+        results: dict[str, object] = {}
+        errors: list[BaseException] = []
+
+        def _run(name, call):
+            try:
+                results[name] = call()
+            except BaseException as exc:  # reported below, never swallowed
+                errors.append(exc)
+
+        bind = threading.Thread(target=_run, args=("bind", lambda: main.bind_tier(
+            main.BindingRequest(tier=tier, task="chat", models=[second]), staff)))
+        unbind = threading.Thread(target=_run, args=("unbind", lambda: main.unbind_tier(
+            main.UnbindRequest(tier=tier, task="chat"), staff)))
+
+        holder = db.connect()
+        tx = holder.begin()
+        try:
+            holder.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": main._chain_lock_key(tier, "chat")},
+            )
+            bind.start()
+            _wait_for_waiters(db, 1)
+            unbind.start()
+            _wait_for_waiters(db, 2)
+        finally:
+            # Release: the bind runs first, then the unbind.
+            tx.rollback()
+            holder.close()
+        bind.join(30)
+        unbind.join(30)
+        assert not errors, errors
+        assert not bind.is_alive() and not unbind.is_alive()
+
+        assert results["bind"]["chain"] == [second]
+        assert results["unbind"]["already"] is False
+        assert _chain(db, tier, "chat") == []
+        with db.begin() as c, pytest.raises(router_mod.TierUnknown):
+            router_mod.resolve_chain(c, tier, "chat")
+        # A second unbind finds the tier already off the air.
+        again = main.unbind_tier(main.UnbindRequest(tier=tier, task="chat"), staff)
+        assert again["already"] is True
 
 
 @_DB

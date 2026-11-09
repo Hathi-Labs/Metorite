@@ -72,7 +72,11 @@ _KEY_ONLY_TASKS = frozenset({"chat", "vision"})
 CONNECT_HELP = "Connect a provider to fix this"
 
 _SAME_ABOVE = "Remove: same as the fix above"
-_CHAIN_HOLDS = "Remove: the chain already holds this model"
+_CHAIN_HAS = "Remove: the chain already has this model"
+
+#: The 400 for a fix after which no step of the chain could serve. A dead
+#: first step stops the Router's walk, so the Console writes no such chain.
+NOTHING_WORKS = "No entry on this job can work. Connect a provider first."
 
 
 @dataclass(frozen=True)
@@ -314,7 +318,11 @@ def _entry(
 
 
 def _dedupe(entries: list[Entry], working: set[str]) -> list[Entry]:
-    """Two entries that map to one fix count as one fix (the second removes)."""
+    """Two entries that map to one fix count as one fix (the second removes).
+
+    A fix whose model already serves in the chain removes the entry. It never
+    writes a second copy of that model, and it never moves it.
+    """
     first: dict[str, str] = {}
     out: list[Entry] = []
     for e in entries:
@@ -322,7 +330,7 @@ def _dedupe(entries: list[Entry], working: set[str]) -> list[Entry]:
             out.append(e)
         elif e.fix.model in working:
             out.append(replace(e, fix=replace(
-                e.fix, action="remove", label=_CHAIN_HOLDS, same_as=e.fix.model)))
+                e.fix, action="remove", label=_CHAIN_HAS, same_as=e.fix.model)))
         elif e.fix.model in first:
             out.append(replace(e, fix=replace(
                 e.fix, action="remove", label=_SAME_ABOVE, same_as=first[e.fix.model])))
@@ -435,14 +443,23 @@ def plan_fix(
     """The chain one tier's fix writes. *picked* names entries by model.
 
     ``None`` in *picked* selects H5's chain fix: drop every step that still
-    cannot work after the step fixes. Raises :class:`FixRefused`.
+    cannot work after the step fixes. It is legal only when the chain line
+    has a fix. Raises :class:`FixRefused`.
+
+    🔴 **No fix writes a chain in which no step works.** A dead first step
+    stops the Router's walk, so such a chain serves nobody. The answer is a
+    400 (:data:`NOTHING_WORKS`), and nothing is written.
     """
     by_model = {e.model: e for e in report.entries if e.tier == tier and e.task == task}
     steps = [m for m in picked if m is not None]
     _check_picks(tier, models, steps, by_model)
     chain_fix = None in picked
-    if chain_fix and not any(c.tier == tier and c.task == task for c in report.chains):
-        raise FixRefused(409, f"{tier} has no entry now. Read the health list again")
+    if chain_fix:
+        line = next((c for c in report.chains if c.tier == tier and c.task == task), None)
+        if line is None:
+            raise FixRefused(409, f"{tier} has no entry now. Read the health list again")
+        if line.fix_chain is None:
+            raise FixRefused(400, f"the chain line of {tier} has no fix: {line.reason}")
 
     working = {m for m in models if m not in by_model}
     new: list[str] = []
@@ -462,15 +479,14 @@ def plan_fix(
             removed.append(model)
 
     chain = list(dict.fromkeys(new))
+    if not any(m in working for m in chain):
+        # 🔴 No step would serve, so the first step is dead whatever the
+        # order. Write nothing.
+        raise FixRefused(400, NOTHING_WORKS)
     if chain_fix:
-        dropped = [m for m in chain if m not in working]
+        removed.extend(m for m in chain if m not in working)
         chain = [m for m in chain if m in working]
-        removed.extend(dropped)
-        if not chain:
-            raise FixRefused(400, f"no step of {tier} would work. Fix a step first")
     chain = [m for m in chain if m in working] + [m for m in chain if m not in working]
-    if not chain:
-        raise FixRefused(400, f"the fix would leave {tier} with no step")
     if tuple(chain) == tuple(models) and not declares:
         raise FixRefused(400, f"the fix changes nothing on {tier}")
     return FixPlan(

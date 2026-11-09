@@ -3057,12 +3057,18 @@ def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
         if not _task_exists(conn, req.task):
             raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
 
-        # MS-1: the chain lock a bind and a health fix take, so a fix cannot
-        # write the old chain back over this tombstone.
+        # MS-1: the chain lock a bind and a health fix take. The read and the
+        # tombstone below both come AFTER it, so a chain that a bind or a fix
+        # wrote while this transaction waited is the one this unbind ends.
         _lock_chain(conn, tier=req.tier, task=req.task)
 
         # The in-force set, under the same lock `bind_tier` takes, so an
         # unbind and a concurrent bind cannot both believe they won.
+        #
+        # ⚠️ **`statement_timestamp()`, never `now()`** (MS-1 fix round).
+        # `now()` is the start of the transaction, which is BEFORE the wait on
+        # the lock. A bind that committed during the wait dates its chain
+        # with `clock_timestamp()`, so `now()` would not see it as in force.
         rows = conn.execute(
             text(
                 "SELECT model FROM tier_binding "
@@ -3070,7 +3076,7 @@ def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
                 "  AND effective_from = ("
                 "      SELECT max(x.effective_from) FROM tier_binding x "
                 "      WHERE x.tier = :tier AND x.task = :task "
-                "        AND x.effective_from <= now()) "
+                "        AND x.effective_from <= statement_timestamp()) "
                 "FOR UPDATE"
             ),
             {"tier": req.tier, "task": req.task},
@@ -3087,10 +3093,13 @@ def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
         if all(r[0] is None for r in rows):
             return {"tier": req.tier, "task": req.task, "already": True}
 
+        # The tombstone takes its date from the clock read after the lock, as
+        # `_write_chain` does. With `now()` it would be EARLIER than the chain
+        # a waiting bind wrote, and the bound model would stay on the air.
         conn.execute(
             text(
                 "INSERT INTO tier_binding (tier, task, model, rank, effective_from) "
-                "VALUES (:tier, :task, NULL, 1, now())"
+                "VALUES (:tier, :task, NULL, 1, clock_timestamp())"
             ),
             {"tier": req.tier, "task": req.task},
         )
@@ -3418,13 +3427,18 @@ def read_catalog_health(staff: Operator) -> dict[str, Any]:
 
 
 class HealthFixEntry(BaseModel):
-    """One entry to repair. ``model`` null selects H5's chain fix."""
+    """One entry to repair.
+
+    ⚠️ ``model`` is REQUIRED, with no default. ``null`` names the chain line
+    (H5), and it is legal only when that line has a fix. A body that forgets
+    the field is a 422, so it can never select the chain fix by accident.
+    """
 
     model_config = {"extra": "forbid"}
 
     tier: str = Field(min_length=1, max_length=64)
     task: str = Field(min_length=1, max_length=32)
-    model: str | None = Field(default=None, min_length=1, max_length=200)
+    model: str | None = Field(min_length=1, max_length=200)
 
 
 class HealthFixRequest(BaseModel):

@@ -79,12 +79,25 @@ def test_each_job_has_at_most_one_default_per_provider():
 
 def test_the_defaults_the_owner_approved():
     assert registry.default_model("sarvam", "transcribe").id == "sarvam/saaras:v4/translit"
-    assert (
-        registry.default_model("assemblyai", "transcribe").id
-        == "assemblyai/universal-3-5-pro/hi,en"
-    )
     for job in ("chat", "vision"):
         assert registry.default_model("anthropic", job).id == "anthropic/claude-haiku-5-5"
+
+
+def test_the_assemblyai_default_is_english_only():
+    """Owner call 1 named `hi,en`. Production evidence changed it (2026-11-09).
+
+    An 8 s English clip came back in Devanagari script with `hi,en`, and in
+    clean English with `/en`. So `/en` is the default, and `hi,en` stays as a
+    model whose label says what it writes.
+    """
+    default = registry.default_model("assemblyai", "transcribe")
+    assert default.id == "assemblyai/universal-3-5-pro/en"
+    assert default.languages == ("en",)
+    assert default.recommended_for == ("transcribe",)
+    both = registry.registry_model("assemblyai/universal-3-5-pro/hi,en", "transcribe")
+    assert both is not None
+    assert both.recommended_for == ()
+    assert "Devanagari" in both.label
 
 
 def test_a_sarvam_id_with_no_mode_extends_to_the_default_mode():
@@ -180,6 +193,37 @@ def test_no_alias_collides():
         assert alias == "".join(alias.split()).lower(), alias
         assert target in ids
         assert registry.normalise(alias) == target
+
+
+ROUTER_SRC = ROOT / "apps/services/customer_console/customer_console/router.py"
+
+
+def test_the_router_never_applies_an_alias():
+    """R7 for the alias rule (§6A.18). The Router finds a key by the EXACT
+    prefix of the model id. An alias in the Router would let the key of one
+    provider string serve a model of another, so `router.py` imports no part
+    of the registry and calls no `normalise`."""
+    import ast
+
+    src = ROUTER_SRC.read_text(encoding="utf-8")
+    assert "provider_registry" not in src
+    tree = ast.parse(src)
+    imported: list[str] = []
+    called: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imported += [node.module or "", *(a.name for a in node.names)]
+        elif isinstance(node, ast.Import):
+            imported += [a.name for a in node.names]
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            called.append(name)
+    assert not [m for m in imported if "provider_registry" in m], imported
+    assert "normalise" not in called
+    # The guard on the guard: the walk does see the Router's own calls.
+    assert "provider_credential" in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    assert "text" in called
 
 
 def test_no_alias_is_a_provider_the_router_can_call():

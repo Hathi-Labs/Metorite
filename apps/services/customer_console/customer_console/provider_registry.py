@@ -200,10 +200,21 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         models=(
             # The async v2 models (`nano`, `best`) are not offered: the door
             # cannot call them.
+            #
+            # 🔴 **`/en` is the default, not `hi,en`** (production, 2026-11-09,
+            # about 07:02 UTC). `/catalog/transcribe/try` sent an 8 s ENGLISH
+            # clip. `hi,en` answered in Devanagari script. `/en` and the id
+            # with no languages answered in clean English, in about 1.2 s.
+            # Production `tier-stt` is `[assemblyai/universal-3-5-pro/en]`.
             RegistryModel(
-                "assemblyai/universal-3-5-pro/hi,en", "Universal 3.5 Pro, Hindi and English",
-                "transcribe", "native_assemblyai", languages=("hi", "en"),
+                "assemblyai/universal-3-5-pro/en", "Universal 3.5 Pro, English",
+                "transcribe", "native_assemblyai", languages=("en",),
                 recommended_for=("transcribe",),
+            ),
+            RegistryModel(
+                "assemblyai/universal-3-5-pro/hi,en",
+                "Universal 3.5 Pro, Hindi and English (writes Hindi in Devanagari script)",
+                "transcribe", "native_assemblyai", languages=("hi", "en"),
             ),
         ),
     ),
