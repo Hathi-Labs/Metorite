@@ -503,7 +503,7 @@ def test_native_agent_gets_the_server_tools_end_to_end(monkeypatch, caplog):
             tool_turn("probe-srv_echo", '{"text": "ping"}'), text_turn("done"),
         ])
         with structlog.testing.capture_logs() as logs:
-            events, built = drive_native(
+            events, _built = drive_native(
                 _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
                 thread_id="thread-ws8c-e2e",
                 extra_payload={"organization_id": ORG_B},

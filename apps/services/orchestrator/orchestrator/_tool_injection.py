@@ -2994,13 +2994,12 @@ def _apply_steer_turns(agents: list[Any]) -> None:
     """
     try:
         from agent_framework import Agent
-        from orchestrator.steer import SteerTurnsProvider
+
+        from orchestrator.steer import SteerTurnsProvider, _run_thread_id
     except ImportError as exc:  # pragma: no cover — both ship with the platform
         _log.warning("executor.steer_turns_unavailable", error=str(exc)[:200])
         return
     from orchestrator._native_run_context import agent_with_providers
-
-    from orchestrator.steer import _run_thread_id
 
     if not _run_thread_id():
         # No relay thread: no steer applier, so no steer can come. The agent
