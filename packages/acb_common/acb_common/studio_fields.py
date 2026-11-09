@@ -488,8 +488,7 @@ def parse_field_spec(spec: Mapping[str, Any], *,
         to=spec.get("to"), hot=spec.get("hot") is True,
         min=spec.get("min"), max=spec.get("max"),
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
-        format=spec.get("format"))
-        to=spec.get("to"), hot=spec.get("hot") is True, lines=spec.get("lines"))
+        format=spec.get("format"), lines=spec.get("lines"))
 
 
 def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> FieldSpec:
@@ -511,7 +510,7 @@ def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> Fie
         min=spec["min"] if _int(spec.get("min")) else None,
         max=spec["max"] if _int(spec.get("max")) else None,
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
-        format=spec["format"] if isinstance(spec.get("format"), str) else None)
+        format=spec["format"] if isinstance(spec.get("format"), str) else None,
         lines=spec.get("lines") if isinstance(spec.get("lines"), str) else None)
 
 
