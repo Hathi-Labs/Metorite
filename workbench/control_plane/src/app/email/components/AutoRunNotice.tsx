@@ -21,12 +21,11 @@ import { getAssistantSettings, listRules, saveAssistantSettings } from "../lib/a
 import {
   AUTO_RUN_NOTICE_COPY as COPY,
   autoRunNoticeText,
-  loadAutoRunNotice,
   rememberAutoRunNotNow,
   turnOnAutoRun,
+  watchAutoRunNotice,
   type AutoRunNoticeApi,
 } from "../lib/autoRunNotice";
-import { onRulesChanged } from "../lib/rulesChanged";
 import type { EmailAccount } from "../lib/types";
 
 const NOTICE_API: AutoRunNoticeApi = { listRules, getAssistantSettings, saveAssistantSettings };
@@ -82,18 +81,12 @@ export function AutoRunNotice({ account }: { account: Pick<EmailAccount, "id" | 
   const accountId = account.id;
   const provider = account.provider;
 
-  useEffect(() => {
-    let live = true;
-    const read = () =>
-      void loadAutoRunNotice(NOTICE_API, { id: accountId, provider }).then((n) => live && setCount(n));
-    read();
-    // A rule write elsewhere in the app changes the count. Read it again.
-    const stop = onRulesChanged(read);
-    return () => {
-      live = false;
-      stop();
-    };
-  }, [accountId, provider]);
+  // A rule write elsewhere in the app changes the count, so the watch reads it
+  // again. Its return value stops it on unmount and on a change of mailbox.
+  useEffect(
+    () => watchAutoRunNotice(NOTICE_API, { id: accountId, provider }, setCount),
+    [accountId, provider],
+  );
 
   if (count === null) return null;
 

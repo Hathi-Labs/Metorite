@@ -17,11 +17,16 @@ import {
   readAutoRunNotNow,
   rememberAutoRunNotNow,
   turnOnAutoRun,
+  watchAutoRunNotice,
   type AutoRunNoticeApi,
 } from "./autoRunNotice";
+import { announceRulesChanged } from "./rulesChanged";
 import type { AssistantSettings, AutomationRule } from "./types";
 
 const GMAIL = { id: "acc-1", provider: "gmail" as const };
+
+/** Let the pending reads of the watch finish. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fake(settings: Partial<AssistantSettings>, rules: Array<Partial<AutomationRule>>) {
   const calls: Array<[string, unknown]> = [];
@@ -227,9 +232,60 @@ describe("the count follows a rule change", () => {
     expect(reads).toBe(2);
   });
 
-  it("the notice listens for the signal, and every rule writer announces it", () => {
+  it("the watch reads again on each rule write, hides at 0, and stops when the page stops it", async () => {
+    const rules: Array<Partial<AutomationRule>> = [{ enabled: true }, { enabled: true }];
+    const { api, calls } = fake(NO_CHOICE, rules);
+    const target = new EventTarget();
+    const seen: Array<number | null> = [];
+    const stop = watchAutoRunNotice(api, GMAIL, (n) => seen.push(n), target, () => []);
+    await flush();
+    expect(seen).toEqual([2]);
+    rules[1].enabled = false;
+    announceRulesChanged(target);
+    await flush();
+    rules[0].enabled = false;
+    announceRulesChanged(target);
+    await flush();
+    expect(seen).toEqual([2, 1, null]);
+    stop();
+    const before = calls.length;
+    rules[0].enabled = true;
+    announceRulesChanged(target);
+    await flush();
+    expect(calls.length).toBe(before);
+    expect(seen).toEqual([2, 1, null]);
+  });
+
+  it("only the newest read sets the count, and no read sets it after the stop", async () => {
+    const answers: Array<(rules: Array<Partial<AutomationRule>>) => void> = [];
+    const api: AutoRunNoticeApi = {
+      getAssistantSettings: async (id) => ({ account_id: id, ...NO_CHOICE }) as AssistantSettings,
+      listRules: () => new Promise((resolve) => answers.push((r) => resolve(r as AutomationRule[]))),
+      saveAssistantSettings: async (s) => s,
+    };
+    const target = new EventTarget();
+    const seen: Array<number | null> = [];
+    const stop = watchAutoRunNotice(api, GMAIL, (n) => seen.push(n), target, () => []);
+    await flush();
+    announceRulesChanged(target);
+    await flush();
+    expect(answers).toHaveLength(2);
+    answers[1]([{ enabled: true }]);
+    await flush();
+    answers[0]([{ enabled: true }, { enabled: true }, { enabled: true }]);
+    await flush();
+    expect(seen).toEqual([1]);
+    announceRulesChanged(target);
+    await flush();
+    stop();
+    answers[2]([{ enabled: true }, { enabled: true }]);
+    await flush();
+    expect(seen).toEqual([1]);
+  });
+
+  it("the notice uses the watch, and every rule writer announces it", () => {
     const view = readFileSync(join(__dirname, "..", "components", "AutoRunNotice.tsx"), { encoding: "utf-8" });
-    expect(view).toMatch(/onRulesChanged\(read\)/);
+    expect(view).toMatch(/=>\s*watchAutoRunNotice\(NOTICE_API,/);
     const api = readFileSync(join(__dirname, "api.ts"), { encoding: "utf-8" });
     const writers = ["createRule", "updateRule", "deleteRule", "generateRules", "installPresetRules", "copyRules", "resetRules"];
     for (const fn of writers) {
