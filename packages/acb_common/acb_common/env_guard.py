@@ -221,6 +221,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
+    # changes which task an agent takes first, so only the operator writes it.
+    "MY_WORK_PLAN_ORDER_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).

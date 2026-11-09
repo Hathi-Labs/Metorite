@@ -2604,8 +2604,9 @@ the firewall install are WS43-G1 and WS43-G4.
    builds the `GitHubCopilotAgent`, unchanged.
 2. The run takes the MAF path while the registry label still reads
    `"github-copilot"`, because the executor decides by the object.
-   ⚠️ **Proposed change, needs the owner's OK** (WS-43h fix round): the
-   build set the label to `"maf"` instead. The block below gives the reason.
+   **Changed, with the owner's OK of 2026-11-09** (task 2280, "Accept: the
+   label becomes maf"): the build set the label to `"maf"` instead. The
+   block below gives the reason.
 3. WS43-E8 passes on the MAF path: `index.html` is valid, and
    `node build/build_t2.mjs` runs in the container with the vendor cache.
 4. The broker mounts a `build/` copy with no `.git`, and refuses any other
@@ -2657,10 +2658,10 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   safe opener, the dir lock and the quota, and it writes nothing to the blob
   store. The agent does not hold the host floor file tools or the host web
   tools (`sandbox_tools.host_tool_guard`), as in a covered `projects` run.
-- **The registry label: a proposed change of done-when 2, which needs the
-  owner's OK.** The build set the label of app-builder in `_AGENT_REGISTRY`
-  to `"maf"`, and removed the WS43-F31 entry, which named WS-43h. No owner
-  or auditor decided this. The reason: each executor site reads "the label
+- **The registry label: a change of done-when 2. The owner accepted it on
+  2026-11-09 (task 2280).** The build set the label of app-builder in
+  `_AGENT_REGISTRY` to `"maf"`, and removed the WS43-F31 entry, which named
+  WS-43h. The reason: each executor site reads "the label
   OR the object", so a `"github-copilot"` label sends even the MAF agent
   down the Copilot path. That path needs `_default_options`, so the run
   ends in RUN_ERROR and its model gets no request

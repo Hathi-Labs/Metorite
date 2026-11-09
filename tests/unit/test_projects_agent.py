@@ -645,6 +645,14 @@ def _detail_responder(call: dict) -> Any:
             "own": {"tasks": 3, "overdue": 1},
             "children": [],
         }
+    if path == "/projects/assigned-to-me":
+        # SW-68a: one row, so `my_work` reaches the plan order route.
+        return {"rows": [{"id": UUID, "title": "Fix the extruder", "task_number": 7,
+                          "status_id": "s1", "root_project_id": UUID}], "total": 1}
+    if path == "/projects/plan/order":
+        return {"order": [UUID], "plan": {UUID: {
+            "epic_id": UUID, "ready": False, "slack_mins": 0,
+            "blocked_by": [], "blocked_by_hidden": 1}}}
     return empty_list(call)
 
 

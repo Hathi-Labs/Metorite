@@ -405,3 +405,36 @@ def test_an_unlisted_lane_is_not_woken_and_no_list_file_wakes_nothing(keeper, mo
     (home / "lanes" / "keeper-lanes.txt").unlink()
     assert mod.run_pass(agents, now=NOW + 99999) == []
     assert "no lane named" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+
+
+def test_task_2466_idle_status_with_state_working_wakes_only_when_the_transcript_is_old(keeper, monkeypatch):
+    mod, home = keeper
+    _transcript(home, "s-old", 2000)
+    _transcript(home, "s-mid", 1200)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = [
+        _agent("lane-a", "s-old", "working", status="idle"),
+        _agent("lane-b", "s-mid", "working", status="idle"),
+        _agent("lane-ci", "s-old", "working", status="busy"),
+    ]
+    wakes = mod.run_pass(json.dumps(agents), now=NOW)
+    assert wakes == [("lane-a", "s-old", "stale-working")]
+    assert "reason=stale-working" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+
+
+def test_task_2466_a_listed_lane_with_no_session_starts_fresh_from_its_note(keeper, monkeypatch):
+    mod, home = keeper
+    (home / "lanes" / "start").mkdir()
+    (home / "lanes" / "start" / "lane-a.txt").write_text("FRESH NOTE\n", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = json.dumps([_agent("lane-b", "s-b", "working", status="busy")])
+    wakes = mod.run_pass(agents, now=NOW)
+    assert ("lane-a", "", "fresh start") in wakes
+    assert calls[0] == ["claude", "--bg", "-n", "lane-a", "--remote-control=lane-a", "FRESH NOTE"]
+    # The cap holds, a lane without a note is not started, and a skip-listed lane is not.
+    assert [w for w in mod.run_pass(agents, now=NOW + 600) if w[2] == "fresh start"] == []
+    assert len(calls) == 1
+    log_text = (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+    assert "no start note" in log_text and "start lane-chat" not in log_text

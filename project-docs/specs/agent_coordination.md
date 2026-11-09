@@ -1,6 +1,6 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
@@ -1483,6 +1483,7 @@ They keep their own gates.
 - **Done when.** R8: a full lane lists its tasks with `lane_full`. A lead at the review cap lists `review_cap` for the tasks of the lead's apps. With no `release_cutoff` no task carries `cut_off`. A stale heartbeat adds no reason and writes a note. The tool lists no task the caller cannot see.
 - **Fence.** `test_agent_queue_r8.py` (new), `test_mcp_edge_coverage.py`. The advisory reasons are labelled so (R7).
 - **Risk.** HIGH (visibility, a refusal reason on a write). **Gate.** AGENT-SAFE dark. **Depends on.** SW-67, SW-49, SW-77, SW-94.
+- **SW-68a, BUILT 2026-11-08 (task 2322).** The first release is a read and has no migration. `my_work` (MCP and chat) ranks a task that sits under an epic by the one engine, through `GET /projects/plan/order` (`routes/projects/plan_order.py`, which calls `plan_analysis.compute_plan`). The rule: a ready slice before a blocked one, then the least slack, then the priority rank, then the id. A task outside every epic keeps its slot. A slice that the plan names as blocked goes after the other tasks, so it is never the top row. Run rows stay above task rows. The MCP row gains an optional `plan` field: `epic_id`, `ready`, `slack_mins`, `blocked_by` (ids) and `blocked_by_hidden` (a count, never a name). The cap is 100 tasks and 10 epics for each read. An epic over the cap, over the engine's task limit, with a cycle, or that the caller cannot open keeps the old order. Repair rounds (2026-11-09): the plan ranks the whole assigned list of each surface, and the edge hides its held and blocked rows after. So the slices of one epic get the same relative order in the MCP and the chat. Plain rows keep the base order of each surface. The feature is dark behind `MY_WORK_PLAN_ORDER_ORGS` (default empty), which only the gateway route reads. A hidden open blocker on a slice, on a task above it or on the epic holds the slice, and it counts once. The plan read has a 2 second limit on both surfaces, and any failure keeps the old order. Fence: `test_my_work_plan_order_r8.py`, `test_my_work_plan_order_edge.py`, `test_my_work_plan_order_chat.py`. **Still open in SW-68:** the queue route `list_agent_queue`, the lane, review, box and account reasons, the release cut-off, and the WIP caps. The "active cycle" filter waits for SP-1 (task 960).
 
 #### SW-69 · Path claims below the task
 
