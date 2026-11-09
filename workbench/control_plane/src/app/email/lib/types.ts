@@ -704,6 +704,12 @@ export interface RunMessageResult {
   unavailable?: boolean;
 }
 
+/** One link or image that the server's signature clean removed. */
+export interface SignatureRemoved {
+  kind: "link" | "image";
+  value: string;
+}
+
 export interface AssistantSettings {
   account_id: string;
   about: string;
@@ -713,10 +719,18 @@ export interface AssistantSettings {
    *  recognises it (a client-side re-derivation could drift by whitespace and
    *  get double-signed). */
   signature_text?: string;
+  /** What the server's clean took out of the signature at this save (WS-17
+   *  SG-1, D-EM-70): each link or image whose address is not https, mailto
+   *  or tel. Empty on a GET. */
+  signature_removed?: SignatureRemoved[];
+  /** False when this server has no https address to host a signature image,
+   *  so the editor turns its upload button off (§23.3.9). */
+  signature_image_upload?: boolean;
   auto_run: boolean;
-  /** Read-only: true when the mailbox has a stored settings row, so the member
-   *  chose (task 2267). False: no stored choice. The PUT ignores it. Absent on
-   *  an older server. */
+  /** Read-only: true when the member chose Auto-run (task 2267). The server
+   *  reads a stored choice stamp or a stored `auto_run: true` (task 2305). A
+   *  row that a save of another field wrote is no choice. False: no stored
+   *  choice. The PUT ignores it. Absent on an older server. */
   auto_run_chosen?: boolean;
   cold_email_blocker: ColdBlockerMode;
   // No model or tier field: our code picks the tier of each email AI task
@@ -766,6 +780,14 @@ export interface AssistantSettings {
    *  Returned by GET/PUT for display; never sent back to change it. */
   own_domain?: string;
 }
+
+/**
+ * The body of a settings save (task 2305). `auto_run_choice` is the
+ * write-only marker of the member's own Auto-run act. With it, the PUT stamps
+ * the choice. Only `autoRunChoiceBody` (`lib/assistantSettings.ts`) sets it,
+ * and no answer carries it.
+ */
+export type AssistantSettingsSave = AssistantSettings & { auto_run_choice?: true };
 
 export type DraftConfidence = "ALL_EMAILS" | "STANDARD" | "HIGH_CONFIDENCE";
 
