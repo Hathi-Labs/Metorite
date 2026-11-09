@@ -60,7 +60,8 @@ from gateway.routes.projects.core import (
     actor,
     apply_status_transition,
     assert_holds_tasks,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     emit,
     insert_row,
     load_default_status,
@@ -287,7 +288,7 @@ async def capture_intake(
         # A capture is a task, so it lands where a task may: in a project,
         # never on a space or a folder (`core.assert_holds_tasks`).
         assert_holds_tasks(target, then="Capture into")
-        assert_not_archived(target, then="Capture into")
+        assert_project_open_for_writes(target)
         root = await root_project_id(db, str(payload.project_id))
         # The triage lane belongs to the set this project USES, which is
         # the nearest owner and not necessarily the root (migration 196).
@@ -418,6 +419,7 @@ async def accept_intake(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         wrapper = await _load_wrapper(db, task_id)
         _require_queue_state(wrapper)
 
@@ -466,7 +468,7 @@ async def decline_intake(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         wrapper = await _load_wrapper(db, task_id)
         _require_queue_state(wrapper)
 
@@ -503,7 +505,7 @@ async def duplicate_intake(
         )
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         await load_visible_task(db, vis, original)
         wrapper = await _load_wrapper(db, task_id)
         _require_queue_state(wrapper)
@@ -546,6 +548,7 @@ async def snooze_intake(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         wrapper = await _load_wrapper(db, task_id)
         _require_queue_state(wrapper)
 

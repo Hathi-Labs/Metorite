@@ -54,6 +54,7 @@ from gateway.routes.projects.core import (
     ACTOR_VIA,
     _tenant_session,
     actor,
+    assert_task_id_project_open,
     load_visible_task,
     record_activity,
     resolve_visibility,
@@ -658,6 +659,7 @@ async def add_ref(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
+        await assert_task_id_project_open(db, task_id)
         row, made = await insert_ref(
             db, task_id, found, title=title, via=_via(), by=actor(user),
         )
@@ -681,6 +683,7 @@ async def delete_ref(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
+        await assert_task_id_project_open(db, task_id)
         gone = (await db.execute(
             text(
                 "DELETE FROM pm_task_refs "

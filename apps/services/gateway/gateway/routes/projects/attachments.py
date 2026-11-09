@@ -42,6 +42,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     emit,
+    assert_task_project_open,
     load_visible_task,
     record_activity,
     resolve_visibility,
@@ -163,6 +164,7 @@ async def attach_file(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
 
         name = _safe_name(file.filename or "attachment")
         if Path(name).suffix.lower() in _BLOCKED_EXT:
@@ -415,7 +417,7 @@ async def detach_file(
     email = actor(user)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         result = await db.execute(
             text(
                 "DELETE FROM pm_task_attachments "

@@ -32,6 +32,7 @@ from gateway.routes.projects.core import (
     emit,
     from_jsonb,
     is_transient,
+    assert_task_id_project_open,
     load_visible_task,
     lock_task,
     now,
@@ -289,6 +290,7 @@ async def add_comment(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
+        await assert_task_id_project_open(db, task_id)
         # ⚠️ AFTER the visibility check, never before. Asked first, the parent
         # lookup would answer 404 or 422 for a task the caller may not see,
         # and the difference between those two says whether a comment exists.
@@ -586,12 +588,14 @@ async def edit_comment(
             # keeps authorship of what they wrote but not access to it.
             vis = await resolve_visibility(db, user)
             await load_visible_task(db, vis, str(comment.task_id))
+            await assert_task_id_project_open(db, str(comment.task_id))
             # MCP-G9 fix round 1, rule 1: the words are now the person's, so
             # no agent may change this comment after this edit.
             await _mark_person_edit(db, activity_id)
         else:
             comment = await _load_agent_comment(
                 db, activity_id, user, agent.actor_via)
+            await assert_task_id_project_open(db, str(comment.task_id))
         row = await update_row(db, "pm_activities", activity_id, {"body": body})
         task_id = str(comment.task_id)
         # WS-27ae / P-27 — an edit UPDATEs an existing activity row rather than
@@ -658,6 +662,7 @@ async def delete_comment(
         else:
             comment = await _load_agent_comment(
                 db, activity_id, user, agent.actor_via)
+        await assert_task_id_project_open(db, str(comment.task_id))
         await update_row(
             db, "pm_activities", activity_id,
             {"deleted_at": now(), "body": None},
@@ -724,6 +729,7 @@ async def revert_change(
             raise HTTPException(status_code=404, detail="Change not found")
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, str(row.task_id))
+        await assert_task_id_project_open(db, str(row.task_id))
 
         meta = from_jsonb(getattr(row, "meta", None)) or {}
         changes = [c for c in (meta.get("changes") or []) if isinstance(c, dict)]

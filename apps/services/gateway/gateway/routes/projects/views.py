@@ -29,6 +29,7 @@ from gateway.routes.projects.core import (
     ViewModel,
     _tenant_session,
     actor,
+    assert_project_open_for_writes,
     clean_payload,
     from_jsonb,
     insert_row,
@@ -304,10 +305,17 @@ async def set_view_state(
 
 # ── Manual order ────────────────────────────────────────────────────────────
 
-async def _load_visible_view(db: Any, user: UserContext, view_id: str) -> Any:
+async def _load_visible_view(
+    db: Any, user: UserContext, view_id: str, *, task_write: bool = False,
+) -> Any:
+    """The view, or 404. ``task_write`` is the set of positions (ARC-2b): an
+    order of tasks is task work, so an archived project refuses it (409).
+    A view and its own state are not task work and stay open."""
     view = await require_row(db, "pm_views", view_id, "View")
     vis = await resolve_visibility(db, user)
-    await load_visible_project(db, vis, str(view.project_id))
+    project = await load_visible_project(db, vis, str(view.project_id))
+    if task_write:
+        assert_project_open_for_writes(project)
     return view
 
 
@@ -356,7 +364,7 @@ async def set_positions(
                    f"got {len(payload.positions)}.",
         )
     async with _tenant_session() as db:
-        await _load_visible_view(db, user, view_id)
+        await _load_visible_view(db, user, view_id, task_write=True)
 
         # ⚠️ The VIEW being visible does not make the TASKS visible.
         #

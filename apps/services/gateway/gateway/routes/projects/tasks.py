@@ -72,7 +72,8 @@ from gateway.routes.projects.core import (
     assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     clean_payload,
     count_where,
     diff_changes,
@@ -1250,7 +1251,7 @@ async def create_task_in(
     # summarises. Tasks live on projects. A task filed on either would
     # sit outside every board (`core.assert_holds_tasks`).
     assert_holds_tasks(target, then="Create the task in")
-    assert_not_archived(target, then="Create the task in")
+    assert_project_open_for_writes(target)
     root = await root_project_id(db, str(project_id))
     values["root_project_id"] = root
     # The values pass the gate a PATCH puts them through
@@ -1390,6 +1391,8 @@ async def patch_task(
         await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
+        # ARC-2b: a field edit into an archived project is refused (409).
+        await assert_task_project_open(db, before)
 
         # WS-27bi / D-PM-20. Checked HERE — after the visibility load, before any
         # write — so a caller who cannot see the task still gets 404 and never
@@ -1591,6 +1594,9 @@ async def move_task_in(
     carries", and only this module and ``move.py`` pass it.
     """
     task_id = str(task.id)
+    # ARC-2b: a move OUT of an archived project is refused too (the dest check
+    # below covers a move INTO one). Every caller of this seam lands here.
+    await assert_task_project_open(db, task)
     values: dict[str, Any] = {}
     #: Values that had no field in the destination (D-PM-29). Written to
     #: the timeline after the move, with their values, by `record_drops`.
@@ -1623,7 +1629,7 @@ async def move_task_in(
         # as the privacy guard below: a caller who cannot see the folder or
         # the space still gets 404.
         assert_holds_tasks(dest, then="Move the task into")
-        assert_not_archived(dest, then="Move the task into")
+        assert_project_open_for_writes(dest)
         # Before anything is computed: a task may only move INTO a personal
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never
@@ -2112,6 +2118,7 @@ async def delete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, doomed)
         # WS-64 OP-8 (D-OP-12). Checked on the task the member names. The
         # subtasks that go with it follow that one check.
         await assert_may_delete_task(db, user, doomed)
@@ -2212,7 +2219,7 @@ async def agent_delete_task(
         if not await delete_enabled(db, getattr(user, "email", None) or ""):
             raise HTTPException(status_code=403, detail=AGENT_DELETE_OFF)
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         # The lock holds the row until the delete commits, so a member's edit
         # cannot land between the two checks and the delete.
         doomed = await lock_task(db, task_id)
@@ -2340,6 +2347,7 @@ async def archive_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         outcome = await archive_task_in(
             db, vis, task, user, include_subtasks=include_subtasks,
         )
@@ -2376,6 +2384,7 @@ async def unarchive_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         if getattr(task, "archived_at", None) is None:
             return await _with_agent_state(db, row_to_dict(task, TaskModel))
         # ⚠️ A MERGED task loses its pointer here, and it must: migration
@@ -2538,6 +2547,7 @@ async def set_assignees(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         # MCP-G2. After the visibility load, so a hidden task stays a 404.
         if not agent_call:
             _check_version(task, if_match)
@@ -2749,6 +2759,7 @@ async def claim_task(
         vis = await resolve_visibility(db, user)
         # 1. The visibility load answers 404 for a task the caller cannot see.
         seen = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, seen)
         # The tenant of the dispatch sink, read as `set_assignees` reads it.
         task_org = str(getattr(seen, "organization_id", "") or "")
 
@@ -2887,10 +2898,13 @@ async def create_link(
         )
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        source = await load_visible_task(db, vis, task_id)
         # Both ends must be visible: a link is readable from either side, so
         # accepting an unreadable target would disclose that it exists.
-        await load_visible_task(db, vis, str(payload.target_task_id))
+        target = await load_visible_task(db, vis, str(payload.target_task_id))
+        # ARC-2b: a link writes on both ends, so both projects must be open.
+        await assert_task_project_open(db, source)
+        await assert_task_project_open(db, target)
         # WS-27p — the same guard `assert_no_task_cycle` has always put on
         # `parent_task_id`, finally on the edge that can actually deadlock:
         # A blocks B blocks C blocks A is a loop no human can resolve by
@@ -2917,7 +2931,7 @@ async def delete_link(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         # SW-16a: a signed agent must see BOTH ends, as `create_link` requires.
         # A link that leaves its pin reads as a link that does not exist. A
         # person keeps the rule of this route: the end they see is enough.

@@ -53,7 +53,8 @@ from gateway.routes.projects.core import (
     _placeholder,
     _tenant_session,
     actor,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     clean_payload,
     coerce_write_values,
     diff_changes,
@@ -703,7 +704,7 @@ async def create_personal_task(
         text("SELECT name, archived_at FROM pm_projects WHERE id = CAST(:p AS uuid)"),
         {"p": project_id},
     )).fetchone()
-    assert_not_archived(target, then="Capture into")
+    assert_project_open_for_writes(target)
     stated = dict(overlay or {})
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"
@@ -2744,6 +2745,7 @@ async def complete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         # The subtree FIRST. `complete_for_member` emits the parent's
         # `pm.task.status_changed` inside this transaction, so a cascade that
         # refuses after it would have announced a completion that rolled back
@@ -2967,6 +2969,9 @@ async def _organize(
         # field People capacity and analytics read.
         shared["estimate_mins"] = payload.time_estimate_mins
     if shared:
+        # ARC-2b: a date or an estimate is the team's, so an archived project
+        # refuses it (409). The overlay writes below stay open.
+        await assert_task_project_open(db, task)
         # The way `patch_task` writes them: the row, then what actually moved
         # through the ONE field_change door, so the timeline shows the
         # deadline and the estimate an organize set (D77 repair).
@@ -2982,8 +2987,10 @@ async def _organize(
     if payload.kind == "do-now":
         # Completed for the PROJECT, then the two-minute marker on my view.
         # Writing DONE onto the overlay alone would leave the board open
-        # (§13.5a decision 1). `complete_for_member` is the one completion
+        # (§13.5a decision 1). ARC-2b: the status is the project's, so an
+        # archived project refuses it. `complete_for_member` is the one completion
         # path: it emits the status event and closes an email thread too.
+        await assert_task_project_open(db, task)
         await complete_for_member(db, task, email)
     values: dict[str, Any] = {
         "disposition": disposition,
