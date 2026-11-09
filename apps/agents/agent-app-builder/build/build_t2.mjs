@@ -134,11 +134,12 @@ function within(root, target) {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
+/** `.`, `..`, or a path that starts with `./`, `../`, `.\` or `..\`. */
 function isRelativeImport(spec) {
-  return /^\.\.?(?:[\/]|$)/.test(spec);
+  return /^\.\.?(?:[\\/]|$)/.test(spec);
 }
 
-/** An absolute path on either OS (`/etc/x`, `C:\x`, `\host\x`). */
+/** An absolute path on either OS (`/etc/x`, `C:\x`, `\\host\x`). */
 function isAbsoluteImport(spec) {
   return posix.isAbsolute(spec) || win32.isAbsolute(spec);
 }

@@ -230,15 +230,28 @@ def _is_buildable_manifest(manifest: dict[str, Any] | None) -> bool:
     return entry.startswith("dist/")
 
 
-def _agent_app_builder_dir() -> Path | None:
-    """The on-disk clone of the ``agent-app-builder`` agent, which owns
-    ``build/build_t2.mjs`` — the SAME script the app-builder's own Copilot
-    session invokes mid-chat (agent-app-builder/agents.py's
-    ``__T2_BUILD_SCRIPT__`` substitution). Reuses the loader's own
-    clone-cache resolution so this never drifts from where the agent
-    actually finds it."""
-    from gateway.routes.workspace import _agent_workspace_dir
-    return _agent_workspace_dir("agent-app-builder")
+def _t2_build_script() -> Path | None:
+    """The ``build_t2.mjs`` of the deployed source tree, or ``None`` (task 2464).
+
+    The host route runs the script that ships with the gateway. It is the
+    same source that the sandbox broker copies into a container
+    (``sandbox_broker.app_builder_build_source``), found from code, never
+    from input. It is never the agent clone cache
+    (``{agents_clone_dir}/repos/...``): the clone refreshes only when the
+    agent loads, so a fix to the script did not reach the copy that this
+    route ran.
+    """
+    try:
+        from orchestrator.sandbox_broker import (
+            APP_BUILDER_BUILD_SOURCES,
+            app_builder_build_source,
+        )
+    except ImportError:
+        return None
+    root = app_builder_build_source()
+    if root is None:
+        return None
+    return root / APP_BUILDER_BUILD_SOURCES["build_t2.mjs"]
 
 
 def host_build_refusal(workspace: Path) -> str | None:
@@ -319,16 +332,13 @@ async def build_app(
     if not _is_buildable_manifest(manifest):
         return {"built": False, "reason": "not a build-based (T2) app"}
 
-    app_builder_dir = await asyncio.get_event_loop().run_in_executor(
-        None, _agent_app_builder_dir,
-    )
-    if app_builder_dir is None:
+    script = await asyncio.get_event_loop().run_in_executor(None, _t2_build_script)
+    if script is None:
         return {
             "built": False,
-            "error": "T2 build tooling unavailable (agent-app-builder not cloned)",
+            "error": "T2 build tooling unavailable (no agent-app-builder build dir in the source)",
         }
-    script = app_builder_dir / "build" / "build_t2.mjs"
-    if not script.is_file():
+    if script.is_symlink() or not script.is_file():
         return {"built": False, "error": f"build script missing: {script}"}
     refusal = await asyncio.get_event_loop().run_in_executor(
         None, host_build_refusal, workspace,

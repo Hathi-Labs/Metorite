@@ -29,7 +29,11 @@ in custom-deps mode):
   ``workspaces`` dependency and a lock entry that is a link, before npm runs;
 * a legal app (own ``./`` and ``../`` files, React, ``@cc/ui``) still builds,
   in both modes, and lucide-react (3,924 files) builds inside the gateway's
-  60 s build timeout.
+  60 s build timeout;
+* the host route (``files.build_app``) runs the ``build_t2.mjs`` of the
+  deployed source tree, the one that the sandbox broker copies. It never
+  runs the agent clone-cache copy, because the clone refreshes only when the
+  agent loads. A planted clone script with other content never runs.
 
 The vendor cache: ``T2_VENDOR_TEST_DIR`` (the name that
 ``test_app_builder_engine.py`` reads), then ``CUSTOM_APPS_T2_VENDOR_DIR``,
@@ -41,15 +45,20 @@ Mutations this suite catches (R7), each run red once by hand:
 * ``plugins: []`` in place of the containment plugin: every leak test;
 * the old ``importerInsideSrc`` rule (an app importer outside ``src/`` is
   not policed): the chain test (the error no longer names the import) and the
-  vendor-by-path test (the build succeeds).
+  vendor-by-path test (the build succeeds);
+* ``build_app`` takes the script from the clone cache again
+  (``_agent_workspace_dir("agent-app-builder")``): the two route tests.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -244,6 +253,16 @@ def test_an_import_of_another_apps_file_is_refused(
     _assert_refused(_build(apps["b"], vendor), apps["b"], names=spec)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="only Windows reads a backslash as a path separator")
+@pytest.mark.parametrize("mode", ["default", "custom_deps"])
+def test_a_backslash_relative_import_is_refused(apps: dict[str, Path], vendor: Path, mode: str) -> None:
+    if mode == "custom_deps":
+        _custom_deps(apps["b"])
+    spec = "..\\..\\org-a-app\\src\\data.json"
+    _write(apps["b"] / "src" / "main.tsx", f"import d from {json.dumps(spec)};\nconsole.log(d);\n")
+    _assert_refused(_build(apps["b"], vendor), apps["b"], names=spec)
+
+
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 def test_a_dir_link_that_points_out_is_refused(apps: dict[str, Path], vendor: Path, mode: str) -> None:
     if mode == "custom_deps":
@@ -425,6 +444,91 @@ def test_a_big_vendor_package_builds_inside_the_gateway_timeout(apps: dict[str, 
         encoding="utf-8", timeout=BUILD_TIMEOUT, check=False,
     )
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+# ── the host route runs the source-tree script, never the clone ─────────────
+
+
+@pytest.fixture
+def host_route(apps: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``files.build_app`` on org B's app, with a planted clone-cache script.
+
+    The clone refreshes only when the agent loads, so the old lookup
+    (``_agent_clone_dir``) could run a copy without the fix. The planted
+    script writes a marker file if it ever runs.
+    """
+    pytest.importorskip("fastapi")
+    from gateway.routes import workspace
+    from gateway.routes.apps import files
+    from orchestrator import sandbox_broker
+
+    clone = tmp_path / "clone" / "repos" / "agent-app-builder"
+    _write(clone / "build" / "build_t2.mjs", (
+        'import { writeFileSync } from "node:fs";\n'
+        f'writeFileSync("CLONE-SCRIPT-RAN.txt", "{MARKER}");\n'
+        'process.stdout.write("build_t2: ok, the planted clone script ran\\n");\n'
+    ))
+    monkeypatch.setattr(workspace, "_agent_clone_dir", lambda _name: clone)
+    monkeypatch.setattr(sandbox_broker, "is_sandbox_dir", lambda _path: False)
+
+    async def edit(_slug: str, _user: Any) -> tuple[Any, Path]:
+        return SimpleNamespace(id="app-b", slug="org-b-app", workspace_path=str(apps["b"])), apps["b"]
+
+    monkeypatch.setattr(files, "_edit_workspace", edit)
+    return SimpleNamespace(files=files, clone=clone, broker=sandbox_broker)
+
+
+def test_the_host_route_runs_the_source_tree_script_not_the_clone(
+    host_route: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Path] = []
+
+    async def run(_ws: Path, script: Path) -> tuple[bool, str]:
+        seen.append(Path(script))
+        return True, "build_t2: ok"
+
+    monkeypatch.setattr(host_route.files, "_run_build_t2", run)
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out["built"] is True, out
+    broker = host_route.broker
+    source = broker.app_builder_build_source() / broker.APP_BUILDER_BUILD_SOURCES["build_t2.mjs"]
+    assert seen == [source], seen
+    assert seen[0].as_posix().endswith("apps/agents/agent-app-builder/build/build_t2.mjs")
+    assert host_route.clone not in seen[0].parents
+    assert seen[0].read_bytes() != (host_route.clone / "build" / "build_t2.mjs").read_bytes()
+
+
+@pytest.mark.parametrize("where", ["no_source", "no_script"])
+def test_the_host_route_refuses_when_the_source_script_is_missing(
+    host_route: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str,
+) -> None:
+    missing = None if where == "no_source" else tmp_path / "gone" / "build_t2.mjs"
+    monkeypatch.setattr(host_route.files, "_t2_build_script", lambda: missing)
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out["built"] is False
+    expected = "T2 build tooling unavailable" if where == "no_source" else "build script missing"
+    assert expected in out["error"], out
+
+
+def test_the_host_route_builds_with_the_source_script_and_refuses_a_leak(
+    host_route: Any, apps: dict[str, Path], vendor: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real route build, with node and the vendor cache: the planted clone
+    script never runs, a legal app builds, and an import of org A is refused."""
+    monkeypatch.setattr(host_route.files, "t2_vendor_dir", lambda: vendor)
+    b = apps["b"]
+    _write(b / "src" / "main.tsx", 'console.log("org-b-own");\n')
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out["built"] is True, out
+    assert not (b / "CLONE-SCRIPT-RAN.txt").exists()
+    assert "org-b-own" in _bundle(b)
+
+    _route_direct(apps["a"], b)
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out["built"] is False, out
+    assert REFUSAL in out["error"], out
+    assert not (b / "CLONE-SCRIPT-RAN.txt").exists()
+    assert MARKER not in _bundle(b)
 
 
 # ── install_t2_deps.mjs: no dependency from disk ────────────────────────────

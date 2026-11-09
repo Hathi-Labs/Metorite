@@ -2748,7 +2748,10 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   dependency modes. The real path of each file that esbuild loads must stay
   in the app dir, the vendor cache or the one `@cc/ui` file. The template and
   `dist/` must be real paths in the app dir, and the build reads no tsconfig.
-  `install_t2_deps.mjs` refuses a dependency that npm takes from disk. Fence:
+  `install_t2_deps.mjs` refuses a dependency that npm takes from disk. The
+  host route runs the `build_t2.mjs` of the deployed source tree, the one
+  that the broker copies. It no longer runs the agent clone cache, because
+  the clone refreshes only when the agent loads. Fence:
   `test_app_builder_t2_containment.py`.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
