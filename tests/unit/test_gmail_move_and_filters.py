@@ -808,23 +808,6 @@ def test_json_or_empty_passes_a_dict_and_raises_on_a_bad_body() -> None:
         gmail_mod._json_or_empty(_resp(b"<html>Service Unavailable</html>"))
 
 
-async def test_list_labels_reads_an_empty_body_as_no_label(fake: _Gmail) -> None:
-    assert await _blank(fake, "/labels").list_labels() == []
-
-
-async def test_the_label_map_reads_an_empty_body_as_no_label(fake: _Gmail) -> None:
-    assert await _blank(fake, "/labels")._label_name_id_map() == {}
-
-
-async def test_list_folders_reads_an_empty_body_as_no_folder(fake: _Gmail) -> None:
-    assert await _blank(fake, "/labels").list_folders() == []
-
-
-async def test_list_messages_reads_an_empty_body_as_no_mail(fake: _Gmail) -> None:
-    out = await _blank(fake, "/messages").list_messages()
-    assert out[0] == []
-
-
 async def test_label_assignments_read_an_empty_body_as_none(fake: _Gmail) -> None:
     assert await _blank(fake, "/messages").fetch_label_assignments() == {}
 
@@ -835,27 +818,30 @@ async def test_the_draft_lookup_reads_an_empty_body_as_no_draft(
     assert await _blank(fake, "/drafts")._draft_id_for("m-1", required=False) is None
 
 
-async def test_seed_cursor_reads_an_empty_body_as_no_cursor(fake: _Gmail) -> None:
-    fake.raw["/profile"] = b""
-    assert await _provider().seed_cursor() is None
-
-
 async def test_a_history_page_reads_an_empty_body_as_no_record(fake: _Gmail) -> None:
     provider = _blank(fake, "/history")
     client = await provider._get_client()
     assert await provider._history_page(client, {"startHistoryId": "1"}) == {}
 
 
-async def test_the_reset_sweep_reads_an_empty_body_as_no_mail(fake: _Gmail) -> None:
-    from email_ingestion.providers.base import SyncResult
+async def test_the_label_map_raises_on_an_empty_body_and_stays_unset(
+    fake: _Gmail,
+) -> None:
+    """An empty labels answer is a fault: a mailbox always has system labels.
+    The map stays None, so the categories of a sync stay non-authoritative."""
+    provider = _blank(fake, "/labels")
+    with pytest.raises(ValueError):
+        await provider._label_name_id_map()
+    assert provider._label_ids_by_name is None
 
+
+async def test_seed_cursor_raises_on_an_empty_body(fake: _Gmail) -> None:
+    fake.raw["/profile"] = b""
+    with pytest.raises(ValueError):
+        await _provider().seed_cursor()
+
+
+async def test_an_import_raises_on_an_empty_first_page(fake: _Gmail) -> None:
     provider = _blank(fake, "/messages")
-    result = SyncResult()
-    await provider._sweep_after_reset(50, None, None, "1", result)
-    assert result.messages == []
-
-
-async def test_the_import_reads_an_empty_body_as_no_mail(fake: _Gmail) -> None:
-    provider = _blank(fake, "/messages")
-    batches = [b async for b in provider.import_batches(None)]
-    assert all(not b for b in batches)
+    with pytest.raises(ValueError):
+        _ = [b async for b in provider.import_batches(None)]

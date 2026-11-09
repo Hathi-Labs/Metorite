@@ -533,15 +533,25 @@ GMAIL_RESET_SWEEP_NAME = "all mail"
 
 
 def _json_or_empty(resp: httpx.Response) -> Any:
-    """The JSON body of a Gmail list-style read, or ``{}`` for no body.
+    """The JSON body of a Gmail read, or ``{}`` for an empty body.
 
     Google can answer 200 with an EMPTY body (production, 2026-11-08, task
-    2268). An empty or blank body, and a JSON ``null``, both give ``{}``: the
-    list has no item. A body that is not empty and not JSON still raises
-    ``ValueError`` (``json.JSONDecodeError``), so a real fault reaches the
-    log. A JSON value that is not an object passes through unchanged.
-    Use this only where ``{}`` is a true answer. A read whose payload the
-    caller needs (one message, one attachment, the token) keeps ``.json()``."""
+    2268). An empty or blank body, and a JSON ``null``, both give ``{}``.
+    A body that is not empty and not JSON still raises ``ValueError``
+    (``json.JSONDecodeError``), so a real fault reaches the log.
+
+    Four reads use it, and each one is safe on ``{}``: ``list_filters``
+    (a mailbox with no filter), ``_history_page`` (no record and no token,
+    so the cursor stays and the next cycle reads again),
+    ``_draft_id_for`` (no draft found) and ``fetch_label_assignments`` (one
+    label must not abort a restore).
+
+    Every other read keeps ``.json()``, so an empty body raises. That holds
+    for a read whose answer is never empty: the labels list always holds
+    the system labels, and the profile always holds ``historyId``. It also
+    holds where an empty list ends a job: the message lists of an import or
+    a sweep would end as complete with 0 messages. A JSON value that is not
+    an object passes through unchanged."""
     if not resp.content.strip():
         return {}
     data = resp.json()
@@ -1441,7 +1451,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.get("/users/me/labels")
         resp.raise_for_status()
-        data = _json_or_empty(resp)
+        data = resp.json()
 
         folders: list[EmailFolder] = []
         for label in data.get("labels", []):
@@ -1489,7 +1499,7 @@ class GmailProvider(BaseEmailProvider):
 
         resp = await client.get("/users/me/messages", params=params)
         resp.raise_for_status()
-        data = _json_or_empty(resp)
+        data = resp.json()
 
         messages: list[EmailMessage] = []
         for msg_ref in data.get("messages", []):
@@ -2274,7 +2284,7 @@ class GmailProvider(BaseEmailProvider):
         resp = await client.get("/users/me/labels")
         resp.raise_for_status()
         out: list[dict[str, str | None]] = []
-        for lbl in _json_or_empty(resp).get("labels", []):
+        for lbl in resp.json().get("labels", []):
             if lbl.get("type") == "user" and not lbl.get("name", "").startswith(
                 "CATEGORY_"
             ):
@@ -2297,7 +2307,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.get("/users/me/labels")
         resp.raise_for_status()
-        labels = _json_or_empty(resp).get("labels", [])
+        labels = resp.json().get("labels", [])
         self._label_ids_by_name = {
             lbl.get("name", "").lower(): lbl["id"]
             for lbl in labels
@@ -2646,7 +2656,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.get("/users/me/profile")
         resp.raise_for_status()
-        history_id = _json_or_empty(resp).get("historyId")
+        history_id = resp.json().get("historyId")
         return str(history_id) if history_id else None
 
     async def _try_seed(self) -> str | None:
@@ -2892,7 +2902,7 @@ class GmailProvider(BaseEmailProvider):
             try:
                 resp = await client.get("/users/me/messages", params=params)
                 resp.raise_for_status()
-                data = _json_or_empty(resp)
+                data = resp.json()
                 ids = [ref["id"] for ref in data.get("messages") or []
                        if ref.get("id")]
                 failed = await self._fetch_into(ids, result)
@@ -3143,7 +3153,7 @@ class GmailProvider(BaseEmailProvider):
         for page in range(1, self.IMPORT_MAX_PAGES + 1):
             resp = await client.get("/users/me/messages", params=params)
             resp.raise_for_status()
-            data = _json_or_empty(resp)
+            data = resp.json()
             if page == 1 and on_estimate is not None:
                 await on_estimate(_estimate_of(data))
             fetched = await self._fetch_page(_fresh_ids(data, seen))
