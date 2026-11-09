@@ -1,5 +1,5 @@
 -- ============================================================================
--- 380_studio_more_field_types.sql — six more Studio field types (WS-STU C14).
+-- 396_studio_more_field_types.sql — six more Studio field types (WS-STU C14).
 --
 -- What: two wider CHECKs. `studio_object_fields_type` (migration 323) and
 --       `package_field_value_field_type` (migration 366) gain `richText`,
@@ -25,8 +25,8 @@
 -- Tenant-scoped (R5): no new table. RLS and the policies of 323 and 366 cover
 -- both tables.
 --
--- The number is taken at build time (R1). On 2026-11-09 origin/main held 372,
--- and open pull requests held up to 378. Check it again at merge.
+-- The number is taken at build time (R1). On 2026-11-09 origin/main held 390, and open
+-- branches held up to 394. This file takes 396. Check it again at merge.
 -- Pinned by tests/unit/test_studio_objects_r8.py and test_package_field_values.py,
 -- which find the latest file that defines each CHECK by CONTENT (R1).
 -- ============================================================================

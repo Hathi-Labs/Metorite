@@ -302,7 +302,7 @@ function richText(v: unknown): CheckResult {
   const r = text(v, MAX_LONG_TEXT_CHARS);
   if (!r.ok) return r;
   return RAW_HTML.test(v as string)
-    ? fail("Enter markdown. Remove the HTML tag, as <b>.")
+    ? fail("A < before a letter reads as a tag. Put a space after it.")
     : r;
 }
 
@@ -321,6 +321,9 @@ function rating(f: FieldSpec, v: unknown): CheckResult {
 }
 
 function duration(v: unknown): CheckResult {
+  if (wholeNumber(v) && v >= MAX_DURATION_SECONDS) {
+    return fail(`Enter a length of time of at most ${Math.floor((MAX_DURATION_SECONDS - 1) / 3600).toLocaleString("en-US")} hours.`);
+  }
   return wholeNumber(v) && v >= 0 && v < MAX_DURATION_SECONDS
     ? pass(v)
     : fail("Enter a length of time as 1h 30m, 45m or 1:30:00.");
@@ -339,6 +342,10 @@ function quantity(f: FieldSpec, v: unknown): CheckResult {
 }
 
 function percent(v: unknown): CheckResult {
+  if (wholeNumber(v) && Math.abs(v) >= MAX_PERCENT_BP) {
+    const top = ((MAX_PERCENT_BP - 1) / 100).toLocaleString("en-US", { minimumFractionDigits: 2 });
+    return fail(`Enter a percent from -${top} to ${top}.`);
+  }
   return wholeNumber(v) && Math.abs(v) < MAX_PERCENT_BP
     ? pass(v)
     : fail("Enter a percent with up to 2 decimals, as 12.5.");

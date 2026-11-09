@@ -245,6 +245,22 @@ describe("messages in the units of the input (fix round)", () => {
   });
 });
 
+describe("messages that name the cause (fix round 2)", () => {
+  const msg = (f: FieldSpec, v: unknown) => {
+    const r = checkValue(f, v);
+    return r.ok ? "" : r.message;
+  };
+  it("a < before a letter reads as a tag, and the message says how to fix it", () => {
+    expect(msg({ key: "r", type: "richText" }, "load<limit")).toBe(
+      "A < before a letter reads as a tag. Put a space after it.");
+  });
+  it("a value over the maximum names the maximum", () => {
+    expect(msg({ key: "t", type: "duration" }, 3_000_000 * 3600)).toContain("2,777,777 hours");
+    expect(msg({ key: "p", type: "percent" }, 99_999_999_999)).toContain("9,999,999.99");
+    expect(msg({ key: "t", type: "duration" }, -1)).toContain("1h 30m");
+  });
+});
+
 describe("the Data tab and the Detail (fix round)", () => {
   it("labels each new type", () => {
     for (const t of ["richText", "rating", "duration", "quantity", "percent", "barcode"]) {

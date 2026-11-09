@@ -632,3 +632,24 @@ def test_a_record_id_in_any_spelling_has_one_hot_form() -> None:
     assert sf.relation_key(plain.upper()) == plain
     assert sf.relation_key(plain.replace("-", "")) == plain
     assert sf.relation_key("order-7") == "order-7"
+
+
+def test_a_tag_like_text_and_a_value_over_the_maximum_get_their_own_message() -> None:
+    """STU-C14 fix round 2: the twin messages are in `fieldCheck.ts`."""
+    with pytest.raises(FieldError) as tag:
+        sf.check_value(_field("richText"), "load<limit")
+    assert "reads as a tag" in tag.value.message and "<b>" not in tag.value.message
+    with pytest.raises(FieldError) as long:
+        sf.check_value(_field("duration"), sf.MAX_DURATION_SECONDS)
+    assert str((sf.MAX_DURATION_SECONDS - 1) // 3600) in long.value.message
+    with pytest.raises(FieldError) as big:
+        sf.check_value(_field("percent"), sf.MAX_PERCENT_BP)
+    assert str(sf.MAX_PERCENT_BP - 1) in big.value.message
+    with pytest.raises(FieldError) as neg:
+        sf.check_value(_field("duration"), -1)
+    assert "whole seconds" in neg.value.message
+
+
+def test_the_spec_parts_and_the_value_shapes_come_from_the_constants() -> None:
+    assert str(sf.MAX_RICH_TEXT_CHARS) in sf.VALUE_SHAPES["richText"]
+    assert set(sf.SPEC_PARTS) == {"rating", "quantity", "barcode"}

@@ -115,8 +115,13 @@ HOT_TEXT_CHARS = 256
 
 #: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
 #: serves them, so a model sends basis points for a percent and not a fraction.
+#: C14. The parts of a field spec that belong to one type.
+SPEC_PARTS: dict[str, tuple[str, ...]] = {
+    "rating": ("min", "max"), "quantity": ("units",), "barcode": ("format",),
+}
+
 VALUE_SHAPES: dict[str, str] = {
-    "richText": "markdown text, at most 20000 characters, with no HTML tag",
+    "richText": f"markdown text, at most {MAX_RICH_TEXT_CHARS} characters, with no HTML tag",
     "rating": "a whole number from the field's min to its max (1 to 5 when it has none)",
     "duration": "whole seconds, as 5400 for 1h 30m",
     "quantity": "{'value': '12.5', 'unit': one of the units of the field}, the value as decimal text",
@@ -311,10 +316,10 @@ def _int(v: Any) -> bool:
 def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
     """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
     of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
-    for part, owner in (("min", "rating"), ("max", "rating"), ("units", "quantity"),
-                        ("format", "barcode")):
-        if kind != owner and spec.get(part) is not None:
-            out.append(SpecProblem(part, f"Only a {owner} field takes `{part}`."))
+    for owner, parts in SPEC_PARTS.items():
+        for part in parts:
+            if kind != owner and spec.get(part) is not None:
+                out.append(SpecProblem(part, f"Only a {owner} field takes `{part}`."))
     if kind == "rating":
         lo, hi = spec.get("min"), spec.get("max")
         for name, v in (("min", lo), ("max", hi)):
@@ -622,7 +627,8 @@ def _rich_text(f: FieldSpec, v: Any) -> str:
     text = _text(f, v, MAX_RICH_TEXT_CHARS)
     if _RAW_HTML_RE.search(text):
         raise FieldError(
-            f.key, f"Field `{f.key}` takes markdown. Remove the HTML tag, as `<b>`.")
+            f.key, f"Field `{f.key}` takes markdown. A < before a letter reads as a tag. "
+            "Put a space after it.")
     return text
 
 
@@ -635,6 +641,9 @@ def _rating(f: FieldSpec, v: Any) -> int:
 
 
 def _duration(f: FieldSpec, v: Any) -> int:
+    if _int(v) and v >= MAX_DURATION_SECONDS:
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes at most {(MAX_DURATION_SECONDS - 1) // 3600} hours.")
     if not _int(v) or not 0 <= v < MAX_DURATION_SECONDS:
         raise FieldError(
             f.key, f"Field `{f.key}` takes whole seconds, 0 or more and below {MAX_DURATION_SECONDS}.")
@@ -654,6 +663,9 @@ def _quantity(f: FieldSpec, v: Any) -> dict[str, str]:
 
 
 def _percent(f: FieldSpec, v: Any) -> int:
+    if _int(v) and abs(v) >= MAX_PERCENT_BP:
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes basis points of at most {MAX_PERCENT_BP - 1} in size.")
     if not _int(v) or abs(v) >= MAX_PERCENT_BP:
         raise FieldError(
             f.key, f"Field `{f.key}` takes basis points as a whole number (1% is 100).")

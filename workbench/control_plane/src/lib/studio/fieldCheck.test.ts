@@ -10,6 +10,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { FIELD_TYPE_LIST } from "./blocks";
+
 import {
   type FieldSpec, checkValue, isBlank, validateRecord,
 } from "./fieldCheck";
@@ -57,7 +59,7 @@ describe("the golden file", () => {
   it("holds at least 48 value cases and every field type three times", () => {
     expect(golden.values.length).toBeGreaterThanOrEqual(48);
     const types = new Set(golden.values.map((c) => c.field.type));
-    expect(types.size).toBe(22);
+    expect(types.size).toBe(FIELD_TYPE_LIST.length);
     for (const t of types) {
       const mine = golden.values.filter((c) => c.field.type === t && !c.field.many);
       expect(mine.length, t).toBeGreaterThanOrEqual(3);

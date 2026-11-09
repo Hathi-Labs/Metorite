@@ -988,9 +988,7 @@ def _describe_fields() -> dict[str, Any]:
         "hot_types": list(f.HOT_TYPES),
         "name_pattern": f.NAME_PATTERN,
         "value_shapes": dict(f.VALUE_SHAPES),
-        "spec_parts": {
-            "rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"],
-        },
+        "spec_parts": {k: list(v) for k, v in f.SPEC_PARTS.items()},
         "limits": {
             "max_fields_per_object": f.MAX_FIELDS_PER_OBJECT,
             "max_options": f.MAX_OPTIONS,
@@ -2970,7 +2968,8 @@ def _package_objects(found: Any) -> list[dict[str, Any]]:
                     if type(f.get(part)) is int:
                         row[part] = f[part]
                 if isinstance(f.get("units"), list):
-                    row["units"] = [u[:20] for u in f["units"][:30] if isinstance(u, str)]
+                    # The declaration check caps the count and the length of units.
+                    row["units"] = [u for u in f["units"] if isinstance(u, str)]
                 if f.get("format") in studio_fields.BARCODE_FORMATS:
                     row["format"] = f["format"]
                 fields.append(row)
