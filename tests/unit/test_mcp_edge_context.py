@@ -235,6 +235,10 @@ async def _context(task_id: str = TASK) -> dict[str, Any]:
     return _structured(await _tool("get_task_context", {"task_id": task_id}))
 
 
+async def _tool_body(name: str, task_id: str = TASK) -> dict[str, Any]:
+    return _structured(await _tool(name, {"task_id": task_id}))
+
+
 async def _work(**args: Any) -> list[dict[str, Any]]:
     return _structured(await _tool("my_work", args))["rows"]
 
@@ -261,6 +265,25 @@ class TestTheContext:
         assert tuple(body) == tools.CONTEXT_KEYS
         assert tuple(body["task"]) == tools.GET_TASK_KEYS  # the shape of get_task
         assert body["held_by"] == body["task"]["held_by"]
+
+    async def test_sp5a_the_task_shows_its_open_cycle_or_null(self, board):
+        """WS-39 SP-5a: ``cycle`` is in ``get_task`` and ``get_task_context``. It
+        is null while the gateway sends no ``cycle`` (the flag is off, or the task
+        is in no open cycle). The name is text that people wrote."""
+        for read in (_context, lambda: _tool_body("get_task")):
+            body = await read()
+            assert body["cycle"] is None
+        board.tasks[TASK]["cycle"] = {
+            "id": _uuid(9100), "name": "Week 47", "state": "active",
+            "starts_on": "2026-11-16", "ends_on": "2026-11-22", "organization_id": "x"}
+        for read in (_context, lambda: _tool_body("get_task")):
+            body = await read()
+            assert tuple(body["cycle"]) == tools.CYCLE_KEYS
+            assert body["cycle"]["name"] == {"untrusted_text": "Week 47"}
+            assert body["cycle"]["state"] == "active"
+        # A state that the edge does not know is dropped, not passed on.
+        board.tasks[TASK]["cycle"]["state"] = "weird"
+        assert (await _context())["cycle"] is None
 
     async def test_x2_the_ancestors_come_root_first_with_their_fields(self, board):
         near, root = _chain(board, 2)

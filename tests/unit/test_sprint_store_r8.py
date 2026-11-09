@@ -286,14 +286,18 @@ def test_each_route_is_mounted_and_reads_the_flag() -> None:
         assert cycles.require_sprints in calls, key
 
 
-def test_each_route_has_a_manifest_row_and_a_planned_tool() -> None:
+def test_each_route_has_a_manifest_row_and_a_built_or_planned_tool() -> None:
+    import skill_projects
     from skill_projects import manifest as m
 
     rows = {(r.method, r.path): r for r in m.MANIFEST}
     for key in ROUTES:
         assert key in rows, key
-        assert rows[key].tool in m.PLANNED, key
-        assert "964" in m.PLANNED[rows[key].tool], key
+        tool = rows[key].tool
+        if tool in skill_projects.__all__:
+            continue  # SP-5a built it: test_projects_cycle_tools.py holds the tool
+        assert tool in m.PLANNED, key
+        assert "964" in m.PLANNED[tool], key
 
 
 def test_the_timeline_prints_the_body_of_an_unknown_type() -> None:
@@ -765,6 +769,57 @@ class TestTheCycleStoreOnARealDatabase:
                               {"o": w.p.org_b})
                     c.execute(text(sql), params)
         assert _count(w.p, "SELECT count(*) FROM pm_cycle_tasks") == 1
+
+    async def test_a_task_of_another_org_goes_in_no_cycle(self, w):
+        """WS-39 SP-5a: the chat tools send ids that the model chose. The route
+        refuses an id of another org on all three doors: the add, the close
+        target, and the read of the task's own cycle. Nothing is written."""
+        mine = _task(w.p, w.p.org_a, w.alice, w.proj)
+        theirs = _task(w.p, w.p.org_b, w.zed, w.space_b)
+        async with _session(w.p) as call:
+            cycle_a = await _plan(call, w.u_alice, w.space["id"], goal="A goal")
+            cycle_b = await _plan(call, w.u_zed, w.space_b["id"], goal="B goal")
+            assert (await _add(call, w.u_alice, cycle_a, mine)).status_code == 200
+            # A task of org B into the cycle of org A, by a member of A, and the reverse.
+            for user, cycle, task in ((w.u_alice, cycle_a, theirs), (w.u_zed, cycle_b, mine),
+                                      (w.u_zed, cycle_a, theirs)):
+                refused = await _add(call, user, cycle, task)
+                assert refused.status_code == 404, refused.text
+            started = await call(w.u_alice, "POST", f"/projects/cycles/{cycle_a}/start", {})
+            assert started.status_code == 200, started.text
+            # A close that names the cycle of org B as the next cycle is refused.
+            closing = await call(w.u_alice, "POST", f"/projects/cycles/{cycle_a}/close", {
+                "choices": [{"task_id": mine, "choice": "next", "cycle_id": cycle_b}]})
+            assert closing.status_code == 422 and _error(closing) == "bad_choice", closing.text
+        assert _members_of(w.p, cycle_a) == {mine} and _members_of(w.p, cycle_b) == set()
+        assert _count(w.p, "SELECT count(*) FROM pm_cycle_tasks WHERE task_id = CAST(:t AS uuid)",
+                      t=theirs) == 0
+        assert _one(w.p, "SELECT state FROM pm_cycles WHERE id = CAST(:c AS uuid)",
+                    c=cycle_a).state == "active"
+
+    async def test_the_task_read_carries_its_open_cycle_while_the_flag_is_on(self, w, monkeypatch):
+        """WS-39 SP-5a: ``GET /projects/tasks/{id}`` gives ``cycle``: the open
+        cycle of the task as the MCP ``get_task`` shows it. It is null for a task
+        in no open cycle, and the key is absent while the flag is off. A closed
+        cycle is history, so it shows no cycle. A reader who cannot see the node
+        of the cycle sees null."""
+        from acb_common import get_settings
+
+        task = _task(w.p, w.p.org_a, w.alice, w.proj)
+        async with _session(w.p) as call:
+            before = await call(w.u_alice, "GET", f"/projects/tasks/{task}")
+            assert before.status_code == 200 and before.json()["cycle"] is None
+            cycle = await _plan(call, w.u_alice, w.space["id"], name="Week 47", goal="Go")
+            assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            seen = (await call(w.u_alice, "GET", f"/projects/tasks/{task}")).json()["cycle"]
+            assert seen == {"id": cycle, "name": "Week 47", "state": "planned",
+                            "starts_on": "2026-11-09", "ends_on": "2026-11-15"}
+            # Bob sees the project of the task, not the space of the cycle.
+            bob = (await call(w.u_bob, "GET", f"/projects/tasks/{task}")).json()
+            assert bob["cycle"] is None
+            monkeypatch.setattr(get_settings(), "projects_sprints_orgs", w.p.org_b)
+            off = (await call(w.u_alice, "GET", f"/projects/tasks/{task}")).json()
+            assert "cycle" not in off
 
     async def test_the_same_org_triggers_hold_for_the_table_owner(self, w):
         task_a = _task(w.p, w.p.org_a, w.alice, w.proj)

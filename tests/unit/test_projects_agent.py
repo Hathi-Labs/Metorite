@@ -183,6 +183,9 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # WS-39 LP-1a — the updates of a project, and an older page of them
     "list_project_updates": [{"project_id": UUID},
                              {"project_id": UUID, "limit": 2, "before": UUID}],
+    # WS-39 SP-5a — the cycles of a node, and one cycle with a page of its tasks
+    "list_cycles": [{"project_id": UUID}, {"project_id": UUID, "limit": 1, "offset": 1}],
+    "cycle_detail": [{"cycle_id": UUID}, {"cycle_id": UUID, "limit": 1}],
     # WS-ALN ALN-2a — the member's own open decisions
     "my_decisions": [{}],
     # WS-39 TPL-1a — the templates of the organization
@@ -633,6 +636,19 @@ def _detail_responder(call: dict) -> Any:
             "energy": None,
             "is_triaged": True,
         }
+    # WS-39 SP-5a: the cycles of a node, and one cycle.
+    if path.startswith("/projects/nodes/") and path.endswith("/cycles"):
+        return {"project_id": UUID, "cycles": [
+            {"id": UUID, "project_id": UUID, "name": "Sprint 7", "state": "planned",
+             "starts_on": "2026-11-16", "ends_on": "2026-11-27", "goal": "Ship", "tasks": 2,
+             "hidden": 0}]}
+    if path.startswith("/projects/cycles/") and path.count("/") == 3:
+        return {"cycle": {"id": UUID, "project_id": UUID, "name": "Sprint 7", "state": "planned",
+                          "starts_on": "2026-11-16", "ends_on": "2026-11-27", "goal": "Ship"},
+                "tasks": [{"id": UUID, "task_number": 7, "title": "Fix the extruder",
+                           "status_name": "To do", "status_category": "todo",
+                           "estimate_mins": 60, "archived": False}],
+                "hidden": 0, "committed": None, "capacity": []}
     if path.startswith("/projects/nodes/") and path.endswith("/summary"):
         return {
             "id": UUID,

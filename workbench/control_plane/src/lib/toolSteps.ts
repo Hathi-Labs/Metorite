@@ -166,6 +166,8 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   project_access: { kind: "read", verb: V.read, object: "who may see a project" },
   project_authorities: { kind: "read", verb: V.read, object: "the authority pages of a project" },
   list_project_updates: { kind: "read", verb: V.read, object: "the updates of a project" },
+  list_cycles: { kind: "read", verb: V.read, object: "the cycles of a project" },
+  cycle_detail: { kind: "read", verb: V.read, object: "a cycle" },
   // WS-39 TPL-1a: the templates of the organization.
   list_templates: { kind: "read", verb: V.read, object: "the project templates" },
   // WS-39 TPL-1a repair (P2-e): the generic label read "Saved an as template".
@@ -215,6 +217,10 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   comment: { kind: "edit", verb: V.comment, object: "a task" },
   post_project_update: { kind: "edit", verb: V.wrote, object: "a project update" },
   delete_project_update: { kind: "edit", verb: V.delete, object: "a project update" },
+  create_cycle: { kind: "edit", verb: V.create, object: "a cycle" },
+  plan_cycle: { kind: "edit", verb: V.edit, object: "the tasks of a cycle" },
+  start_cycle: { kind: "edit", verb: V.edit, object: "a cycle" },
+  close_cycle: { kind: "edit", verb: V.edit, object: "a cycle" },
   assign: { kind: "edit", verb: V.assign, object: "a task" },
   complete: { kind: "edit", verb: V.complete, object: "a task" },
   defer: { kind: "edit", verb: V.defer, object: "a task" },

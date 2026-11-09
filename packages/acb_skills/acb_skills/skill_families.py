@@ -808,6 +808,37 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
+    # the other Projects packs are full in their measured turns.
+    "projects-cycles": {
+        "label": "Projects cycles",
+        "summary": (
+            "The cycles (sprints) of a project: list them, read one, plan one, "
+            "add or remove tasks, then start or close it."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the cycles "
+            "of a project, for the main assistant to load when a turn names "
+            "a cycle or a sprint. The pack holds the tools to list the "
+            "cycles of a project and to read one with its tasks. It also "
+            "holds the tools to plan a cycle, to add tasks to it or take "
+            "them out, to start it and to close it. Each change asks the "
+            "member first. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "close_cycle",
+            "create_cycle",
+            "cycle_detail",
+            "list_cycles",
+            "plan_cycle",
+            "start_cycle",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,

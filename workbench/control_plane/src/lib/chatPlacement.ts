@@ -104,6 +104,9 @@ const EVIDENCE: readonly string[] = [
   "project_authorities",
   // WS-39 LP-1a: the updates of a project.
   "list_project_updates",
+  // WS-39 SP-5a: the cycles of a project, and the status of one cycle.
+  "list_cycles",
+  "cycle_detail",
   // WS-39 TPL-1a: the templates of the organization.
   "list_templates",
   "my_decisions",
@@ -190,6 +193,9 @@ const WRITE: readonly string[] = [
   "comment",
   // WS-39 LP-1a: one update of a project, with its health.
   "post_project_update",
+  // WS-39 SP-5a: plan a cycle, and put tasks in it or take them out.
+  "create_cycle",
+  "plan_cycle",
   "add_subtasks",
   "link_tasks",
   "unlink_tasks",
@@ -261,6 +267,9 @@ const WRITE: readonly string[] = [
   "unpin_authority",
   // WS-39 LP-1a: the delete of a project update, class C.
   "delete_project_update",
+  // WS-39 SP-5a: a cycle starts and a cycle closes, class C.
+  "start_cycle",
+  "close_cycle",
   // WS-39 TPL-1a: an org-wide template, and a project made from one.
   "save_as_template",
   "create_project_from_template",

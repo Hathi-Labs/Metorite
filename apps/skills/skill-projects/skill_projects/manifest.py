@@ -182,10 +182,12 @@ MANIFEST: tuple[Route, ...] = (
     # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
     Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
     # ── cycles.py — the cycle store (WS-39 SP-1, D195) ───────────────────
-    # Dark behind PROJECTS_SPRINTS_ORGS. SP-5 (Metorite task 964) builds each
-    # tool. A delete of a planned cycle, a start and a close are hard to undo,
-    # so they are class C. A plan and an edit change rows that the app can
-    # change back, so they are class B.
+    # Dark behind PROJECTS_SPRINTS_ORGS. SP-5a (Metorite task 964) built six
+    # tools: list_cycles, cycle_detail, create_cycle, plan_cycle, start_cycle
+    # and close_cycle (skill_projects/cycles.py). update_cycle and delete_cycle
+    # stay PLANNED. A delete of a planned cycle, a start and a close are hard
+    # to undo, so they are class C. A plan and an edit change rows that the app
+    # can change back, so they are class B.
     Route("GET", "/projects/nodes/{project_id}/cycles", "list_cycles", "A"),
     Route("POST", "/projects/nodes/{project_id}/cycles", "create_cycle", "B"),
     Route("GET", "/projects/cycles/{cycle_id}", "cycle_detail", "A"),
@@ -613,15 +615,10 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
-    # WS-39 SP-1 built the cycle routes. SP-5 builds their tools.
-    "list_cycles": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "cycle_detail": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "create_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "update_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "delete_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "plan_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "start_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "close_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    # WS-39 SP-1 built the cycle routes. SP-5a (task 964) built six of their
+    # tools in the chat. These two wait for a later slice.
+    "update_cycle": "Metorite task 964, a later SP-5 slice: edit a cycle in the chat",
+    "delete_cycle": "Metorite task 964, a later SP-5 slice: delete a planned cycle in the chat",
     # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
     "ask_person": "WS-AP AP-10, the chat tools of Waiting",
     "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
@@ -704,6 +701,13 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "list_project_updates": frozenset({"project_summary"}),
     "post_project_update": frozenset({"project_summary", "list_project_updates"}),
     "delete_project_update": frozenset({"project_summary", "list_project_updates"}),
+    # WS-39 SP-5a: the cycle tools read the node, the cycle and the task
+    # before a card, so a dark flag or a wrong id shows a sentence and no card.
+    "list_cycles": frozenset({"project_summary"}),
+    "create_cycle": frozenset({"project_summary", "list_cycles"}),
+    "plan_cycle": frozenset({"cycle_detail", "task_detail"}),
+    "start_cycle": frozenset({"cycle_detail", "list_cycles"}),
+    "close_cycle": frozenset({"cycle_detail", "list_cycles"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
@@ -1097,6 +1101,17 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "health": "post_project_update.health",
         "body": "post_project_update.body",
     },
+    # WS-39 SP-5a: the cycle routes. The page of the cycles has no query. The
+    # edit, the two optional plan fields and the capacity stay in FIELD_PLANNED.
+    ("POST", "/projects/nodes/{project_id}/cycles"): {
+        "name": "create_cycle.name",
+        "goal": "create_cycle.goal",
+        "starts_on": "create_cycle.starts_on",
+        "ends_on": "create_cycle.ends_on",
+    },
+    ("POST", "/projects/cycles/{cycle_id}/tasks"): {"task_id": "plan_cycle.add_task_ids"},
+    ("POST", "/projects/cycles/{cycle_id}/start"): {"goal": "start_cycle.goal"},
+    ("POST", "/projects/cycles/{cycle_id}/close"): {"choices": "close_cycle.carry_over"},
     # WS-ALN ALN-2a: the one field of an answer.
     ("POST", "/projects/decisions/{decision_id}/answer"): {
         "answer_key": "answer_decision.answer_key"
@@ -1659,26 +1674,25 @@ FIELD_GAPS: dict[str, str] = {
     # Its rows are in SENDS.
     # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
     "G25": "AP-10",
-    # WS-39 SP-1: the cycle routes. The chat and the MCP get them in SP-5.
+    # WS-39 SP-1: the cycle routes. SP-5a sent the fields of the plan, the
+    # start and the close. The edit fields and the capacity wait.
     "G26": "SP-5",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
-    # G26 (WS-39 SP-1): the cycle routes. SP-5 (Metorite task 964) sends each
-    # field.
+    # G26 (WS-39 SP-1): the cycle routes. SP-5a (Metorite task 964) sends the
+    # fields of the plan, the add, the start and the close. The edit and the
+    # two optional fields of a plan stay planned.
     ("POST", "/projects/nodes/{project_id}/cycles"): {
-        "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
         "cooldown_days": "G26", "credit_budget": "G26",
     },
     ("PATCH", "/projects/cycles/{cycle_id}"): {
         "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
         "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
     },
-    ("POST", "/projects/cycles/{cycle_id}/tasks"): {"task_id": "G26"},
-    ("POST", "/projects/cycles/{cycle_id}/start"): {"goal": "G26", "capacity": "G26"},
-    ("POST", "/projects/cycles/{cycle_id}/close"): {"choices": "G26"},
+    ("POST", "/projects/cycles/{cycle_id}/start"): {"capacity": "G26"},
     # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
     ("POST", "/projects/tasks/{task_id}/asks"): {
         "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",

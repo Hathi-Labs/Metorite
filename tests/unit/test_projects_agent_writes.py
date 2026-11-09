@@ -476,6 +476,53 @@ def _lp1a_answers(call: dict) -> Any:
     return None
 
 
+#: WS-39 SP-5a. A planned cycle on the project UUID, and an active cycle on SALES.
+PLANNED_CYCLE = "d4d9fad5-d9cb-469f-a165-70867728950e"
+ACTIVE_CYCLE = "e5d9fad5-d9cb-469f-a165-70867728950e"
+_CYCLE_BASE = {"goal": "Ship the nozzle", "starts_on": "2026-11-16", "ends_on": "2026-11-27",
+               "cooldown_days": None, "credit_budget": None, "started_at": None,
+               "started_by": None, "closed_at": None, "closed_by": None,
+               "created_by": "pm@fracktal.in", "created_at": "2026-11-09T10:00:00+00:00",
+               "updated_at": "2026-11-09T10:00:00+00:00"}
+CYCLE_PLANNED = {**_CYCLE_BASE, "id": PLANNED_CYCLE, "project_id": UUID,
+                 "name": "Sprint 7", "state": "planned"}
+CYCLE_ACTIVE = {**_CYCLE_BASE, "id": ACTIVE_CYCLE, "project_id": SALES,
+                "name": "Sprint 6", "state": "active"}
+_CYCLE_TASKS = [
+    {"id": UUID, "task_number": 7, "title": "Fix the extruder", "status_name": "In progress",
+     "status_category": "in_progress", "estimate_mins": 90, "archived": False},
+    {"id": OTHER, "task_number": 8, "title": "Order the nozzle", "status_name": "Done",
+     "status_category": "done", "estimate_mins": 30, "archived": False},
+]
+
+
+def _sp5a_answers(call: dict) -> Any:
+    """WS-39 SP-5a: the cycles of a node, one cycle, and the four writes."""
+    path, method = call["path"], call["method"]
+    if method == "GET" and path == f"/projects/nodes/{UUID}/cycles":
+        return {"project_id": UUID, "cycles": [{**CYCLE_PLANNED, "tasks": 2, "hidden": 0}]}
+    if method == "GET" and path == f"/projects/nodes/{SALES}/cycles":
+        return {"project_id": SALES, "cycles": [{**CYCLE_ACTIVE, "tasks": 2, "hidden": 0}]}
+    if method == "GET" and path == f"/projects/cycles/{PLANNED_CYCLE}":
+        return {"cycle": CYCLE_PLANNED, "tasks": _CYCLE_TASKS, "hidden": 0,
+                "committed": None, "capacity": []}
+    if method == "GET" and path == f"/projects/cycles/{ACTIVE_CYCLE}":
+        return {"cycle": CYCLE_ACTIVE, "tasks": _CYCLE_TASKS, "hidden": 0,
+                "committed": {"tasks": 2, "hidden": 0, "estimate_mins": 120},
+                "capacity": [{"member_email": "pm@fracktal.in", "review_minutes": 240}]}
+    if method == "POST" and path == f"/projects/nodes/{UUID}/cycles":
+        return {**CYCLE_PLANNED, "id": OTHER, **(call["json"] or {})}
+    if method == "POST" and path == f"/projects/cycles/{PLANNED_CYCLE}/tasks":
+        return {"cycle_id": PLANNED_CYCLE, "task_id": call["json"]["task_id"], "added": True}
+    if method == "DELETE" and path.startswith(f"/projects/cycles/{PLANNED_CYCLE}/tasks/"):
+        return {"cycle_id": PLANNED_CYCLE, "removed": True}
+    if method == "POST" and path == f"/projects/cycles/{PLANNED_CYCLE}/start":
+        return {"cycle": {**CYCLE_PLANNED, "state": "active"}, "committed_tasks": 2, "hidden": 0}
+    if method == "POST" and path == f"/projects/cycles/{ACTIVE_CYCLE}/close":
+        return {"cycle": {**CYCLE_ACTIVE, "state": "closed"}, "moved": {"next": 0, "backlog": 1}}
+    return None
+
+
 def _aln2a_answers(call: dict) -> Any:
     """WS-ALN ALN-2a: the member's open decisions, and the answer."""
     path, method = call["path"], call["method"]
@@ -608,7 +655,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp5a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -908,6 +955,18 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
     ],
     "delete_project_update": [{"project_id": UUID, "update_id": UPDATE_ID}],
+    # WS-39 SP-5a: plan a cycle, put tasks in it or take them out (class B), and
+    # start it or close it with a carry-over (class C), one card each.
+    "create_cycle": [
+        {"project_id": UUID, "name": "Sprint 8", "starts_on": "2026-11-30",
+         "ends_on": "2026-12-11", "goal": "Ship the nozzle"}
+    ],
+    "plan_cycle": [
+        {"cycle_id": PLANNED_CYCLE, "add_task_ids": f"{UUID},{OTHER}"},
+        {"cycle_id": PLANNED_CYCLE, "remove_task_ids": UUID},
+    ],
+    "start_cycle": [{"cycle_id": PLANNED_CYCLE}],
+    "close_cycle": [{"cycle_id": ACTIVE_CYCLE, "carry_over": "backlog"}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -950,6 +1009,8 @@ _ONE_ID: dict[str, str] = {
     "unpin_authority": "pin_id",
     "answer_decision": "decision_id",
     "delete_project_update": "update_id",
+    "start_cycle": "cycle_id",
+    "close_cycle": "cycle_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",

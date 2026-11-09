@@ -313,6 +313,14 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
              Plan((("project_authorities", {"project_id": NODE_WEB}),),
                   "No page is pinned as the authority of Website Relaunch yet.")),
     )),
+    # projects-cycles: a read of the cycles of a project (WS-39 SP-5a).
+    _pm("pm_cycles", "Cycles pack: the cycles of a project", (
+        Turn("Which sprints does Website Relaunch have?",
+             (Check("ran_tool", ("list_cycles",), "read_the_cycles"),
+              Check("right_pack", "projects-cycles"), Check("no_unasked_write", 0)),
+             Plan((("list_cycles", {"project_id": NODE_WEB}),),
+                  "Website Relaunch has no cycle yet.")),
+    )),
     _pm("pm_calendar", "Calendar surface: what is due", (
         Turn("What is due this week?",
              (Check("ran_tool", ("my_work", "calendar", "list_tasks"), "read_my_work"),

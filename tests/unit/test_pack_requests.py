@@ -238,6 +238,13 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "save_as_template": ("save this project as a template",),
     "create_project_from_template": ("use the project template Install kit for the Acme job",
                                      "start the Acme job from the template Install kit"),
+    # WS-39 SP-5a: the cycles pack.
+    "list_cycles": ("which sprints does Website Relaunch have?",),
+    "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
+    "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
+    "plan_cycle": ("add these six tasks to the next cycle",),
+    "start_cycle": ("start the planned cycle of Website Relaunch",),
+    "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),

@@ -98,6 +98,9 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   project_authorities: { icon: "Users", label: "Authority pages" },
   // WS-39 LP-1a: the updates of a project, newest first.
   list_project_updates: { icon: "Megaphone", label: "Project updates" },
+  // WS-39 SP-5a: the cycles of a project, and one cycle.
+  list_cycles: { icon: "Calendar", label: "Cycles" },
+  cycle_detail: { icon: "Calendar", label: "Cycle" },
   // WS-39 TPL-1a: the templates of the organization.
   list_templates: { icon: "LayoutList", label: "Templates" },
   my_decisions: { icon: "Users", label: "Decisions" },
@@ -150,6 +153,11 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   comment: { icon: "MessageSquare", label: "Comment posted" },
   // WS-39 LP-1a: one update of a project, with its health.
   post_project_update: { icon: "Megaphone", label: "Project update posted" },
+  // WS-39 SP-5a: the cycle writes.
+  create_cycle: { icon: "Calendar", label: "Cycle planned" },
+  plan_cycle: { icon: "ListTree", label: "Cycle tasks changed" },
+  start_cycle: { icon: "Play", label: "Cycle started" },
+  close_cycle: { icon: "CircleCheck", label: "Cycle closed" },
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
@@ -332,6 +340,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "pin_authority",
   "unpin_authority",
   "delete_project_update",
+  "start_cycle",
+  "close_cycle",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",

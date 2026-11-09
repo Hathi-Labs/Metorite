@@ -1101,6 +1101,12 @@ async def get_task(
         rollup = await epic_rollup(db, vis, row)
         if rollup is not None:
             result["rollup"] = rollup
+        # WS-39 SP-5a — the open cycle of the task, for the MCP `get_task`. The
+        # key is there only while PROJECTS_SPRINTS_ORGS holds the org.
+        from gateway.routes.projects import cycles
+
+        if cycles.sprints_allowed(getattr(user, "organization_id", None)):
+            result["cycle"] = await cycles.task_open_cycle(db, vis, row.id)
         return result
 
 

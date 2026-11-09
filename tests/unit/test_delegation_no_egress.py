@@ -829,6 +829,9 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: update_task patch through the gateway, behind one card, and says open_world=False.
 #: 2026-11-08 (WS-39 LP-1a): list_project_updates (a read) and post_project_update (one
 #: card) joined. Each reaches only the gateway, and says open_world=False.
+#: 2026-11-09 (WS-39 SP-5a): list_cycles, cycle_detail (reads), create_cycle, plan_cycle (one
+#: card) and start_cycle, close_cycle (class C) joined. Each reaches only the gateway, and
+#: says open_world=False.
 #: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
 #: floor. It sends an attached image only to the metered tier-vision model of the
 #: Console, writes nothing, and says open_world=False.
@@ -847,6 +850,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "nudge_task", "export_tasks", "attach_to_task",
     "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
     "list_project_updates", "post_project_update", "delete_project_update",
+    "list_cycles", "cycle_detail", "create_cycle", "plan_cycle", "start_cycle", "close_cycle",
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",

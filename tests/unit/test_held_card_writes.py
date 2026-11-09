@@ -57,7 +57,7 @@ CRM_AGENT = REPO / "apps" / "agents" / "agent-crm" / "agents.py"
 PA = "projects-assistant"
 CRM = "crm-assistant"
 PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bulk",
-                 "projects-reminders", "projects-reports", "projects-authority")
+                 "projects-reminders", "projects-reports", "projects-authority", "projects-cycles")
 
 # ── 1. The table ────────────────────────────────────────────────────────────
 
@@ -71,6 +71,7 @@ KEPT_PROJECTS = frozenset({
     "create_type", "create_types", "defer", "edit_comment", "edit_project", "edit_task",
     "file_tasks", "link_tasks", "link_tasks_batch", "mark_notifications_read",
     "move_task", "post_project_update", "promote_reminder", "propose_plan",
+    "create_cycle", "plan_cycle",  # WS-39 SP-5a: class B, one card each
     "remove_task_ref",
     "reopen_reminder", "report_save", "reschedule_reminder", "resolve_reminder",
     "save_view", "set_my_overlay", "set_recurrence", "set_reminder", "triage_intake",
@@ -100,6 +101,8 @@ OFF_PROJECTS = frozenset({
     "pin_authority", "unpin_authority",
     # WS-39 LP-1a: the delete of a project update, class C.
     "delete_project_update",
+    # WS-39 SP-5a: a cycle starts and a cycle closes, class C.
+    "start_cycle", "close_cycle",
     # WS-39 TPL-1a: an org-wide template, and a project made from one.
     "save_as_template", "create_project_from_template",
 })

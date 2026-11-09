@@ -470,6 +470,9 @@ class WorkGateway:
             return self._summary(parts[1])
         if tail in (["types"], ["tags"], ["fields"]):
             return {"rows": []}
+        if tail == ["cycles"]:
+            # WS-39 SP-5a: no cycle is planned in the fake.
+            return {"project_id": parts[1], "cycles": []}
         if tail == ["authorities"]:
             # WS-ALN ALN-4: no page is pinned in the fake.
             return {"rows": [], "total": 0}

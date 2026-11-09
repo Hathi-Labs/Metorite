@@ -50,6 +50,8 @@ WHEN = {
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
     "projects-authority": "Load for the authority page of a project (read, pin or unpin), or to read or post a project update.",
+    # WS-39 SP-5a: the cycles pack.
+    "projects-cycles": "Load for cycles (sprints): to list them, plan one, add or remove tasks, start one or close one.",
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
