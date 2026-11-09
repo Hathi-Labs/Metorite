@@ -266,7 +266,15 @@ class TestTheIdSplit:
         from fastapi.testclient import TestClient
 
         monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", "vox6-operator-token")
+        import customer_console.main as console_main
         from customer_console.main import app
+
+        # Task 2511: hold the order even where a database IS set (PR CI has
+        # one, main's push job does not). A touch of the engine fails here.
+        def _no_database():
+            raise AssertionError("the declare door opened the database before it refused")
+
+        monkeypatch.setattr(console_main, "get_engine", _no_database)
 
         answer = TestClient(app).post(
             "/catalog/capabilities",
