@@ -14,3 +14,14 @@ export const COMPILE_DEBOUNCE_MS = 600;
 export function compileDelay(firstSource: boolean): number {
   return firstSource ? 0 : COMPILE_DEBOUNCE_MS;
 }
+
+/**
+ * Start `run` after {@link compileDelay}. Returns the cancel, for an effect's
+ * cleanup: a source that changes again before its pause never compiles.
+ * `SandboxedReact` schedules every compile through here
+ * (`compileDebounce.test.ts` holds both halves).
+ */
+export function scheduleCompile(firstSource: boolean, run: () => void): () => void {
+  const timer = setTimeout(run, compileDelay(firstSource));
+  return () => clearTimeout(timer);
+}
