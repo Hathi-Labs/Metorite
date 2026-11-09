@@ -8,10 +8,13 @@
  * Mutation 1: drop `!isLinesField(f)` from `formFields`. "the Form leaves a lines
  * field out" turns red.
  * Mutation 2: drop the `lines` copy in `fieldSpecs`. Each test turns red.
+ * Mutation 3: make `detailFields` return every field. "the Detail leaves a lines
+ * field out" turns red. Verifier P2: the Detail showed "Order lines" with a dash
+ * for an order that holds lines.
  */
 import { describe, expect, it } from "vitest";
 
-import { fieldSpecs, formFields, isLinesField, tableFields } from "./packagePreview";
+import { detailFields, fieldSpecs, formFields, isLinesField, tableFields } from "./packagePreview";
 import type { ObjectRow } from "./realDoor";
 
 const field = (key: string, type: string, more: Partial<ObjectRow["fields"][number]> = {}) => ({
@@ -38,6 +41,10 @@ describe("a lines relation in the installed app", () => {
   it("the Form leaves a lines field out, and keeps a plain relation", () => {
     const keys = formFields(fieldSpecs(order), new Set(["total"])).map((f) => f.key);
     expect(keys).toEqual(["title", "customer"]);
+  });
+
+  it("the Detail leaves a lines field out, and keeps a plain relation and a computed field", () => {
+    expect(detailFields(fieldSpecs(order)).map((f) => f.key)).toEqual(["title", "customer", "total"]);
   });
 
   it("the Table leaves a lines field out, and keeps a plain relation", () => {

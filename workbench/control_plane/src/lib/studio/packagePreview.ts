@@ -60,6 +60,15 @@ export function formFields(fields: readonly FieldSpec[], computed: ReadonlySet<s
 }
 
 /**
+ * The fields of the Detail sheet: every field but a lines relation (C13). A lines
+ * relation holds no value on the record, so a dash there would read as "no lines".
+ * A computed field stays, because the Detail shows what the store filled.
+ */
+export function detailFields(fields: readonly FieldSpec[]): FieldSpec[] {
+  return fields.filter((f) => !isLinesField(f));
+}
+
+/**
  * The select field that makes the lanes of a Board: the first select field of one value
  * that carries options and that no `formula` or `rollup` rule fills. The store refuses a
  * write to a computed key, so a drop on such a field would always fail.
