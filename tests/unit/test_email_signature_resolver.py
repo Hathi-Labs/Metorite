@@ -657,9 +657,8 @@ def flag_reads(source: str) -> list[int]:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if id(node) not in docs and _FLAG in node.value.lower():
                 lines.add(node.lineno)
-        elif isinstance(node, ast.Attribute) and node.attr.lower() == _FLAG:
-            lines.add(node.lineno)
-        elif isinstance(node, ast.Name) and node.id.lower() == _FLAG:
+        elif ((isinstance(node, ast.Attribute) and node.attr.lower() == _FLAG)
+              or (isinstance(node, ast.Name) and node.id.lower() == _FLAG)):
             lines.add(node.lineno)
     return sorted(lines)
 
