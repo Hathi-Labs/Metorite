@@ -211,14 +211,18 @@ async def send_email(
             # Append the account's HTML signature once, here at the single send
             # choke point (with a plain-text fallback), so every reply / new
             # message carries it. The drafter no longer bakes it into the body.
-            from gateway.routes.email.signature import build_signed_bodies
-            sig_row = (await db.execute(text(
-                "SELECT signature FROM email_assistant_settings "
-                "WHERE account_id = :aid"
-            ), {"aid": req.account_id})).fetchone()
+            # WS-17 SG-2 (D-EM-66): the resolver gives it, with the kind of
+            # this mail. A body that holds the form a draft path wrote keeps
+            # that form, so the mail carries one signature.
+            from gateway.routes.email.signature import (
+                build_signed_bodies,
+                resolve_signature_for_send,
+            )
+            signature = await resolve_signature_for_send(
+                db, req.account_id, "reply" if req.reply_to_message_id else "new",
+                req.body_text)
             send_text, send_html = build_signed_bodies(
-                (sig_row.signature if sig_row else "") or "",
-                req.body_text, req.body_html)
+                signature, req.body_text, req.body_html)
 
             # ``_reply_target`` resolved the conversation id of the message
             # being replied to, so the provider threads the reply. Gmail needs
