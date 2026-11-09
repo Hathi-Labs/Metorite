@@ -4545,7 +4545,7 @@ async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, d
     task that sits under an epic. The gateway ranks, so the chat ``my_work``
     and this tool use one rule. A failed read (busy, or an old gateway) and
     an answer of the wrong shape keep the order of *ids* and give no plan."""
-    if not ids or not agent_oauth.plan_order_allowed(ctx.caller.lookup.organization_id):
+    if not ids:
         return ids, {}
     try:
         # Its own short limit, so a hung read never turns `my_work` into
@@ -4785,9 +4785,14 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
-    # SW-68a: the plan ranks the WHOLE assigned list, before any row is hidden,
-    # as the chat does. Then this tool hides the rows that it never offers. So
-    # a blocked slice keeps its slot in both surfaces. The run rows stay put.
+    # SW-68a: the plan ranks the WHOLE assigned list of this tool, before any
+    # row is hidden. Then this tool hides the rows that it never offers. So a
+    # blocked slice keeps its slot. The slices of one epic get the same
+    # relative order as in the chat. The plain rows keep the base order of each
+    # surface (the chat reads `assigned-to-me`, this tool reads `/projects/tasks`).
+    # The edge reads no flag: the gateway route does, and it reloads on SIGHUP.
+    # While the org is off, the route answers the input order and no plan.
+    # The run rows stay put.
     every = list(dict.fromkeys(
         i for i in (_id(r.get("id")) for r in assigned) if i is not None))
     ranked, plans = await _plan_of(ctx, every)
@@ -4838,8 +4843,8 @@ MY_WORK = Tool(
         " yours only when yours is true) or run_stopping"
         " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
-        " (assigned). A task under an epic is ranked by the plan: a ready"
-        " slice before a held one, then the least slack. Its plan field says"
+        " (assigned). When the organization has plan order on, a task under an"
+        " epic is ranked by the plan: a ready slice before a held one, then the least slack. Its plan field then says"
         " ready, slack_mins and blocked_by (ids), and blocked_by_hidden counts"
         " the blockers you cannot see. A task under no epic keeps its place."
         " Take the top row. For a waiting run, read it with"

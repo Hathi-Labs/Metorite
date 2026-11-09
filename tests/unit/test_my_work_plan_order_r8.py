@@ -323,9 +323,58 @@ class TestTheOrderOnARealDatabase:
         assert r.json()["plan"][v]["blocked_by_hidden"] == 2
         assert "sw68a hc h" not in r.text
 
-    async def test_the_mcp_and_the_chat_agree(self, live, monkeypatch):
-        """The WHOLE order agrees: plain tasks between epic slices, a slice
-        blocked by an epic link, a slice with a direct blocker, a diamond."""
+    @staticmethod
+    def _hidden_task(live, label: str, epic: str) -> str:
+        """An open task in a project that the member cannot see."""
+        seeder = live.seeder
+        project = seeder.project(f"{label} project", in_space=True)
+        for node in (project, seeder.root(project)):
+            seeder.one("DELETE FROM pm_project_grants WHERE project_id = CAST(:p AS uuid)"
+                       " AND subject = :s RETURNING project_id", p=node, s=w.MEMBER)
+        status = seeder.status(project, "To do", "todo", 0)
+        return _under(live, epic, project, status, label, 5)
+
+    async def test_a_hidden_blocker_of_a_mid_task_holds_the_slice(self, live):
+        epic = _epic(live, "sw68a mid")
+        mid = _under(live, epic, live.team, live.s.todo, "sw68a mid task", None)
+        s1 = _under(live, mid, live.team, live.s.todo, "sw68a mid slice", 30)
+        _assign(live, s1, w.MEMBER)
+        _block(live, self._hidden_task(live, "sw68a mid secret", epic), mid)
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={s1}", signed=None)
+        plan = r.json()["plan"][s1]
+        assert plan["ready"] is False and plan["blocked_by_hidden"] == 1
+        assert "sw68a mid secret" not in r.text
+        rows = {x["task_id"]: x for x in await _mcp_rows(live)}
+        assert rows[s1]["plan"]["ready"] is False
+
+    async def test_a_hidden_blocker_of_the_epic_holds_every_slice(self, live):
+        epic = _epic(live, "sw68a epic block")
+        s1 = _slice(live, epic, "sw68a epic block s1", 30)
+        s2 = _slice(live, epic, "sw68a epic block s2", 30)
+        _block(live, self._hidden_task(live, "sw68a epic secret", epic), epic)
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={s1},{s2}", signed=None)
+        plans = r.json()["plan"]
+        assert all(plans[x]["ready"] is False and plans[x]["blocked_by_hidden"] == 1
+                   for x in (s1, s2))
+        assert "sw68a epic secret" not in r.text
+
+    async def test_one_hidden_blocker_of_the_slice_and_its_parent_counts_once(self, live):
+        epic = _epic(live, "sw68a once")
+        mid = _under(live, epic, live.team, live.s.todo, "sw68a once mid", None)
+        s1 = _under(live, mid, live.team, live.s.todo, "sw68a once slice", 30)
+        _assign(live, s1, w.MEMBER)
+        secret = self._hidden_task(live, "sw68a once secret", epic)
+        _block(live, secret, mid)
+        _block(live, secret, s1)
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={s1}", signed=None)
+        assert r.json()["plan"][s1]["blocked_by_hidden"] == 1
+
+    async def test_the_epic_slices_have_the_same_relative_order_on_both_surfaces(
+            self, live, monkeypatch):
+        """The slices of one epic get the same relative order in the MCP and in
+        the chat. Plain rows keep the base order of each surface, and the chat
+        puts a task with a due date first (``assigned-to-me``), so a plain row
+        may sit elsewhere. A blocked slice is never ahead of a ready slice."""
         from sqlalchemy import text
 
         epic = _epic(live, "sw68a agree")
@@ -336,12 +385,13 @@ class TestTheOrderOnARealDatabase:
         _slice(live, first, "sw68a agree p", 60, mine=False)
         pb = _plain(live, "sw68a agree plain b")
         z = _slice(live, second, "sw68a agree z", 60)
-        # j is the newest task, so it holds the first slot. The old edge dropped
-        # it before the plan, gave its slot away, and so differed from the chat.
         j = _slice(live, epic, "sw68a agree j", 60)
         _block(live, x, j)
         _block(live, y, j)
         _block(live, first, second)
+        # A due date on one plain task moves it first in the chat only.
+        live.seeder.one("UPDATE pm_tasks SET due_at = now() + interval '1 day'"
+                        " WHERE id = CAST(:t AS uuid) RETURNING id", t=pb)
         mcp = [r for r in await _mcp_rows(live) if r["reason"] == "assigned"]
         titles, text_ = await _chat(live, monkeypatch)
         ids = [r["task_id"] for r in mcp]
@@ -350,9 +400,11 @@ class TestTheOrderOnARealDatabase:
             name = {str(r[0]): r[1] for r in c.execute(
                 text("SELECT id, title FROM pm_tasks WHERE id = ANY(CAST(:i AS uuid[]))"),
                 {"i": ids})}
-        chat_order = sorted(ids, key=lambda i: _where(titles, name[i]))
-        assert chat_order == ids, (chat_order, ids)  # the whole order
-        assert ids.index(x) < ids.index(y)
+        slices = [x, y, z]
+        mcp_order = [i for i in ids if i in slices]
+        chat_order = sorted(slices, key=lambda i: _where(titles, name[i]))
+        assert chat_order == mcp_order, (chat_order, mcp_order)
+        assert mcp_order.index(x) < mcp_order.index(y) and mcp_order[-1] == z
         _top_is_not_blocked(mcp)
         assert "plan: blocked by #" in text_ and "sw68a agree first epic" in text_
         assert "plan: ready · slack 0 mins" in text_

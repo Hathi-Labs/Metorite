@@ -646,6 +646,10 @@ async def _clock_line() -> str:
     return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
 
 
+#: The seconds that the plan read may take (SW-68a). The edge has the same limit.
+PLAN_ORDER_BUDGET_S = 2.0
+
+
 async def _plan_ordered(
     rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
@@ -659,7 +663,9 @@ async def _plan_ordered(
     if not ids:
         return rows, {}, {}
     try:
-        answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
+        # The same 2 second limit as the edge: a slow read keeps today's order.
+        async with asyncio.timeout(PLAN_ORDER_BUDGET_S):
+            answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
         if not isinstance(answer, dict):
             return rows, {}, {}
         order, plans = answer.get("order"), answer.get("plan")

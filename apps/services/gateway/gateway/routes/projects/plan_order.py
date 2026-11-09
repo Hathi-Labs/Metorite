@@ -21,7 +21,8 @@ row. The order of a member with no epic is unchanged.
 **Visibility.** The engine runs over the slices that the caller can see. A
 hidden slice leaves the plan, and so does each link that touches it. An open
 blocker that the caller cannot see holds its task and is COUNTED in
-``blocked_by_hidden``. It is never named.
+``blocked_by_hidden``. That holds for a blocker of the slice, of a task above
+it, or of the epic. It is counted once, and it is never named.
 
 **The cap.** At most :data:`MAX_TASKS` tasks and :data:`MAX_EPICS` epics for
 each read. An epic over that cap, a tree over the engine's task limit, an epic
@@ -191,7 +192,8 @@ async def _with_blockers(db: Any, vis: Any, plans: dict[str, TaskPlan],
                          labels: dict[str, dict[str, Any]]) -> dict[str, TaskPlan]:
     """Add what blocks each task. A visible open blocker is named by id, and
     only for a task that the engine holds back. An open blocker that the caller
-    cannot see is counted, and it also marks the task as blocked."""
+    cannot see is counted once, and it also marks the task as blocked. That
+    covers a blocker of the slice and of any task above it up to the epic."""
     targets = sorted({a for leaf in plans for a in chain[leaf]})
     rows = (await db.execute(
         text(_BLOCKERS_SQL.format(visible=task_visibility_clause(vis))),
@@ -209,9 +211,10 @@ async def _with_blockers(db: Any, vis: Any, plans: dict[str, TaskPlan],
             if r.vis:
                 named.add(src)
                 labels[src] = {"number": r.number, "title": r.title}
-            elif dst == leaf:
-                # Distinct blockers of the slice itself. A hidden blocker of
-                # an ancestor is not counted here.
+            else:
+                # A hidden open blocker of the slice, of a mid task above it
+                # or of the epic holds the slice. It is counted ONCE, however
+                # many of these tasks it blocks, and it is never named.
                 hidden_ids.add(src)
         hidden = len(hidden_ids)
         out[leaf] = TaskPlan(

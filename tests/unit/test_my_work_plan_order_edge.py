@@ -8,8 +8,9 @@ database. This file proves the edge side with a fake gateway:
 
 * the edge sends the WHOLE assigned list (held and blocked rows too) to the
   plan route and hides rows only after it has the order;
-* the flag ``MY_WORK_PLAN_ORDER_ORGS`` is off by default: no plan call, and the
-  answer is the old answer;
+* the edge reads no flag. The gateway route reads ``MY_WORK_PLAN_ORDER_ORGS``
+  and answers the input order with no plan while the org is off, so the edge
+  answer is then the old answer;
 * a plan read that hangs, fails or answers a wrong shape keeps today's order,
   and ``my_work`` never turns into "busy".
 
@@ -19,8 +20,8 @@ Mutations (R7). ``T`` is ``apps/services/agent_edge/agent_edge/tools.py``.
   (``test_the_whole_assigned_list_goes_to_the_plan``).
 * E2. ``T`` ``_plan_of`` drops the ``asyncio.timeout``
   (``test_a_hanging_plan_read_keeps_the_old_order``).
-* E3. ``T`` ``_plan_of`` skips the flag test
-  (``test_with_the_flag_off_the_edge_sends_no_plan_read``).
+* E3. ``T`` ``_plan_of`` reads the flag again
+  (``test_the_edge_reads_no_flag``).
 """
 # ruff: noqa: F811 (a pytest fixture is imported, then named as an argument)
 from __future__ import annotations
@@ -63,18 +64,18 @@ def _plan_calls(board) -> list[Any]:
 
 
 class TestTheFlag:
-    async def test_with_the_flag_off_the_edge_sends_no_plan_read(self, board):
+    async def test_the_edge_reads_no_flag(self, board):
+        """The flag is off here, and the edge still asks the route. The route
+        reloads on SIGHUP, and the edge has no handler for it."""
         a, b = _uuid(9001), _uuid(9002)
         _assign(board, a, b)
-        board.answers[("GET", ROUTE)] = (200, {"order": [b, a], "plan": {
-            b: _plan(_uuid(9100))}})
+        board.answers[("GET", ROUTE)] = (200, {"order": [a, b], "plan": {}, "labels": {}})
         rows = await _work()
         assert [r["task_id"] for r in rows] == [a, b]
         assert all("plan" not in r for r in rows)
-        assert _plan_calls(board) == []
+        assert len(_plan_calls(board)) == 1
 
-    async def test_with_the_flag_on_the_edge_takes_the_order_and_adds_plan(
-            self, board, plan_on):
+    async def test_with_the_org_on_the_edge_takes_the_order_and_adds_plan(self, board):
         a, b = _uuid(9011), _uuid(9012)
         _assign(board, a, b)
         epic = _uuid(9100)
@@ -88,7 +89,7 @@ class TestTheFlag:
 
 
 class TestTheWholeList:
-    async def test_the_whole_assigned_list_goes_to_the_plan(self, board, plan_on):
+    async def test_the_whole_assigned_list_goes_to_the_plan(self, board):
         """A blocked row and a held row still go to the route, so the slot that
         the plan gives them is the slot that the chat gives them (P1)."""
         plain, direct, held, epic_one = (_uuid(9021 + n) for n in range(4))
@@ -115,7 +116,7 @@ class TestAFailureKeepsTheOldOrder:
         (500, {"detail": "boom"}),
         (404, {"detail": "Not Found"}),
     ])
-    async def test_a_bad_answer_keeps_the_old_order(self, board, plan_on, answer):
+    async def test_a_bad_answer_keeps_the_old_order(self, board, answer):
         a, b = _uuid(9031), _uuid(9032)
         _assign(board, a, b)
         board.answers[("GET", ROUTE)] = answer
@@ -124,7 +125,7 @@ class TestAFailureKeepsTheOldOrder:
         assert all("plan" not in r for r in rows)
 
     async def test_a_hanging_plan_read_keeps_the_old_order(
-            self, board, plan_on, monkeypatch):
+            self, board, monkeypatch):
         a, b = _uuid(9041), _uuid(9042)
         _assign(board, a, b)
         monkeypatch.setattr(tools, "PLAN_ORDER_BUDGET_S", 0.2)
@@ -143,7 +144,7 @@ class TestAFailureKeepsTheOldOrder:
         assert all("plan" not in r for r in rows)
 
     async def test_a_busy_plan_read_does_not_make_my_work_busy(
-            self, board, plan_on, monkeypatch):
+            self, board, monkeypatch):
         a = _uuid(9051)
         _assign(board, a)
 

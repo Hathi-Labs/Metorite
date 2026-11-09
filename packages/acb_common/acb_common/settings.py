@@ -965,7 +965,10 @@ class Settings(BaseSettings):
     # SW-68a (agent_coordination.md SW-68): the organizations where `my_work`
     # (MCP and chat) ranks the tasks under an epic by the plan engine. Comma
     # list of organization ids, or `*`. Empty: off, and `my_work` keeps its old
-    # order and sends no plan read. A SIGHUP reload applies a change.
+    # order. Only the gateway route reads it, so a SIGHUP reload of the gateway
+    # applies a change. The edge reads no flag. With the flag off, the edge still
+    # makes one plan read (under its 2 second limit), and the answer is the
+    # input order.
     # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
     # tests/unit/test_my_work_plan_order_r8.py.
     my_work_plan_order_orgs: str = ""

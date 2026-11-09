@@ -80,8 +80,34 @@ async def test_a_blocker_is_named_by_number_and_title(monkeypatch):
     assert "blocked by a task you cannot see" in text
 
 
-async def test_with_the_flag_off_the_route_answers_the_input_order(monkeypatch):
-    """The gateway route answers the input order and no plan while the org is
-    off the list. The text is then the text of main, byte for byte."""
-    old = await _text(monkeypatch, {"order": [A, B], "plan": {}, "labels": {}})
-    assert "plan:" not in old
+async def test_with_the_flag_off_the_text_is_the_text_of_main(monkeypatch):
+    """The gateway route answers the input order, no plan and no labels while
+    the org is off. The text is then the text of main, byte for byte. Main
+    makes no plan read, so the baseline stubs ``_plan_ordered`` out."""
+    on_route = await _text(monkeypatch, {"order": [A, B], "plan": {}, "labels": {}})
+
+    async def no_plan(rows):
+        return rows, {}, {}
+
+    _fake(monkeypatch, {"order": [A, B], "plan": {}, "labels": {}})
+    monkeypatch.setattr(reads, "_plan_ordered", no_plan)
+    assert await reads.my_work() == on_route
+
+
+async def test_a_slow_plan_read_keeps_the_old_text(monkeypatch):
+    import asyncio
+
+    old = await _text(monkeypatch, {"order": [A, B], "plan": {}})
+    monkeypatch.setattr(reads, "PLAN_ORDER_BUDGET_S", 0.1)
+
+    async def get(path, params=None):
+        if path == "/projects/plan/order":
+            await asyncio.sleep(30)
+        if path == "/projects/assigned-to-me":
+            return {"rows": _rows(), "total": 2}
+        if path == "/projects/my/today":
+            raise GatewayRefusal("no clock")
+        return {"rows": []}
+
+    monkeypatch.setattr(reads, "get", get)
+    assert await reads.my_work() == old
