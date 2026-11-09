@@ -1435,6 +1435,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "propose_plan": _pin("name tasks parent_project_id description risks"),
     "remove_task_ref": _pin("task_id url"),
     "report_save": _pin("name project_id sections weeks report_id"),
+    # WS-39 LP-1a: an update of a project with its health. The card shows
+    # the project, the health and the exact text, and the post writes the
+    # one row. It tells nobody and reaches no other system.
+    "post_project_update": _pin("project_id health body"),
     "set_recurrence": _pin(
         "task_id freq interval weekdays day_of_month month_of_year anchor until "
         "max_occurrences stop"),
@@ -1488,7 +1492,9 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
     # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
     # open_world=True as each CRM write does, so a covered run holds it off.
-    "crm_create_pipeline": _pin("name stages copy_from"),
+    # CRM-M4a adds `kind` and `feeds`: a lead pipeline, and the deal pipeline
+    # that it feeds. The card names both, so the pin takes them.
+    "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
 }

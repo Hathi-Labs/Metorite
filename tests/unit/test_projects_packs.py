@@ -71,9 +71,10 @@ SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "pr
 #: After PJP-2 (project_planning.md section 3.3): the 11 report tools left plan, the 10 inbox,
 #: area and notification tools left structure for reminders. PJP-4 added update_tasks to
 #: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
-#: SP-8a added set_epic_contract to the authority pack. SP-12 added get_plan to plan.
-SIZES = {"projects": 23, "projects-plan": 25, "projects-structure": 24, "projects-bulk": 22,
-         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 4}
+#: WS-39 TPL-1a added the three template tools to structure. WS-39 LP-1a added
+#: the three update tools to authority, and SP-8a added set_epic_contract there.
+SIZES = {"projects": 23, "projects-plan": 25, "projects-structure": 27, "projects-bulk": 22,
+         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 7}
 #: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
 #: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
 OWNER_SLUGS = (*SLUGS, "calendar-day")
@@ -129,7 +130,9 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     tool is in two packs. Mutation: drop a tool from a family, add a name the
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
-    assert len(union) == 128 == len(set(union)), "no tool is in two packs"
+    # SP-12 added get_plan (127). WS-39 LP-1a added the three update tools (130),
+    # WS-39 TPL-1a the three template tools (133), and SP-8a set_epic_contract (134).
+    assert len(union) == 134 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -688,7 +691,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 128
+    assert seen == 134  # SP-12, LP-1a, TPL-1a, and SP-8a set_epic_contract
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -1526,7 +1529,9 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     organising = {"capture_intake", "intake_queue", "triage_intake", "create_area",
                   "delete_area", "rename_area", "my_areas", "my_contexts",
                   "notifications", "mark_notifications_read"}  # PJP-2: moved from structure
-    authority = {"pin_authority", "project_authorities", "unpin_authority"}
+    # WS-39 LP-1a: the two tools of a project update sit with the authority page.
+    authority = {"pin_authority", "project_authorities", "unpin_authority",
+                 "list_project_updates", "post_project_update", "delete_project_update"}
     assert set(_family("projects-reminders")) == seven | organising | {"answer_decision", "my_decisions"}
     assert not organising & set(_family("projects-structure"))
     # SP-8a: the contract of an epic joins the authority pack.

@@ -368,6 +368,7 @@ class TestTheExclusionCannotGoStale:
             "crm_contacts", "crm_convert_mappings", "crm_deal_contacts", "crm_deal_statuses",
             "crm_deals", "crm_digests", "crm_field_defs", "crm_field_fill", "crm_field_rules",
             "crm_field_sections",
+            "crm_lead_pipeline_stages",
             "crm_lead_statuses",
             "crm_leads",
             "crm_lost_reasons", "crm_mapping_plans", "crm_module_records",

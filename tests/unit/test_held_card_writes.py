@@ -70,7 +70,8 @@ KEPT_PROJECTS = frozenset({
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer", "edit_comment", "edit_project", "edit_task",
     "file_tasks", "link_tasks", "link_tasks_batch", "mark_notifications_read",
-    "move_task", "promote_reminder", "propose_plan", "remove_task_ref",
+    "move_task", "post_project_update", "promote_reminder", "propose_plan",
+    "remove_task_ref",
     "reopen_reminder", "report_save", "reschedule_reminder", "resolve_reminder",
     "save_view", "set_epic_contract", "set_my_overlay", "set_recurrence", "set_reminder",
     "triage_intake",
@@ -98,6 +99,10 @@ OFF_PROJECTS = frozenset({
     "set_status_set", "unarchive_project",
     # WS-ALN ALN-4, off in a held chat as every class C tool but promote_reminder.
     "pin_authority", "unpin_authority",
+    # WS-39 LP-1a: the delete of a project update, class C.
+    "delete_project_update",
+    # WS-39 TPL-1a: an org-wide template, and a project made from one.
+    "save_as_template", "create_project_from_template",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.

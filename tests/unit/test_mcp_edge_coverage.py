@@ -218,6 +218,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
         ("POST", "/projects/tasks/{task_id}/links"),
         ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+        # WS-39 LP-1a: `post_project_update` (project_management_app.md §14.2a).
+        ("POST", "/projects/nodes/{project_id}/updates"),
         ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
@@ -244,6 +246,9 @@ NEVER_ON_THE_EDGE = (
     ("POST", "/projects/nodes/{project_id}/move"),
     ("POST", "/projects/nodes/{project_id}/archive"),
     ("DELETE", "/projects/nodes/{project_id}"),
+    # WS-39 LP-1a (project_management_app.md §14.2a): the delete of a project
+    # update stays a member's act in this slice.
+    ("DELETE", "/projects/nodes/{project_id}/updates/{update_id}"),
 )
 
 
@@ -580,6 +585,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # routes take no such field.
     ("update_comment", "idempotency_key"),
     ("delete_comment", "idempotency_key"),
+    # WS-39 LP-1a. The slot of `add_comment`, keyed by the tool name. The
+    # update route takes no such field.
+    ("post_project_update", "idempotency_key"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in

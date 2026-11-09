@@ -43,14 +43,14 @@ WHEN = {
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
     "projects-plan": "Load for team load, capacity, a timeline, a plan from a goal, task links, repeats or new projects.",
-    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access or saved views.",
+    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views or project templates.",
     "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
     "projects-reminders": (
         'Load for "remind me", or to list, move, snooze or resolve a reminder (not a task). '
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
-    # SP-8a: the contract of an epic joins the authority pack.
-    "projects-authority": "Load for the authority page of a project (read, pin or unpin it), or to set the contract of an epic.",
+    # SP-8a and WS-39 LP-1a share the authority pack.
+    "projects-authority": "Load for the authority page of a project (read, pin or unpin), a project update, or the contract of an epic.",
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
