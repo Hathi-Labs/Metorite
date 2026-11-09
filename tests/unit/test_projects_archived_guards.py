@@ -53,10 +53,12 @@ def test_a_row_with_no_archived_field_passes():
 @pytest.mark.parametrize("module,call", [
     ("tree.py", 'assert_not_archived(parent_row, then="Create it in")'),
     ("tree.py", 'assert_not_archived(destination, then="Move it into")'),
-    ("tasks.py", 'assert_not_archived(target, then="Create the task in")'),
-    ("tasks.py", 'assert_not_archived(dest, then="Move the task into")'),
-    ("move.py", 'assert_not_archived(dest, then="Move into")'),
-    ("intake.py", 'assert_not_archived(target, then="Capture into")'),
+    # ARC-2b: a task write into an archived project is a 409 with one sentence
+    # (`core.assert_project_open_for_writes`), no longer the 422 of a placement.
+    ("tasks.py", "assert_project_open_for_writes(target)"),
+    ("tasks.py", "assert_project_open_for_writes(dest)"),
+    ("move.py", "assert_project_open_for_writes(dest)"),
+    ("intake.py", "assert_project_open_for_writes(target)"),
 ])
 def test_each_placing_route_calls_the_guard(module, call):
     assert call in _src(module)
@@ -84,24 +86,28 @@ def _space_with_two_projects(db: FakeProjectsDB, *, first_archived: bool):
     return space, first, second, todo
 
 
-async def test_create_task_into_an_archived_project_is_a_422(db: FakeProjectsDB):
+async def test_create_task_into_an_archived_project_is_a_409(db: FakeProjectsDB):
     _space, old, _new, _todo = _space_with_two_projects(db, first_archived=True)
     with pytest.raises(HTTPException) as err:
         await pm_tasks.create_task(
             pm_tasks.TaskIn(project_id=str(old.id), title="Late idea"), user=USER,
         )
-    assert err.value.status_code == 422
-    assert "Old plan is archived" in err.value.detail
+    assert err.value.status_code == 409
+    assert err.value.detail == core.ARCHIVED_PROJECT_REFUSAL
     assert db.rows("pm_tasks") == []
 
 
-async def test_a_task_can_still_move_out_of_an_archived_project(db: FakeProjectsDB):
+async def test_a_task_cannot_move_out_of_an_archived_project(db: FakeProjectsDB):
+    """ARC-2b (spec 9b.6 rule 2) refuses a move OUT of a filed project too. The
+    member restores the project first. This test said the opposite before."""
     space, old, new, todo = _space_with_two_projects(db, first_archived=True)
     task = db.seed_task(old.id, todo.id, root=space.id, title="Rescue me")
-    moved = await pm_tasks.move_task(
-        str(task.id), pm_tasks.MoveTask(project_id=str(new.id)), user=USER,
-    )
-    assert moved["project_id"] == str(new.id)
+    with pytest.raises(HTTPException) as err:
+        await pm_tasks.move_task(
+            str(task.id), pm_tasks.MoveTask(project_id=str(new.id)), user=USER,
+        )
+    assert err.value.status_code == 409
+    assert err.value.detail == core.ARCHIVED_PROJECT_REFUSAL
 
 
 async def test_a_recurring_task_in_an_archived_project_spawns_no_successor(
@@ -137,8 +143,8 @@ def test_the_personal_capture_helper_guards_an_archived_target():
 
     src = (ROUTES / "personal.py").read_text(encoding="utf-8")
     at = src.index("async def create_personal_task(")
-    assert 'assert_not_archived(target, then="Capture into")' in src[at:at + 4500]
-    assert personal.assert_not_archived is assert_not_archived
+    assert "assert_project_open_for_writes(target)" in src[at:at + 4500]
+    assert personal.assert_project_open_for_writes is core.assert_project_open_for_writes
 
 
 def test_the_portfolio_and_node_summaries_skip_archived_projects():

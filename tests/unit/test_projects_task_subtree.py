@@ -94,6 +94,12 @@ async def test_delete_route_maps_the_all_flag_to_delete_all(monkeypatch) -> None
     monkeypatch.setattr(tasks, "load_visible_task", load_visible_task)
     monkeypatch.setattr(tasks, "delete_task_in", delete_task_in)
     monkeypatch.setattr(tasks, "emit", emit)
+
+    async def project_open(db, task):
+        return None
+
+    # ARC-2b: this test pins the flag mapping, not the archived-project guard.
+    monkeypatch.setattr(tasks, "assert_task_project_open", project_open)
     tid = str(uuid.uuid4())
     maker = SimpleNamespace(email="maker@subtree.test", has_permission=lambda _p: False)
     await tasks.delete_task(tid, user=maker, delete_subtask_ids=[],

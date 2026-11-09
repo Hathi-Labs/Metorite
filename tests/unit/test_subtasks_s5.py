@@ -27,6 +27,22 @@ import pytest
 from fastapi import HTTPException
 from gateway.routes.projects import bulk, cascade, core, move, personal, tasks
 
+@pytest.fixture(autouse=True)
+def _project_is_open(monkeypatch):
+    """ARC-2b. These tests pin the lifecycle cascades on faked helpers, so the
+    read of the project's ``archived_at`` is faked open here. The refusal is
+    pinned by ``test_projects_archived_readonly_r8.py``."""
+    async def open_(*_a, **_k):
+        return None
+
+    async def not_archived(*_a, **_k):
+        return False
+
+    for module in (tasks, move, personal):
+        monkeypatch.setattr(module, "assert_task_project_open", open_)
+    monkeypatch.setattr(bulk, "project_is_archived", not_archived)
+
+
 # ── A tree, three levels deep, over two projects ───────────────────────────
 #
 #   parent (proj-a)

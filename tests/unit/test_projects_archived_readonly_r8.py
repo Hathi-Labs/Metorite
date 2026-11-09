@@ -49,8 +49,8 @@ def world(promoted):  # noqa: F811
 
     org = promoted.org_b
     ids = {k: str(uuid.uuid4()) for k in (
-        "filed", "live", "empty", "f_todo", "f_done", "l_todo", "l_done",
-        "f1", "f2", "l1", "l2", "g_filed", "g_live", "g_empty", "comment",
+        "space", "filed", "live", "empty", "todo", "done", "g_space",
+        "f1", "f2", "l1", "l2", "comment",
     )}
     with promoted.admin_engine.begin() as c:
         c.execute(
@@ -61,50 +61,60 @@ def world(promoted):  # noqa: F811
             ),
             {"e": ALICE, "o": org},
         )
+        # A space owns the lanes and the grant. The three projects sit in it,
+        # because a task lives on a project and never on a space.
+        c.execute(
+            text(
+                "INSERT INTO pm_projects (id, organization_id, name, source, created_by, "
+                "owns_statuses) VALUES (CAST(:p AS uuid), CAST(:o AS uuid), 'Space', "
+                "'manual', :me, true)"
+            ),
+            {"p": ids["space"], "o": org, "me": ALICE},
+        )
         for key, name in (("filed", "Filed"), ("live", "Live"), ("empty", "Empty")):
             c.execute(
                 text(
                     "INSERT INTO pm_projects (id, organization_id, name, source, created_by, "
-                    "owns_statuses) VALUES (CAST(:p AS uuid), CAST(:o AS uuid), :n, "
-                    "'manual', :me, true)"
+                    "parent_project_id) VALUES (CAST(:p AS uuid), CAST(:o AS uuid), :n, "
+                    "'manual', :me, CAST(:s AS uuid))"
                 ),
-                {"p": ids[key], "o": org, "n": name, "me": ALICE},
+                {"p": ids[key], "o": org, "n": name, "me": ALICE, "s": ids["space"]},
             )
+        c.execute(
+            text(
+                "INSERT INTO pm_project_grants (id, project_id, organization_id, subject, "
+                "created_by) VALUES (CAST(:g AS uuid), CAST(:p AS uuid), CAST(:o AS uuid), "
+                "'org', :me)"
+            ),
+            {"g": ids["g_space"], "p": ids["space"], "o": org, "me": ALICE},
+        )
+        for lane, name, position, category, default in (
+            (ids["todo"], "To do", 10, "todo", True), (ids["done"], "Done", 20, "done", False),
+        ):
             c.execute(
                 text(
-                    "INSERT INTO pm_project_grants (id, project_id, organization_id, subject, "
-                    "created_by) VALUES (CAST(:g AS uuid), CAST(:p AS uuid), CAST(:o AS uuid), "
-                    "'org', :me)"
+                    "INSERT INTO pm_task_statuses (id, project_id, name, position, "
+                    "category, is_default) VALUES (CAST(:s AS uuid), CAST(:p AS uuid), "
+                    ":n, :pos, :c, :d)"
                 ),
-                {"g": ids["g_" + key], "p": ids[key], "o": org, "me": ALICE},
+                {"s": lane, "p": ids["space"], "n": name, "pos": position,
+                 "c": category, "d": default},
             )
-        for project, todo, done in (("filed", "f_todo", "f_done"), ("live", "l_todo", "l_done")):
-            for lane, name, position, category, default in (
-                (todo, "To do", 10, "todo", True), (done, "Done", 20, "done", False),
-            ):
-                c.execute(
-                    text(
-                        "INSERT INTO pm_task_statuses (id, project_id, name, position, "
-                        "category, is_default) VALUES (CAST(:s AS uuid), CAST(:p AS uuid), "
-                        ":n, :pos, :c, :d)"
-                    ),
-                    {"s": ids[lane], "p": ids[project], "n": name, "pos": position,
-                     "c": category, "d": default},
-                )
         number = c.execute(text("SELECT coalesce(max(task_number), 0) FROM pm_tasks")).scalar_one()
         for i, (task, project, lane) in enumerate((
-            ("f1", "filed", "f_todo"), ("f2", "filed", "f_todo"),
-            ("l1", "live", "l_todo"), ("l2", "live", "l_todo"),
+            ("f1", "filed", "todo"), ("f2", "filed", "todo"),
+            ("l1", "live", "todo"), ("l2", "live", "todo"),
         ), start=1):
             c.execute(
                 text(
                     "INSERT INTO pm_tasks (id, title, project_id, root_project_id, status_id, "
                     "created_by, organization_id, task_number) VALUES "
-                    "(CAST(:t AS uuid), :title, CAST(:p AS uuid), CAST(:p AS uuid), "
+                    "(CAST(:t AS uuid), :title, CAST(:p AS uuid), CAST(:r AS uuid), "
                     "CAST(:s AS uuid), :me, CAST(:o AS uuid), :n)"
                 ),
                 {"t": ids[task], "title": f"Task {task}", "p": ids[project],
-                 "s": ids[lane], "me": ALICE, "o": org, "n": number + i},
+                 "r": ids["space"], "s": ids[lane], "me": ALICE, "o": org,
+                 "n": 100 + i},
             )
         # Filed the way `archive_node` files a project: both columns, no task row.
         c.execute(
@@ -127,10 +137,16 @@ def world(promoted):  # noqa: F811
                  "AND created_by = :me"),
             {"o": org, "me": ALICE},
         )
+        for batch in ([ids["filed"], ids["live"], ids["empty"]], [ids["space"]]):
+            c.execute(
+                text("DELETE FROM pm_projects WHERE organization_id = CAST(:o AS uuid) "
+                     "AND id = ANY(CAST(:ps AS uuid[]))"),
+                {"o": org, "ps": batch},
+            )
         c.execute(
             text("DELETE FROM pm_projects WHERE organization_id = CAST(:o AS uuid) "
-                 "AND (id = ANY(CAST(:ps AS uuid[])) OR lower(personal_owner) = :me)"),
-            {"o": org, "ps": [ids["filed"], ids["live"], ids["empty"]], "me": ALICE},
+                 "AND lower(personal_owner) = :me"),
+            {"o": org, "me": ALICE},
         )
         c.execute(text("DELETE FROM attachments WHERE user_id = :me"), {"me": ALICE})
         c.execute(text("DELETE FROM app_user WHERE email = :me"), {"me": ALICE})
@@ -201,11 +217,11 @@ def _refused_requests(w: Any) -> list[tuple[str, str, str, dict[str, Any]]]:
          {"json": {"title": "Step", "project_id": i["filed"], "parent_task_id": f1}}),
         ("edit a field", "PATCH", f"/projects/tasks/{f1}", {"json": {"title": "Renamed"}}),
         ("change the status", "PATCH", f"/projects/tasks/{f1}",
-         {"json": {"status_id": i["f_done"]}}),
+         {"json": {"status_id": i["done"]}}),
         ("change the dates", "PATCH", f"/projects/tasks/{f1}",
          {"json": {"due_at": "2030-01-01T00:00:00Z"}}),
         ("change the tags", "PATCH", f"/projects/tasks/{f1}", {"json": {"tags": ["x"]}}),
-        ("change the parent", "PATCH", f"/projects/tasks/{f1}",
+        ("change the parent", "POST", f"/projects/tasks/{f1}/move",
          {"json": {"parent_task_id": f2}}),
         ("set the assignees", "PUT", f"/projects/tasks/{f1}/assignees",
          {"json": {"assignees": [ALICE]}}),
@@ -230,9 +246,9 @@ def _refused_requests(w: Any) -> list[tuple[str, str, str, dict[str, Any]]]:
         ("add an attachment", "POST", f"/projects/tasks/{f1}/attachments",
          {"files": {"file": ("a.txt", b"hello", "text/plain")}}),
         ("add a relation", "POST", f"/projects/tasks/{f1}/links",
-         {"json": {"target_task_id": f2, "link_type": "relates"}}),
+         {"json": {"target_task_id": f2, "link_type": "relates_to"}}),
         ("add a relation to the live end", "POST", f"/projects/tasks/{l1}/links",
-         {"json": {"target_task_id": f2, "link_type": "relates"}}),
+         {"json": {"target_task_id": f2, "link_type": "relates_to"}}),
         ("add a reference", "POST", f"/projects/tasks/{f1}/refs",
          {"json": {"url": "https://github.com/acme/repo/pull/1"}}),
         ("set a repeat rule", "PUT", f"/projects/tasks/{f1}/recurrence",
@@ -243,8 +259,6 @@ def _refused_requests(w: Any) -> list[tuple[str, str, str, dict[str, Any]]]:
         ("complete from my list", "POST", f"/projects/tasks/{f1}/complete", {}),
         ("add my steps", "POST", f"/projects/my/tasks/{f1}/subtasks",
          {"json": {"titles": ["a step"]}}),
-        ("capture into it", "POST", "/projects/my/tasks",
-         {"json": {"title": "Cap", "project_id": i["filed"]}}),
         ("intake capture", "POST", "/projects/intake",
          {"json": {"title": "Cap", "project_id": i["filed"]}}),
         ("intake snooze", "POST", f"/projects/intake/{f1}/snooze",
@@ -278,7 +292,7 @@ async def test_r8_each_task_write_into_a_filed_project_is_refused(world) -> None
             "content-type", "").startswith("application/json") else None
         if resp.status_code != 409 or detail != SENTENCE:
             bad.append(f"{label}: {method} {path} -> {resp.status_code} {detail!r}")
-    assert bad == []
+    assert not bad, " | ".join(bad)
     # Nothing moved, and no task or comment row was added.
     after = _rows(w, "SELECT id, title, status_id, archived_at, parent_task_id, project_id "
                      "FROM pm_tasks WHERE created_by = :me ORDER BY id", me=ALICE)
@@ -333,10 +347,11 @@ async def test_r8_a_filed_project_reads_and_restores_and_deletes(world) -> None:
     i = w.ids
     reads = await _calls(w, [
         ("GET", f"/projects/tasks/{i['f1']}", {}),
-        ("GET", f"/projects/tasks/{i['f1']}/comments", {}),
+        ("GET", f"/projects/tasks/{i['f1']}/timeline", {}),
         ("GET", f"/projects/tasks/{i['f1']}/attachments", {}),
         ("GET", f"/projects/tasks/{i['f1']}/relations", {}),
-        ("GET", f"/projects/nodes/{i['filed']}/tasks", {}),
+        ("GET", "/projects/tasks", {"params": {"project_id": i["filed"]}}),
+        ("GET", "/projects/export/tasks.csv", {"params": {"project_id": i["filed"]}}),
     ])
     assert [r.status_code for r in reads] == [200] * len(reads), [r.text for r in reads]
     # Delete of a filed project is its own gate, and not the guard of this slice.
@@ -360,22 +375,22 @@ async def test_r8_a_live_project_takes_the_same_writes(world) -> None:
         ("POST", "/projects/tasks",
          {"json": {"title": "Step", "project_id": i["live"], "parent_task_id": l1}}),
         ("PATCH", f"/projects/tasks/{l1}", {"json": {"title": "Renamed"}}),
-        ("PATCH", f"/projects/tasks/{l1}", {"json": {"status_id": i["l_done"]}}),
+        ("PATCH", f"/projects/tasks/{l1}", {"json": {"status_id": i["done"]}}),
         ("PUT", f"/projects/tasks/{l1}/assignees", {"json": {"assignees": [ALICE]}}),
         ("POST", f"/projects/tasks/{l1}/comments", {"json": {"body": "Hi"}}),
         ("POST", f"/projects/tasks/{l1}/attachments",
          {"files": {"file": ("a.txt", b"hello", "text/plain")}}),
         ("POST", f"/projects/tasks/{l1}/links",
-         {"json": {"target_task_id": l2, "link_type": "relates"}}),
+         {"json": {"target_task_id": l2, "link_type": "relates_to"}}),
         ("POST", "/projects/tasks/bulk", {"json": {"task_ids": [l2], "patch": {"title": "B"}}}),
         ("POST", f"/projects/tasks/{l2}/archive", {}),
         ("POST", f"/projects/tasks/{l2}/unarchive", {}),
         ("POST", f"/projects/tasks/{l2}/move", {"json": {"project_id": i["filed"]}}),
     ]
     sent = await _calls(w, acts)
-    codes = [r.status_code for r in sent[:-1]]
-    assert all(c in (200, 201) for c in codes), [(a[1], r.status_code, r.text[:120])
-                                                 for a, r in zip(acts, sent, strict=False)]
+    bad = [(a[0], a[1], r.status_code, r.text[:160])
+           for a, r in zip(acts[:-1], sent[:-1], strict=True) if r.status_code not in (200, 201)]
+    assert not bad, bad
     # ...and a move from a live project INTO the filed one is refused.
     assert sent[-1].status_code == 409 and sent[-1].json()["detail"] == SENTENCE
 
