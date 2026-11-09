@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -866,8 +867,14 @@ async def _llm_propose(
         + (f"\n\nPAST CLARIFICATION PATTERNS:\n{memory_context}"
            if memory_context else "")
     )
-    data, reason = await _ask_clarify_model(
-        model, system, user)
+    # DEC-2b: `projects.propose_picks`. `off` is the one clarify call as before.
+    from gateway.routes.tasks import projects_decide
+    data, reason = await projects_decide.propose_picks(
+        title=item.title, notes=getattr(item, "description", None),
+        guidance=guidance, people=people,
+        projects=_active_projects(projects)[:40], user=user,
+        run=lambda u: _ask_clarify_model(model, system, u),
+        resolve_project=lambda token: _resolve_project_match(token, projects))
     if data is None:
         return _fail(reason or "error")
 
@@ -917,7 +924,12 @@ async def _llm_propose(
             return bool(ptoks) and (ptoks == who_tokens
                                     or ptoks[:len(who_tokens)] == who_tokens)
 
-        match = next(
+        # DEC-2b: a decide pick carries its person, so a roster with "Sam" and
+        # "Sam Patel" files the one that decide picked, not the first prefix.
+        # Only a person of THIS roster counts (identity), never a model field.
+        picked = data.get("assignee_person")
+        match = next((p for p in people if p is picked), None) if picked else None
+        match = match or next(
             (p for p in people if _names_match(p.get("name") or "")), None)
         if match is not None:
             core["suggested_assignee"] = {
@@ -1170,10 +1182,26 @@ async def _find_parent_task(
     if not rows:
         return None
     candidates = [{"id": str(r.id), "title": r.title} for r in rows]
+    # DEC-2b: `projects.parent_step`. `off` calls `_llm_parent_check` as before.
+    from gateway.routes.tasks import projects_decide
+    return await projects_decide.parent_step(
+        title=title, candidates=candidates,
+        old=lambda: _llm_parent_check(title, candidates, model))
+
+
+async def _llm_parent_check(
+    title: str, candidates: list[dict[str, str]], model: str,
+) -> dict[str, Any] | None:
+    """The LLM call of ``_find_parent_task``: the parent of ``title`` among
+    ``candidates`` ({id, title}), None on a no-fit, or
+    ``projects_decide.CALL_FAILED`` on any failure (``parent_step`` maps it to
+    None, and a shadow does not count it as a "none")."""
+    from gateway.routes.tasks import projects_decide
+
     try:
         from acb_llm.context import acompletion_with_fallback
     except Exception:
-        return None
+        return projects_decide.CALL_FAILED
     numbered = "\n".join(f"{i}. {c['title']}" for i, c in enumerate(candidates))
     system = (
         "A new task is being filed into a project. Decide whether it is a "
@@ -1199,12 +1227,14 @@ async def _find_parent_task(
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
     except TimeoutError:
         _log.warning("clarify.parent_check_timeout", seconds=PARENT_CHECK_TIMEOUT_S)
-        return None
+        return projects_decide.CALL_FAILED
     except Exception:
-        return None
+        return projects_decide.CALL_FAILED
     idx = data.get("parent_index")
-    if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
-        return None
+    if idx is None:
+        return None  # a genuine no-fit
+    if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(candidates)):
+        return projects_decide.CALL_FAILED
     return {"item_id": candidates[idx]["id"],
             "title": candidates[idx]["title"]}
 
@@ -1469,6 +1499,22 @@ async def _llm_enrich(
     return out
 
 
+async def _enrich_picks(
+    item: Any, want: set[str], people: list[dict], model: str,
+    contexts: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """``_llm_enrich`` with DEC-2b's ``projects.enrich`` in front: decide picks
+    the context, the energy and the assignee. ``off`` calls ``_llm_enrich`` as
+    before, for every field in ``want``."""
+    from gateway.routes.tasks import projects_decide
+
+    ctx_names = contexts or [name for name, _icon in DEFAULT_CONTEXTS]
+    return await projects_decide.enrich(
+        title=item.title, notes=getattr(item, "description", None), want=want,
+        people=people, contexts=ctx_names,
+        old=lambda fields: _llm_enrich(item, fields, people, model, contexts=contexts))
+
+
 async def _enrich_people(db: Any, uid: str) -> list[dict]:
     """The team roster the proposal uses to pick an assignee — org people first,
     provider members as fallback. Per-USER (not per-item), so batch callers load
@@ -1509,7 +1555,7 @@ async def _propose_fields(
         return {}
     filled = enrich_heuristic(item, want, people)
     if use_llm:
-        llm = await _llm_enrich(item, want, people, model, contexts=contexts)
+        llm = await _enrich_picks(item, want, people, model, contexts=contexts)
         if llm:
             filled.update(llm)  # LLM cognition wins where it returned a value
     # Only ever report fields that were actually missing (never overwrite).
@@ -1858,7 +1904,6 @@ async def atomize_dump(
                          "disposition": r.disposition, "source": r.source}
                         for r in rows if str(r.id) not in skip]
 
-    import time
     _t0 = time.perf_counter()
     llm_items = await _llm_atomize(text_, existing, model=models["atomize"])
     # DEC-2a: `projects.atomize_dedup`. `off` returns llm_items as it is.
