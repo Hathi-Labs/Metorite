@@ -84,9 +84,10 @@ from gateway.routes.crm.core import (
     update_row,
     write_memberships,
 )
+from gateway.routes.projects.core import is_transient
 from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 #: The floor of the six writes below (CR-10). One object, so the wiring test in
 #: ``tests/unit/test_crm_access.py`` can find it on each route.
@@ -650,11 +651,23 @@ async def patch_status(
     CRM-C3: the mode check runs first. In Mirror mode a field outside the
     overlay is 409, and "Reset to Zoho" is a PATCH of ``ui_probability`` and
     ``ui_color`` to ``null``.
+
+    CRM-M3b repair 3: a deadlock, a serialization failure or a lock that is
+    not free answers 409 ``try_again``, never a 500. Postgres rolled the
+    transaction back, so nothing changed.
     """
     _kind(kind)
     values = payload.model_dump(exclude_unset=True)
-    async with _tenant_session() as db:
-        return await patch_status_in(db, user, kind, status_id, values)
+    try:
+        async with _tenant_session() as db:
+            return await patch_status_in(db, user, kind, status_id, values)
+    except DBAPIError as exc:
+        if not is_transient(exc):
+            raise
+        raise HTTPException(status_code=409, detail={"code": "try_again", "message": (
+            f"Someone changed this {_STATUS_NOUNS[kind]} at the same moment, so "
+            "nothing changed. Try again."
+        )}) from exc
 
 
 async def patch_status_in(
@@ -675,8 +688,16 @@ async def patch_status_in(
     Round 2: an Undo (*undoes*) never fans out. It writes only the
     memberships of *members*. A change that names a membership column logs
     :data:`PIPELINES_KEY`, an empty object when no membership changed, so its
-    Undo knows that it wrote none."""
+    Undo knows that it wrote none.
+
+    Repair 3: a deal stage takes the pipeline create lock FIRST, before the
+    stage row and its memberships (the order of CRM-M4a). A pipeline copy
+    holds that lock while it locks each membership and then its stage row.
+    Without it, the two wait on each other in a cycle (40P01). The Undo took
+    the lock already (``change_log.undo_change``), and it is re-entrant."""
     table, _ = _kind(kind)
+    if kind == "deal":
+        await lock_pipeline_creates(db)
     row = await require_row(db, table, status_id, "Status")
     mirror = await _check_mode(db, table, values)
     _validate_status(kind, values, existing=row)

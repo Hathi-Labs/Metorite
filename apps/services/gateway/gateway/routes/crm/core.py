@@ -1971,6 +1971,8 @@ async def lock_pipeline_creates(db: Any) -> None:
     delete of a status, and the routes that put a stage in a pipeline or take
     it out. So no two of them wait on each other in a cycle (40P01). A status
     delete then reads :func:`pipelines_holding` and deletes in one state. The
+    status PATCH of a deal stage takes it first too (CRM-M3b repair 3),
+    because it locks the memberships of the stage after the stage row. The
     lock is re-entrant inside one transaction.
     ``tests/unit/test_crm_lead_pipelines.py`` holds the order in the source."""
     await db.execute(text(PIPELINE_CREATE_LOCK_SQL), {

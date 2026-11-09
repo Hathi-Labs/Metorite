@@ -1667,7 +1667,12 @@ async def _undo_stage_values(
     (``core.fit_member_values``), as each other Undo does. A stage repair
     (``stage_metadata.apply_repair``) changes a type with no change row, so a
     refusal there would stay for ever. When the pipeline shows already what
-    the Undo puts back, the Undo writes nothing and logs its row."""
+    the Undo puts back, the Undo writes nothing and logs its row.
+
+    Repair 3: an Undo out of order can meet a NULL that the clamp wrote while
+    the stage had another type, after the type came back. It still refuses,
+    and the words say that the type change replaced the value
+    (:func:`_clamp_replaced`), not "Undo the newer change first"."""
     before, after = logged.before or {}, logged.after or {}
     status_id = str(after.get("status_id") or before.get("status_id") or "")
     columns = [c for c in MEMBERSHIP_COLUMNS if c in after]
@@ -1690,7 +1695,14 @@ async def _undo_stage_values(
             "be undone. Undo the change that took it out first, and then undo this."
         ))
     stored = {c: getattr(member, c, None) for c in columns}
-    if not await _still_holds(db, status_id, stored, {c: after[c] for c in columns}):
+    logged_values = {c: after[c] for c in columns}
+    if not await _still_holds(db, status_id, stored, logged_values):
+        if _clamp_replaced(stored, logged_values):
+            raise _refuse(409, "changed_since", (
+                f"A change of the stage type replaced the win chance of {name} in the "
+                f"pipeline {quoted(pipeline.name)}, so this change cannot come back. "
+                "Set the win chance again in that pipeline."
+            ))
         raise change_log.changed_since()
     back = await fit_member_values(db, status_id, {c: before.get(c) for c in columns})
     try:
@@ -1704,9 +1716,44 @@ async def _undo_stage_values(
     if not done:
         # The clamp took the value of the edit, and the pipeline shows what
         # the Undo puts back. Nothing to write: the row records the Undo.
-        await log_change(db, user, _values_change(
-            pipeline_id, pipeline, stage, status_id, stored, stored,
+        await log_change(db, user, _unchanged_values(
+            pipeline_id, pipeline, stage, status_id, columns,
         ), undoes=logged.id)
+
+
+def _clamp_replaced(stored: dict[str, Any], logged: dict[str, Any]) -> bool:
+    """True when the membership holds NULL in place of the logged win chance,
+    and each other logged value still holds (CRM-M3b repair 3).
+
+    No route writes a NULL win chance. Only the clamp of a stage type puts
+    NULL there in place of a value (``core.fitted_value_sql``). When the type
+    changed back since, the logged value fits again, so :func:`_still_holds`
+    refuses. No open change holds the old value, so "Undo the newer change
+    first" would send the member to a step that does not exist."""
+    return (
+        logged.get("probability") is not None and stored.get("probability") is None
+        and all(stored.get(c) == v for c, v in logged.items() if c != "probability")
+    )
+
+
+def _unchanged_values(
+    pipeline_id: str, pipeline: Any, stage: Any, status_id: str, columns: list[str],
+) -> Change:
+    """The ``pipeline_stage`` row of an edit Undo that wrote nothing (CRM-M3b
+    repair 3). It names no value, because no value changed. So Change
+    history shows no "None → None" line. "before" keeps the stage name, as
+    each row of :func:`_values_change` does."""
+    words = ", ".join(_VALUE_WORDS[c] for c in columns)
+    return Change(
+        area="pipeline_stage", action=change_log.CHANGE,
+        summary=(
+            f"Nothing changed: the stage {quoted(stage.name)} in the pipeline "
+            f"{quoted(pipeline.name)} already has the {words} that this Undo puts back"
+        ),
+        ladder=change_log.TEAM, entity_id=str(pipeline_id),
+        before={"status_id": status_id, "stage": stage.name},
+        after={"status_id": status_id},
+    )
 
 
 @router.get(

@@ -1572,6 +1572,32 @@ _SQL_FORMS: dict[str, re.Pattern[str]] = {
     "alias": re.compile(r"\bs\.(?:probability|max_dwell_days)\b"),
 }
 
+#: Repair 3 (P3): each name that one statement gives to ``crm_deal_statuses``,
+#: with or without ``AS``. A word of SQL after the table is no name.
+_STAGE_ALIAS = re.compile(
+    r"\bcrm_deal_statuses(?:\s+AS)?\s+(?!(?:WHERE|ON|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS"
+    r"|NATURAL|ORDER|GROUP|LIMIT|OFFSET|FOR|USING|SET|UNION|EXCEPT|INTERSECT|HAVING"
+    r"|WINDOW|RETURNING|AND|OR|AS|VALUES|SELECT|FROM|TABLESAMPLE)\b)([A-Za-z_]\w*)", re.I)
+
+
+def _named_stage_value(sql: str) -> bool:
+    """True when *sql* reads a value through a name of ``crm_deal_statuses``:
+    each alias that the statement gives it (:data:`_STAGE_ALIAS`), or the
+    table name itself (repair 3). ``s.`` stays the ``alias`` form, because a
+    fragment can name it with no table."""
+    names = {"crm_deal_statuses", *_STAGE_ALIAS.findall(sql)}
+    pattern = "|".join(re.escape(n) for n in sorted(names))
+    return re.search(
+        rf"(?<![\w.])(?:{pattern})\.(?:probability|max_dwell_days)\b", sql, re.I,
+    ) is not None
+
+
+def _sql_forms(sql: str) -> list[str]:
+    """Each form of :data:`_SQL_FORMS` that *sql* matches, and ``named``."""
+    forms = [form for form, rule in _SQL_FORMS.items() if rule.search(sql)]
+    return [*forms, "named"] if _named_stage_value(sql) else forms
+
+
 #: The helpers that load one stage row or the stage-row list.
 _LOADERS = frozenset({"load_row", "require_row", "read_status", "read_statuses"})
 
@@ -1587,28 +1613,36 @@ _STAGE_ROW_OWNERS: dict[tuple[str, str], str] = {
     ("stage_metadata.py", "import_zoho_stages"): "a write: the repair plans the stage row",
 }
 
-#: One mutation of each form that the fence catches. Each must turn it red.
-_MUTATIONS: dict[str, str] = {
-    "select": (
+#: One mutation of each form that the fence catches, as (form, source). Each
+#: must turn it red. The three ``named`` ones are repair 3: a JOIN alias, an
+#: ``AS`` alias and the table name.
+_MUTATIONS: tuple[tuple[str, str], ...] = (
+    ("select", (
         "async def lanes(db):\n"
         "    return await db.execute(text('SELECT id, probability '\n"
-        "                                 'FROM crm_deal_statuses'))\n"),
-    "star": "SQL = 'SELECT * FROM crm_deal_statuses ORDER BY position, name'\n",
-    "alias": "LIMIT = 'CAST(s.max_dwell_days AS int) AS limit_days'\n",
-    "attr": (
+        "                                 'FROM crm_deal_statuses'))\n")),
+    ("star", "SQL = 'SELECT * FROM crm_deal_statuses ORDER BY position, name'\n"),
+    ("alias", "LIMIT = 'CAST(s.max_dwell_days AS int) AS limit_days'\n"),
+    ("named", (
+        "SQL = ('SELECT ps.status_id, ds.probability FROM crm_pipeline_stages ps '\n"
+        "       'JOIN crm_deal_statuses ds ON ds.id = ps.status_id')\n")),
+    ("named", "SQL = 'SELECT st.max_dwell_days FROM crm_deal_statuses AS st'\n"),
+    ("named", "SQL = 'SELECT crm_deal_statuses.probability FROM crm_deal_statuses'\n"),
+    ("attr", (
         "async def chance(db, sid):\n"
         "    stage = await load_row(db, 'crm_deal_statuses', sid)\n"
-        "    return stage.probability\n"),
-    "getattr": (
+        "    return stage.probability\n")),
+    ("getattr", (
         "TABLE = 'crm_deal_statuses'\n"
         "async def limit(db, sid):\n"
         "    stage = await require_row(db, TABLE, sid, 'Status')\n"
-        "    return getattr(stage, 'max_dwell_days', None)\n"),
-    "read_status": (
+        "    return getattr(stage, 'max_dwell_days', None)\n")),
+    ("read_status", (
         "async def one(db, sid):\n"
-        "    return status_wire(await read_status(db, 'crm_deal_statuses', sid))\n"),
-    "read_statuses": "async def all_(db):\n    return await read_statuses(db, 'crm_deal_statuses')\n",
-}
+        "    return status_wire(await read_status(db, 'crm_deal_statuses', sid))\n")),
+    ("read_statuses",
+     "async def all_(db):\n    return await read_statuses(db, 'crm_deal_statuses')\n"),
+)
 
 
 def _module_strings(tree: ast.Module) -> dict[str, str]:
@@ -1680,8 +1714,7 @@ def _stage_row_reads(source: str) -> list[tuple[str, str]]:
         if sql is None:
             continue
         done.update(id(sub) for sub in ast.walk(node))
-        sql = _MEMBERSHIP_FIRST.sub("", sql)
-        found += [(owner(node), form) for form, rule in _SQL_FORMS.items() if rule.search(sql)]
+        found += [(owner(node), form) for form in _sql_forms(_MEMBERSHIP_FIRST.sub("", sql))]
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -1712,6 +1745,9 @@ def test_no_deal_reader_reads_the_stage_row_value_alone() -> None:
     - SQL that names a bare column, ``s.<column>`` or ``SELECT *`` with
       ``FROM crm_deal_statuses``. Adjacent literals, an f-string with a
       module constant, and a ``+`` of literals join first.
+    - SQL that reads a column through each alias that the statement gives
+      to ``crm_deal_statuses``, with or without ``AS``, or through the table
+      name itself (repair 3).
     - ``read_status`` or ``read_statuses`` of ``crm_deal_statuses``.
     - ``load_row``, ``require_row``, ``read_status`` or ``read_statuses`` of
       ``crm_deal_statuses``, and then ``.probability``, ``.max_dwell_days``
@@ -1728,8 +1764,9 @@ def test_no_deal_reader_reads_the_stage_row_value_alone() -> None:
     joins a runtime value between SELECT and FROM, and each reader outside
     ``routes/crm/`` (``crm_sync``). Mutation: each entry of ``_MUTATIONS``
     turns the scan red."""
-    for form, mutation in _MUTATIONS.items():
-        assert form in {f for _owner, f in _stage_row_reads(mutation)}, ("non-vacuity", form)
+    for form, mutation in _MUTATIONS:
+        assert form in {f for _owner, f in _stage_row_reads(mutation)}, (
+            "non-vacuity", form, mutation)
     found: dict[tuple[str, str], set[str]] = {}
     held: dict[str, int] = {}
     for path in sorted(_CRM_ROUTES.rglob("*.py")):
@@ -2126,3 +2163,211 @@ async def test_a_stage_repair_clamps_each_membership_and_no_edit_undo_sticks(
     rows = {r["id"]: r for r in (await _call(pns, admin, "GET", "/crm/change-history")
                                 ).json()["rows"]}
     assert not any(rows[str(x.id)]["can_undo"] for x in edits.values())
+
+
+# ── CRM-M3b repair round 3 ──────────────────────────────────────────────────
+
+#: The lowest pipeline id, so its membership is the first that a writer of
+#: one stage locks (``ORDER BY pipeline_id``).
+_EARLY = "00000000-0000-4000-8000-000000000001"
+
+#: The backends of this database that wait on a lock: a row, or the create lock.
+_WAITING_SQL = (
+    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+    "AND wait_event_type = 'Lock'"
+)
+
+
+async def _until_waiting(p: Any, count: int, what: str) -> None:
+    """Poll until *count* backends wait on a lock, else fail in 30 s."""
+    import asyncio
+
+    for _ in range(300):
+        if int(_one(p, _WAITING_SQL) or 0) >= count:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"{what} never waited on a lock")
+
+
+@pytest.mark.parametrize("body", [{"probability": 40}, {"type": "open"}])
+async def test_a_status_patch_and_a_pipeline_copy_at_one_moment_never_deadlock(
+    pns, body: dict[str, Any],
+) -> None:
+    """Repair 3 (P1), the probe of the second re-review. The status PATCH
+    locks the stage row and then each membership: the fan-out of a win
+    chance, or the sweep of a type change. A copy locks each membership of
+    the source and then its stage row. A third transaction holds the first
+    membership of the stage, so the PATCH waits there. Then the copy starts
+    and waits, and then the hold ends. The PATCH takes the create lock first
+    now, so the copy waits for the whole PATCH: no cycle, both answer 2xx,
+    and the copy reads the value of the PATCH. Mutation: take the lock out of
+    ``admin.patch_status_in`` -> 40P01 in the PATCH, and a 409 here."""
+    import asyncio
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    retype = "type" in body
+    stage = ids["won"] if retype else ids["proposal"]
+    if retype:
+        _signed(pns)
+    _one(pns, "INSERT INTO crm_pipelines (id, organization_id, name, position, is_default) "
+              "VALUES (CAST(:i AS uuid), CAST(:o AS uuid), 'Early', 1, false) RETURNING id",
+         i=_EARLY, o=pns.org_a)
+    _one(pns, "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, status_id, "
+              "position) VALUES (CAST(:o AS uuid), CAST(:pl AS uuid), CAST(:s AS uuid), 0) "
+              "RETURNING 1", o=pns.org_a, pl=_EARLY, s=stage)
+    tasks: list[Any] = []
+    with pns.admin_engine.connect() as c:
+        hold = c.begin()
+        try:
+            c.execute(text(
+                "SELECT 1 FROM crm_pipeline_stages WHERE pipeline_id = CAST(:pl AS uuid) "
+                "AND status_id = CAST(:s AS uuid) FOR UPDATE"), {"pl": _EARLY, "s": stage})
+            tasks.append(asyncio.ensure_future(_call(
+                pns, admin, "PATCH", f"/crm/statuses/deal/{stage}", body)))
+            await _until_waiting(pns, 1, "the PATCH")
+            tasks.append(asyncio.ensure_future(_call(
+                pns, admin, "POST", "/crm/pipelines",
+                {"name": "Copy", "copy_from": ids["pipeline"]})))
+            await _until_waiting(pns, 2, "the copy")
+            hold.commit()
+        finally:
+            if hold.is_active:
+                hold.rollback()
+            done = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=90)
+    patch, copy = done
+    assert not isinstance(patch, BaseException), repr(patch)
+    assert not isinstance(copy, BaseException), repr(copy)
+    assert patch.status_code == 200, patch.text
+    assert copy.status_code == 201, copy.text
+    if retype:
+        assert patch.json()["type"] == "open"
+    else:
+        assert _membership(pns, copy.json()["id"], stage) == (40, None), "the copy came second"
+
+
+@pytest.mark.parametrize("sqlstate", ["40P01", "40001", "55P03"])
+async def test_the_status_patch_answers_try_again_on_a_lock_failure(
+    pns, monkeypatch, sqlstate: str,
+) -> None:
+    """Repair 3 (P1). A deadlock (40P01), a serialization failure (40001) or
+    a lock that is not free (55P03) in ``PATCH /crm/statuses/{kind}/{id}``
+    gives 409 ``try_again`` with words that say to try again, never a 500.
+    The transaction rolls back, so nothing changes."""
+    from gateway.routes.crm import admin as admin_routes
+    from sqlalchemy.exc import DBAPIError
+
+    ids = _seed(pns, pns.org_a)
+
+    async def locked(*_a: Any, **_kw: Any) -> Any:
+        raise DBAPIError("UPDATE crm_pipeline_stages", None, _LockError(sqlstate))
+
+    monkeypatch.setattr(admin_routes, "patch_status_in", locked)
+    r = await _call(pns, _admin(pns.org_a), "PATCH", f"/crm/statuses/deal/{ids['proposal']}",
+                    {"probability": 30})
+    assert r.status_code == 409 and _code(r) == "try_again", r.text
+    assert _words(r) == (
+        "Someone changed this deal stage at the same moment, so nothing changed. Try again.")
+    assert _one(pns, "SELECT probability FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=ids["proposal"]) == 50
+
+
+async def test_another_database_error_of_the_status_patch_stays_an_error(
+    pns, monkeypatch,
+) -> None:
+    """Only the three transient states map to the 409. Any other error stays
+    an error, so the mapping hides no defect."""
+    from gateway.routes.crm import admin as admin_routes
+    from sqlalchemy.exc import DBAPIError
+
+    ids = _seed(pns, pns.org_a)
+
+    async def broken(*_a: Any, **_kw: Any) -> Any:
+        raise DBAPIError("UPDATE crm_deal_statuses", None, _LockError("42P01"))
+
+    monkeypatch.setattr(admin_routes, "patch_status_in", broken)
+    with pytest.raises(DBAPIError):
+        await _call(pns, _admin(pns.org_a), "PATCH",
+                    f"/crm/statuses/deal/{ids['proposal']}", {"probability": 30})
+
+
+async def _edit_twice_and_retype(
+    p: Any, user: Any, ids: dict[str, str],
+) -> tuple[Any, Any, Any]:
+    """The stage "Proposal" gets 60 and then 100 in the default pipeline, and
+    the old route makes it ``won`` at 100. Returns the two edit rows and the
+    row of the type change."""
+    path = _values_path(ids["pipeline"], ids["proposal"])
+    for chance in (60, 100):
+        assert (await _call(p, user, "PATCH", path, {"probability": chance})).status_code == 200
+    first, second = [x for x in _changes(p, "pipeline_stage", "change") if x.undoes_id is None]
+    r = await _call(p, user, "PATCH", f"/crm/statuses/deal/{ids['proposal']}",
+                    {"type": "won", "probability": 100})
+    assert r.status_code == 200, r.text
+    return first, second, _open_change(p, "deal_stage", "change")
+
+
+async def test_an_edit_undo_after_the_type_came_back_says_the_type_replaced_it(pns) -> None:
+    """Repair 3 (P2). The order of the re-review: a copied value 30, an edit
+    to 60, an edit to 100, the type to ``won``. Then the Undo of the second
+    edit (out of order) writes NULL through the clamp, and the Undo of the
+    type change makes "Proposal" ``open`` at 50 again. The Undo of the first
+    edit still refuses, because no Undo puts 30 back. No newer change is
+    open now, so the words say that the type change replaced the value, and
+    the member sets it again. A value that a newer open change holds keeps
+    the words "Undo the newer change first"."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    _one(pns, "UPDATE crm_pipeline_stages SET probability = 30 WHERE pipeline_id = "
+              "CAST(:pl AS uuid) AND status_id = CAST(:s AS uuid) RETURNING 1",
+         pl=ids["pipeline"], s=ids["proposal"])
+    first, second, retyped = await _edit_twice_and_retype(pns, admin, ids)
+    newer = await _undo_of(pns, admin, first)
+    assert newer.status_code == 409 and _code(newer) == "changed_since", newer.text
+    assert _words(newer) == "This changed again after this change. Undo the newer change first."
+    for row in (second, retyped):
+        r = await _undo_of(pns, admin, row)
+        assert r.status_code == 200, (row.summary, r.text)
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    lane = (await _lanes(pns, admin, ids["pipeline"]))["Proposal"]
+    assert (lane["type"], lane["probability"]) == ("open", 50)
+    for _ in range(2):
+        r = await _undo_of(pns, admin, first)
+        assert r.status_code == 409 and _code(r) == "changed_since", r.text
+        assert _words(r) == (
+            'A change of the stage type replaced the win chance of "Proposal" in the '
+            'pipeline "Sales pipeline", so this change cannot come back. Set the win '
+            "chance again in that pipeline."), _words(r)
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    again = await _call(pns, admin, "PATCH", _values_path(ids["pipeline"], ids["proposal"]),
+                        {"probability": 30})
+    assert again.status_code == 200, again.text
+    assert (await _lanes(pns, admin, ids["pipeline"]))["Proposal"]["probability"] == 30
+
+
+async def test_an_edit_undo_that_writes_nothing_logs_no_value_line(pns) -> None:
+    """Repair 3 (P3). The Undo of the second edit writes NULL through the
+    clamp, while "Proposal" is ``won``. The Undo of the first edit then puts
+    back NULL, which the membership holds already, so it writes nothing. Its
+    row names no value: Change history shows no "Win chance: None → None"
+    line, and the summary says that nothing changed. The lane shows 100."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    first, second, _retyped = await _edit_twice_and_retype(pns, admin, ids)
+    for row in (second, first):
+        r = await _undo_of(pns, admin, row)
+        assert r.status_code == 200, (row.summary, r.text)
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    lane = (await _lanes(pns, admin, ids["pipeline"]))["Proposal"]
+    assert (lane["type"], lane["probability"]) == ("won", 100)
+    (undo,) = [x for x in _changes(pns, "pipeline_stage", "change") if x.undoes_id == first.id]
+    assert undo.after == {"status_id": ids["proposal"]}, undo.after
+    assert undo.before == {"status_id": ids["proposal"], "stage": "Proposal"}, undo.before
+    assert undo.summary == (
+        'Nothing changed: the stage "Proposal" in the pipeline "Sales pipeline" already '
+        "has the win chance that this Undo puts back"), undo.summary
+    rows = {r["id"]: r for r in (await _call(pns, admin, "GET", "/crm/change-history")
+                                ).json()["rows"]}
+    shown = rows[str(undo.id)]
+    assert not ({"probability", "max_dwell_days"} & (set(shown["after"]) | set(shown["before"])))
