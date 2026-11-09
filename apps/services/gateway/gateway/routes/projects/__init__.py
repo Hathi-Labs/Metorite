@@ -80,6 +80,7 @@ from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401
 from gateway.routes.projects import tags as _tags  # noqa: F401
 from gateway.routes.projects import tasks as _tasks  # noqa: F401
+from gateway.routes.projects import templates as _templates  # noqa: F401
 from gateway.routes.projects import tree as _tree  # noqa: F401
 from gateway.routes.projects import updates as _updates  # noqa: F401
 from gateway.routes.projects import views as _views  # noqa: F401

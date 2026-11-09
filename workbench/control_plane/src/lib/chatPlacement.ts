@@ -104,6 +104,8 @@ const EVIDENCE: readonly string[] = [
   "project_authorities",
   // WS-39 LP-1a: the updates of a project.
   "list_project_updates",
+  // WS-39 TPL-1a: the templates of the organization.
+  "list_templates",
   "my_decisions",
   "project_views",
   "recurrence",
@@ -259,6 +261,9 @@ const WRITE: readonly string[] = [
   "unpin_authority",
   // WS-39 LP-1a: the delete of a project update, class C.
   "delete_project_update",
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  "save_as_template",
+  "create_project_from_template",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",

@@ -371,6 +371,9 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
     "resolve_reminder": {"reminder_id": tw.REMINDER},
     "reschedule_reminder": {"reminder_id": tw.REMINDER, "at": "2099-11-02 08:00"},
+    # WS-39 TPL-1a: the fake org holds one template, `UUID`.
+    "save_as_template": {"project_id": UUID, "name": "Office move"},
+    "create_project_from_template": {"template_id": UUID, "parent_id": UUID},
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
@@ -491,6 +494,8 @@ _SAMPLE: dict[str, Any] = {
     "estimate_minutes": 30,
     "answer": "drop",
     "state": "done",
+    # WS-39 TPL-1a: the day that a template's offsets count from.
+    "start_date": "2026-12-01",
 }
 #: A row key's sample, where the argument of the same name takes another form.
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}

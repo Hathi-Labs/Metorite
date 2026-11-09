@@ -100,6 +100,8 @@ OFF_PROJECTS = frozenset({
     "pin_authority", "unpin_authority",
     # WS-39 LP-1a: the delete of a project update, class C.
     "delete_project_update",
+    # WS-39 TPL-1a: an org-wide template, and a project made from one.
+    "save_as_template", "create_project_from_template",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.

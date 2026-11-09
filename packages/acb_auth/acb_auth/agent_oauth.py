@@ -825,6 +825,10 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: changes only a comment that the member wrote AND whose ``meta.via`` is the
 #: stamp of this client, on a task in the reach of the connection. Any other
 #: comment gets 403 or 404 (``activities._load_agent_comment``).
+#: ⚠️ WS-39 TPL-1a keeps the template save and the apply OFF this set. Both
+#: are class C in the chat manifest, and rule 2 refuses a class C pair. An MCP
+#: write of a template comes later, with a preview and a confirm step, as
+#: ``move_tasks`` has (EA3-53).
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2) and
 #: ``tests/unit/test_mcp_edge_comment_edit_r8.py``.
 #: WS-39 LP-1a adds the POST of a project update, the route of
@@ -919,6 +923,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-39 LP-1a: `list_project_updates`, newest first. It answers 404 while
     # PROJECTS_UPDATES_ORGS does not hold the org.
     ("GET", "/projects/nodes/{project_id}/updates"),
+    # WS-39 TPL-1a: `list_templates`. It answers 404 while
+    # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+    ("GET", "/projects/templates"),
     *MCP_WRITE_ROUTES,
 })
 

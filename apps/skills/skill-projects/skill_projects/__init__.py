@@ -25,6 +25,7 @@ from skill_projects.guarded import (
     attach_to_task,
     bulk_update,
     convert_folder_to_project,
+    create_project_from_template,
     delete_area,
     delete_attachment,
     delete_comment,
@@ -48,6 +49,7 @@ from skill_projects.guarded import (
     report_delete,
     revert_activity,
     revoke_access,
+    save_as_template,
     set_report_schedule,
     set_status_set,
     unarchive_project,
@@ -59,6 +61,7 @@ from skill_projects.inbox import (
     create_area,
     intake_queue,
     list_project_updates,
+    list_templates,
     mark_notifications_read,
     my_areas,
     my_contexts,
@@ -199,6 +202,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "my_decisions",
     # Class A — WS-39 LP-1a, the updates of a project with their health
     "list_project_updates",
+    # Class A — WS-39 TPL-1a, the templates of the organization
+    "list_templates",
     # Class A — navigation (S6)
     "open_in_app",
     "show_view",
@@ -312,4 +317,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "unarchive_project",
     # Class C — WS-66 RM-3: a reminder becomes a task, and it cannot reopen
     "promote_reminder",
+    # Class C — WS-39 TPL-1a: an org-wide template, and a project made from one
+    "save_as_template",
+    "create_project_from_template",
 ]
