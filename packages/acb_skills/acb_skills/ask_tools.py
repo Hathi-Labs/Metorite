@@ -1222,10 +1222,12 @@ class _Revised:
 
 #: What :func:`request_confirmation` gives when ``close_on_steer`` is on and
 #: the member wrote in the chat while the card waited. It is falsy, so a
-#: caller that only asks "approved?" reads it as no. The member's words reach
-#: the model on the tool's result (``orchestrator.steer.decorate_tool_result``),
-#: so the agent can change the mail and show a new card. Without this, the
-#: words waited behind the card, and the card kept the old text.
+#: caller that only asks "approved?" reads it as no, and nothing is written.
+#: The member's words reach the model as a USER turn of its next call
+#: (``orchestrator.steer.SteerTurns``, task 2494), never on the tool's result,
+#: so the agent can change the act and show a new card. Without this, the
+#: words waited behind the card, and the card kept the old text. The cards
+#: of Projects (``skill_projects.writes._confirm``) and CRM turn it on.
 REVISED = _Revised()
 
 #: The closing answer of a card that a steer closed.

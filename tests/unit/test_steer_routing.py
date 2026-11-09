@@ -277,32 +277,31 @@ def _clean_guidance():
     steer._CLOSED.clear()
 
 
-def test_guidance_reaches_the_model_at_the_next_tool_boundary():
+def test_guidance_reaches_the_model_at_the_next_model_call():
+    """Task 2494: the note is a user turn of the next model call."""
     steer.buffer_guidance("t1", "sanjay@x.io", "skip the staging deploy")
-    out = steer.decorate_tool_result("tool output here", "t1")
-    assert "tool output here" in out
-    assert "[steer from sanjay@x.io] skip the staging deploy" in out
+    assert steer.take_steer_turns("t1") == ["[steer from sanjay@x.io] skip the staging deploy"]
 
 
-def test_a_tool_result_with_no_pending_steer_is_untouched():
-    """The ordinary path must be byte-identical — this runs on every tool call."""
-    sentinel = {"not": "a string"}
-    assert steer.decorate_tool_result(sentinel, "t-none") is sentinel
+def test_a_thread_with_no_pending_steer_gives_no_turn():
+    """The ordinary path adds nothing — this runs on every model call."""
+    assert steer.take_steer_turns("t-none") == []
+    assert steer.take_steer_turns(None) == []
 
 
 def test_guidance_is_consumed_once():
     steer.buffer_guidance("t2", "bob@x.io", "also check the invoice")
-    first = steer.decorate_tool_result("out", "t2")
-    second = steer.decorate_tool_result("out", "t2")
-    assert "invoice" in first
-    assert second == "out", "a steer must not be re-injected at every boundary"
+    first = steer.take_steer_turns("t2")
+    second = steer.take_steer_turns("t2")
+    assert "invoice" in first[0]
+    assert second == [], "a steer must not be taken again at every call"
 
 
 def test_run_boundary_clears_stale_guidance():
     """A note buffered for a dead run must not leak into an unrelated later one."""
     steer.buffer_guidance("t3", "bob@x.io", "from the old run")
     steer.clear_guidance("t3")
-    assert steer.decorate_tool_result("out", "t3") == "out"
+    assert steer.take_steer_turns("t3") == []
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +390,7 @@ def test_an_unread_steer_goes_back_to_the_store_at_the_terminal_event(fake_redis
         ("s-1", "alice@x.io", "add a due date"),
     ]
     # The model never read it, and it is not read twice.
-    assert steer.decorate_tool_result("out", "t-late") == "out"
+    assert steer.take_steer_turns("t-late") == []
 
 
 def test_the_store_is_written_before_the_terminal_event(fake_redis):
@@ -418,13 +417,13 @@ def test_the_store_is_written_before_the_terminal_event(fake_redis):
 
 def test_a_tool_event_gives_nothing_back(fake_redis):
     """Only a terminal event closes the run: a mid-run event keeps the note
-    for the next tool boundary."""
+    for the next model call."""
     from orchestrator import stream_relay
 
     steer.buffer_guidance("t-mid", "alice@x.io", "skip staging", signal_id="s-3")
     asyncio.run(stream_relay.push_event("t-mid", {"type": "TOOL_CALL_END"}))
     assert "cc:steer:t-mid" not in fake_redis.lists
-    assert "skip staging" in steer.decorate_tool_result("out", "t-mid")
+    assert "skip staging" in steer.take_steer_turns("t-mid")[0]
 
 
 def test_a_closed_run_buffers_nothing():
@@ -498,7 +497,8 @@ def test_the_replay_keeps_an_older_turn_with_the_same_words():
 def test_the_durable_copy_goes_only_when_the_model_reads_the_note(fake_redis, monkeypatch):
     """Round 2 of the review of #920: buffering keeps the durable copy, so a
     process that dies with the note in its buffer loses nothing. The copy
-    goes when a tool result carries the note, also from a worker thread."""
+    goes when a model call reads the note (task 2494), also from a worker
+    thread."""
     async def _dispatch(_tid: str, _cmd: dict[str, Any]) -> bool:
         return True
 
@@ -510,7 +510,7 @@ def test_the_durable_copy_goes_only_when_the_model_reads_the_note(fake_redis, mo
         steer.buffer_guidance("t-read", "bob@x.io", "check the invoice", signal_id=out["id"])
         await asyncio.sleep(0.01)
         kept = len(fake_redis.lists.get("cc:steer:t-read", []))
-        result = await asyncio.to_thread(steer.decorate_tool_result, "out", "t-read")
+        result = " ".join(await asyncio.to_thread(steer.take_steer_turns, "t-read"))
         for _ in range(20):
             await asyncio.sleep(0.01)
         return kept, result, len(fake_redis.lists.get("cc:steer:t-read", []))

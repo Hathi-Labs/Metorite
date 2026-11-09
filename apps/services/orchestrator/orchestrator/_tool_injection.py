@@ -1157,14 +1157,9 @@ def _gate_injected_tool(fn: Any) -> Any:
         return _permission_gate(tool_name, call_kwargs, surface="injected_tool",
                                 after_untrusted_answer=marked)
 
-    # Mid-run steer (docs/multiplayer/README.md §4.6): this wrapper is the one
-    # tool boundary that exists on EVERY tier — the executor's Tier-2 shim never
-    # runs on the native-streaming path, and the Copilot SDK has its own hooks —
-    # so pending guidance is drained here. No pending steer means byte-identical
-    # behaviour; the call is a dict lookup.
-    def _with_steer(result: Any) -> Any:
-        from orchestrator.steer import decorate_tool_result  # noqa: PLC0415
-        return decorate_tool_result(result)
+    # Task 2494: a mid-run steer never joins a tool result. The model reads it
+    # as a user turn of its next call (`steer.SteerTurns`, attached by
+    # `_apply_steer_turns`), so this wrapper gives the tool's result unchanged.
 
     # H-236: the gate's wrapper is trusted exactly as far as the tool it wraps.
     try:
@@ -1208,7 +1203,7 @@ def _gate_injected_tool(fn: Any) -> Any:
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
             # outside a WhatsApp run with writes on.
             with _whatsapp_tool_call(fn, args, kwargs):
-                return _with_steer(await fn(*args, **kwargs))
+                return await fn(*args, **kwargs)
         return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)
@@ -1223,7 +1218,7 @@ def _gate_injected_tool(fn: Any) -> Any:
             held = _untrusted_answer_hold_sync(tool_name, kwargs)
             if held is not None:
                 return held
-        return _with_steer(fn(*args, **kwargs))
+        return fn(*args, **kwargs)
     return _register_platform_wrapper(fn, _sgated)
 
 
@@ -1447,10 +1442,9 @@ def _gate_own_maf_tools(tools: list[Any]) -> int:
 
     The Copilot branch below has always gated an agent's repo-baked tools. The
     native branch gated only the injected ones, so on Tier 1 an own tool got
-    neither the ``permission.decision`` audit line nor the mid-run steer
-    drain. A steer that arrived during a turn that called only own tools was
-    buffered, never drained, and erased at the next run (PR #585 review). The
-    steer drain lives in this wrapper and nowhere else on Tier 1.
+    no ``permission.decision`` audit line. Since task 2494 a mid-run
+    steer reaches the model as a user turn (``steer.SteerTurns``), never
+    through this wrapper.
 
     The agent built each entry as a ``FunctionTool`` at construction. Its
     name, description and JSON schema were fixed THEN, from the original
@@ -2980,7 +2974,35 @@ def _inject_agent_tools(
     # CRM-Q29: a native MAF agent that holds a CRM tool gets the number
     # check, as a per-run view, after the H-236 step.
     _apply_answer_check(agents, agent_name)
+    # Task 2494: a member's steer reaches each native agent as a user turn.
+    _apply_steer_turns(agents)
     return _run_tool_names
+
+
+def _apply_steer_turns(agents: list[Any]) -> None:
+    """A member's mid-run steer is a USER turn of the next model call (task 2494).
+
+    It replaces each native MAF ``Agent`` in *agents* with a per-run view that
+    carries ``orchestrator.steer.SteerTurnsProvider``, as
+    :func:`_apply_answer_check` does. The provider puts a new ``SteerTurns``
+    chat middleware on each ``agent.run``. That middleware takes words only
+    from the steer buffer of the run's thread, and only the steer applier of
+    ``stream_relay`` fills that buffer. A tool result never feeds it. A
+    Copilot SDK agent and a plain object stay as they are. Their steer waits,
+    and the follow-up turn answers it when the run ends
+    (``steer.return_unconsumed``).
+    """
+    try:
+        from agent_framework import Agent
+        from orchestrator.steer import SteerTurnsProvider
+    except ImportError as exc:  # pragma: no cover — both ship with the platform
+        _log.warning("executor.steer_turns_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [SteerTurnsProvider()])
 
 
 def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:

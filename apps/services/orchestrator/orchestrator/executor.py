@@ -8892,23 +8892,16 @@ async def run_agent_stream(
                         })
                         raise
                     else:
-                        # Mid-run steer (§4.6): a tool boundary is where guidance
-                        # that arrived during the turn enters the model's
-                        # context. No pending steer => `result` is returned
-                        # unchanged, so this path is a dict lookup for every
-                        # ordinary call.
+                        # Task 2494: a mid-run steer never joins a tool
+                        # result. The model reads it as a user turn of its
+                        # next call (`steer.SteerTurns`).
                         from acb_common.tool_refusals import (  # noqa: PLC0415
                             is_refusal,
                         )
-                        from orchestrator.steer import (  # noqa: PLC0415
-                            decorate_tool_result,
-                        )
-                        # Asked BEFORE the steer text joins the result. A
-                        # refused call returns its text for the model, and it
-                        # is still no success for the card (event_translator
-                        # asks the same function).
+                        # A refused call returns its text for the model, and
+                        # it is still no success for the card
+                        # (event_translator asks the same function).
                         refused = is_refusal(result)
-                        result = decorate_tool_result(result, thread_id)
                         result_str = str(result) if result is not None else ""
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",

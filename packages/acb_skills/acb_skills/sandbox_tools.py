@@ -193,15 +193,9 @@ def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
 
 
 def _with_steer(text: str) -> Any:
-    """Drain a pending mid-run steer at this tool boundary, as the B6 gate does."""
-    try:
-        from orchestrator.steer import decorate_tool_result
-    except ImportError:
-        return text
-    try:
-        return decorate_tool_result(text)
-    except Exception:
-        return text
+    """The tool's text, unchanged. Task 2494: a mid-run steer never joins a
+    tool result. The model reads it as a user turn (``steer.SteerTurns``)."""
+    return text
 
 
 def _format(label: str, result: Any, saved: list[str]) -> str:

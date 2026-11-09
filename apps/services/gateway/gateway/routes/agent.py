@@ -3458,7 +3458,7 @@ async def run_agent_stream_endpoint(
             with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
-                # that carries one later adds it (`steer.decorate_tool_result`).
+                # that reads one later adds it (`steer.take_steer_turns`).
                 count_member_steers(_actor, _taken_steers)
                 async for chunk in _serve_run(timing):
                     yield chunk

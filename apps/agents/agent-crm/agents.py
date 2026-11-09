@@ -838,6 +838,9 @@ async def create_lead(
     from acb_skills.ask_tools import request_confirmation
     _where = f" at {payload['organization_name']}" if organization_name else ""
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Create this CRM lead?",
         detail=f"{name}{_where}" + (f" · {payload['email']}" if email else ""),
         context=await _held_fields_block(payload),
@@ -1077,6 +1080,9 @@ async def crm_create_pipeline(
     from acb_skills.ask_tools import request_confirmation
     note = _LEAD_PIPELINE_NOTE if which == "lead" else _PIPELINE_NOTE
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Create the {words['pipeline']} {title}?",
         detail=f"{title} · {words['pipeline']} · {start} · {count} {words['stages']}",
         context=await _held_fields_block(card, note=note),
@@ -1231,6 +1237,9 @@ async def update_deal_status(
     title = _row_title("deals", deal if isinstance(deal, dict) else {})
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Move this deal to {lane}?",
         detail=f"{title} → {lane}",
         context=await _held_fields_block({"deal": title, "stage": lane, **payload}),
@@ -1307,6 +1316,9 @@ async def log_activity(
     from acb_skills.ask_tools import request_confirmation
     label = ENTITY_LABELS[slug].lower()
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Log this {kind} on {target}?",
         detail=f"{target} ({label}) · {kind}: {line}",
         context=await _held_fields_block({label: target, **payload}),
@@ -1367,6 +1379,9 @@ async def convert_lead(
 
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Convert this lead into a deal?",
         detail=f"{title} → {deal.get('name') or title}",
         context=await _held_fields_block({"lead": title, **deal}),
@@ -1548,6 +1563,9 @@ async def crm_update_record(
     label = ENTITY_LABELS[slug].lower()
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Change this {label}?",
         detail=f"{target} · " + ", ".join(_human(k) for k in shown),
         context=await _held_fields_block({
@@ -1636,6 +1654,9 @@ async def crm_update_task(
     names = {"field Done": "Done", "field Due date": "Due date"}
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Change this CRM task?",
         detail=f"{subject} · " + ", ".join(names[k] for k in lines),
         context=await _held_fields_block({"field Task": subject, **link, **lines}),

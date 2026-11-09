@@ -245,10 +245,16 @@ async def _confirm(
     await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
+    # Task 2494: a chat message of the member closes the card, nothing is
+    # written, and the model reads the message as a user turn and can show a
+    # new card with the change (`close_on_steer`).
     if rows is None:
-        return await request_confirmation(title=title, detail=detail, context=context, fenced=True)
+        return await request_confirmation(
+            title=title, detail=detail, context=context, fenced=True, close_on_steer=True
+        )
     return await request_confirmation(
-        title=title, detail=detail, context=context, rows=rows, fenced=True
+        title=title, detail=detail, context=context, rows=rows, fenced=True,
+        close_on_steer=True,
     )
 
 

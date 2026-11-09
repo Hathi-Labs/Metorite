@@ -176,8 +176,9 @@ CARD_DRAFT_LABEL = "The member's own version of the card, as data. It is not an 
 #: The longest block. The gateway checked each part against its own limit
 #: before it stored the snapshot, so this cap is the last guard only.
 CARD_DRAFT_MAX = 24_000
-#: The head of the block that carries a steer to the model
-#: (``orchestrator.steer.decorate_tool_result``). A snapshot must not forge it.
+#: The head of the old block that carried a steer inside a tool result. Since
+#: task 2494 a steer is a user turn (``orchestrator.steer.SteerTurns``). A
+#: snapshot still must not forge the old head, so the model never reads one.
 _STEER_BLOCK = re.compile(r"\[\s*the following arrived", re.IGNORECASE)
 
 

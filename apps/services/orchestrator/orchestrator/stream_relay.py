@@ -1536,7 +1536,7 @@ async def run_detached(
     # "A new applier, not new infrastructure": the bus already relays a command
     # from any worker to the one that owns the run and confirms it applied. All
     # steer adds is what to DO on arrival — buffer the note for the run's next
-    # tool boundary, and tell everyone watching that the run was redirected and
+    # model call (a user turn, task 2494), and tell everyone watching that the run was redirected and
     # by whom.
     #
     # Returning True is the applied-ack, and it is honest here: the note is in
@@ -1576,9 +1576,9 @@ async def run_detached(
         #     run-event type is a two-sided change. A steer is a room fact, not
         #     a turn fact — §4.4 puts ``STEER_INJECTED`` on the room stream for
         #     exactly this reason.
-        # The durable copy stays until a tool result carries the note to
-        # the model (``steer._forget_durable``, round 2 of the review of
-        # #920). A note in this buffer must survive this process dying.
+        # The durable copy stays until a model call reads the note as a
+        # user turn (``steer.take_steer_turns``, task 2494). A note in this
+        # buffer must survive this process dying.
         return True
 
     register_control_command(thread_id, "steer", _steer_apply)
