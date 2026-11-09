@@ -304,6 +304,16 @@ class TestTheMutationSandbox:
     ``provider["headers"] = headers`` in the runner and the wire test fails.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_cli_download(self, monkeypatch):
+        """``CopilotClient()`` resolves the CLI in ``__init__`` and, with no
+        ``COPILOT_CLI_PATH``, downloads it from GitHub releases. A 504 there
+        failed the 2026-11-09 release (task 2472). A unit test never touches
+        the network, so the resolve returns a stub path."""
+        import copilot.client as _cc
+        monkeypatch.setattr(_cc, "_get_or_download_cli",
+                            lambda **_kw: "copilot-cli-not-downloaded")
+
     def test_the_launch_hands_the_FAILED_RUNS_headers_in(self, monkeypatch, secret):
         from acb_auth.member_proof import verify_member
         from orchestrator import mutation
@@ -362,11 +372,14 @@ class TestTheMutationSandbox:
         import copilot
 
         rpc_calls: list = []
+        created_evt: list = []  # holds the Event, built inside the running loop
 
         class _Rpc:
             async def request(self, method, params=None, **_kw):
                 rpc_calls.append((method, params or {}))
                 if method == "session.create":
+                    if created_evt:
+                        created_evt[0].set()
                     return {"sessionId": params["sessionId"]}
                 return {"messageId": "m-1"}
 
@@ -387,11 +400,12 @@ class TestTheMutationSandbox:
         runner = _load_runner()
 
         async def go():
+            created_evt.append(asyncio.Event())
             task = asyncio.ensure_future(runner.main())
-            for _ in range(200):
-                if any(m == "session.create" for m, _ in rpc_calls):
-                    break
-                await asyncio.sleep(0.01)
+            # Wait on wall time, not a loop count: a loaded runner stretched
+            # 200 x sleep(0.01) past its ~2 s budget (task 2472).
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(created_evt[0].wait(), timeout=30)
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
