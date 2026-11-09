@@ -22513,7 +22513,7 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 ## 23. Email signatures: a good signature in one minute (2026-11-07)
 
 **Status: SPECIFIED. SG-1 MERGED as `6a4b08bc9` (task 2177, migration 378). SG-2 is BUILT on
-the branch `mt-a19ff63c-signature-renderer` (task 2178, migration 388), in review, dark behind
+the branch `mt-a19ff63c-signature-renderer` (task 2178, migration 393), in review, dark behind
 `EMAIL_SIGNATURE_TEMPLATES_ORGS`. SG-3 to SG-9 are not built.** Task 1959. Owner request in chat,
 2026-11-07: "design and
 create good signatures for our email." The orchestrator checked the anchors at `origin/main`
@@ -22634,7 +22634,7 @@ The preview shows light, dark and phone width.
 
 - `routes/email/signature_render.py` holds the five layouts and `render(layout, fields,
   brand) -> (html, text)`. It is pure, so a test needs no database.
-- **The table** (SG-2, migration 388). `email_signature_settings` holds one row for each
+- **The table** (SG-2, migration 393). `email_signature_settings` holds one row for each
   mailbox:
   - `account_id`: the primary key, a child of `email_accounts` with ON DELETE CASCADE.
   - `organization_id`: its own tenant column, with ENABLE and FORCE RLS and one policy, in the

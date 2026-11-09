@@ -1,5 +1,5 @@
 -- ============================================================================
--- 388_email_signature_settings.sql — the signature mode of each mailbox
+-- 393_email_signature_settings.sql — the signature mode of each mailbox
 -- (WS-17 SG-2, Metorite task 2178).
 --
 -- What: one new table, `email_signature_settings`. A row holds the signature
@@ -39,7 +39,11 @@
 -- A re-check at 23:30 UTC the same day: origin/main held 383
 -- (383_pm_project_updates.sql). Open PRs held 382 (task 2305, which moves to
 -- 390) and 384, and a worktree held 385. No other file held 386 to 389, so
--- 388 stays.
+-- 388 stayed.
+-- A re-check at 03:05 UTC on 2026-11-09: task 2305 merged, so origin/main
+-- held 390, and premerge.sh refuses a file at or below it. Open PR 2011 held
+-- 386, and nothing held 391 to 395. So the file moved to 393, with room for
+-- the next merges.
 -- Pinned by tests/unit/test_email_signature_settings_r8.py, which finds this
 -- file by CONTENT, never by number (R1).
 -- ============================================================================
