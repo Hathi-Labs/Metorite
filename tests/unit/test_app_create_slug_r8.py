@@ -68,6 +68,14 @@ with the 12 tests of this suite.
   ``test_r8_a_broken_link_at_the_slug_path_counts_as_taken`` goes red.
 * M10. ``HEX_TRIES = 0``.
   ``test_r8_after_ten_slugs_the_create_takes_a_random_suffix`` goes red.
+* MU1. ``_UNRESERVE_SQL``: ``DELETE FROM apps WHERE CAST(:id AS uuid) IS NOT
+  NULL``, so only RLS binds it. ``test_r8_a_late_folder_is_never_written_or_removed``
+  goes red. It names the lost rows of org A: the two fixture rows and the
+  Keep app.
+* ST9. ``SLUG_TRIES = 9``.
+  ``test_r8_after_ten_slugs_the_create_takes_a_random_suffix`` goes red.
+* ST11. ``SLUG_TRIES = 11``. The same test and
+  ``test_r8_an_unfree_name_answers_409_with_a_next_step`` go red.
 
 The first version's M5 (``made`` set before the claim) has no place now: the
 claim moved into ``_reserve_app``.
