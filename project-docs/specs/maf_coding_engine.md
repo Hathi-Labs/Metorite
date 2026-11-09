@@ -28,7 +28,8 @@ spec only.**
 builds a MAF harness agent on the one factory of `code_task`. Every other
 org keeps the Copilot agent until WS-43j. The block of WS-43h records what is
 true. On 2026-11-08 the owner told the team in chat to finish the removal,
-because Metorite will not use the Copilot SDK.
+because Metorite will not use the Copilot SDK. Task 2464 is built
+(2026-11-09): the T2 build refuses an import of a file outside the app dir.
 
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
@@ -2737,11 +2738,18 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   also after a command that raised, or a stop (review round 2).
 - **The host T2 build (review round 2, option b).** It refuses a dir that a
   container mounts now, or ever mounted, for good, and a dir that holds a
-  link. The safer choice: esbuild follows a relative import out of the app
-  dir with no link at all (`import x from "../other-app/src/data.json"`),
-  and a container wrote the source. So after a flip off of `app_builder`,
-  an app that the MAF engine edited has no build path, and its error text
-  says that an admin must turn the builder back on.
+  link. The safer choice: a container wrote the source. So after a flip off
+  of `app_builder`, an app that the MAF engine edited has no build path. Its
+  error text says that an admin must turn the builder back on.
+- **The import fence (task 2464, 2026-11-09).** esbuild followed a relative
+  import into an app of another org, with no link.
+  An example is `import x from "../other-app/src/data.json"`.
+  Now `build_t2.mjs` refuses it, on the host and in the container, in both
+  dependency modes. The real path of each file that esbuild loads must stay
+  in the app dir, the vendor cache or the one `@cc/ui` file. The template and
+  `dist/` must be real paths in the app dir, and the build reads no tsconfig.
+  `install_t2_deps.mjs` refuses a dependency that npm takes from disk. Fence:
+  `test_app_builder_t2_containment.py`.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).

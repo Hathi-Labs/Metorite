@@ -30,27 +30,56 @@
 // here, but pointless; use `cc.storage`/`cc.tools` for real interactions.
 //
 // In default mode, an import allowlist (react/react-dom/@cc/ui only, policed
-// for imports made BY the app's own src/ files — react/react-dom/@cc/ui's own
-// internal resolution is left alone) mirrors compileArtifact.ts's
+// for imports made BY the app's own files) mirrors compileArtifact.ts's
 // defense-in-depth: the vendor cache having only those packages installed
 // already prevents resolving anything else, but an explicit allowlist
 // doesn't silently widen if something else is ever added to that shared
 // directory. In custom-deps mode the allowlist is skipped entirely — the app
 // can only import what it explicitly `npm install`ed, which is its own gate.
 //
+// Containment (task 2464), in BOTH modes. Every app dir is a sibling under
+// one apps root, across orgs, and esbuild follows an import anywhere on
+// disk. One plugin (containmentPlugin) holds the one check, in two hooks:
+//   - onResolve: a file of the app (any file inside the app dir, not only
+//     src/, and the entry point) may import by a relative or absolute path
+//     only inside the app dir. A file of the vendor cache may do so only
+//     inside the vendor cache. A file: URL, and an importer outside the
+//     roots, are refused. The allowlist (default mode) is checked here.
+//   - onLoad: the REAL path (links followed) of each file that esbuild
+//     loads must stay in the root of the path that esbuild found. So a
+//     link in the app dir that points out is refused, and so is a package
+//     or tsconfig mapping that leads out. preserveSymlinks keeps the found
+//     path, so the two paths can differ.
+// The roots are the app dir, the vendor cache and the one @cc/ui file.
+// The template (index.html) and the output dir (dist/) must also be real
+// paths inside the app dir. The output path is fixed here, and app.json
+// never names it. Fence: tests/unit/test_app_builder_t2_containment.py.
+//
 // Usage: node build_t2.mjs <workspace-dir>
 // Exit 0 + byte size on stdout on success; exit 1 + esbuild diagnostics on
 // stderr on failure. Never touches dist/bundle.html on a failed build — the
 // last-known-good bundle keeps serving until the next successful build.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BUNDLE_MARKER = "<!-- CC_T2_BUNDLE -->";
 const UI_PACKAGE = "@cc/ui";
+const OWN_FILES_ONLY = "An app can import only its own files.";
+// The plugin's own pluginBuild.resolve() call carries this key, so the plugin
+// lets that call through to esbuild's resolver instead of recursing.
+const CONTAIN_GUARD = "t2ContainResolving";
 
 // apps/agents/agent-app-builder/build/build_t2.mjs -> repo root (5 levels up:
 // strip the filename, then build/ -> agent-app-builder/ -> agents/ -> apps/).
@@ -88,28 +117,110 @@ function fail(message) {
   process.exit(1);
 }
 
-/** Reject an app src/ file importing anything outside the allowlist. Only
- * imports made BY the app's own code are policed — react/react-dom/@cc/ui's
- * own internal resolution (importer outside src/) is left to esbuild. */
-function allowlistPlugin(srcDir) {
+/** The real path of *p* (every link followed), or null when it has none. */
+function realOrNull(p) {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return null;
+  }
+}
+
+/** True when the path *target* is the path *root* or below it. Both are
+ * absolute, and both are found paths or both are real paths. */
+function within(root, target) {
+  if (!root || !target) return false;
+  const rel = relative(root, target);
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
+function isRelativeImport(spec) {
+  return /^\.\.?(?:[\/]|$)/.test(spec);
+}
+
+/** An absolute path on either OS (`/etc/x`, `C:\x`, `\host\x`). */
+function isAbsoluteImport(spec) {
+  return posix.isAbsolute(spec) || win32.isAbsolute(spec);
+}
+
+function refuse(spec) {
+  return { errors: [{ text: `Cannot import ${JSON.stringify(spec)}. ${OWN_FILES_ONLY}` }] };
+}
+
+/** The one containment check of every import, in both dependency modes
+ * (task 2464, see the header). `app` and `vendor` are { dir, real }: the
+ * path that esbuild finds and its real path. `ui` is the same for the one
+ * @cc/ui file, or null. `allowlist` is the set of bare package names in
+ * default mode, and null in custom-deps mode. */
+function containmentPlugin({ app, vendor, ui, allowlist }) {
+  /** The root that the found path *p* is in: "app", "vendor", "ui" or null. */
+  function rootOf(p) {
+    if (!p) return null;
+    if (within(app.dir, p)) return "app";
+    if (within(vendor.dir, p)) return "vendor";
+    if (ui && relative(ui.dir, p) === "") return "ui";
+    return null;
+  }
+
   return {
-    name: "t2-import-allowlist",
+    name: "t2-import-containment",
     setup(pluginBuild) {
-      pluginBuild.onResolve({ filter: /.*/ }, (args) => {
-        if (!args.importer) return null; // entry point resolution — not policed
-        const rel = relative(srcDir, args.importer);
-        const importerInsideSrc = !rel.startsWith("..") && !isAbsolute(rel);
-        if (!importerInsideSrc) return null;
-        if (args.path.startsWith("./") || args.path.startsWith("../")) return null;
-        if (ALLOWED_IMPORTS.has(args.path)) return null;
+      pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData && args.pluginData[CONTAIN_GUARD]) return undefined;
+        const spec = args.path;
+        // The importer is a found path. onLoad below already checked it.
+        const from = args.kind === "entry-point" ? "app" : rootOf(args.importer);
+        if (from === null || /^file:/i.test(spec)) return refuse(spec);
+        if (isRelativeImport(spec) || isAbsoluteImport(spec)) {
+          // A path import stays in the importer's own root. A link on the
+          // way is onLoad's check.
+          const target = isRelativeImport(spec) ? resolve(args.resolveDir, spec) : resolve(spec);
+          if (from === "app" && within(app.dir, target)) return undefined;
+          if (from === "vendor" && within(vendor.dir, target)) return undefined;
+          return refuse(spec);
+        }
+        // A bare package name.
+        if (from === "app" && allowlist && !allowlist.has(spec)) {
+          return {
+            errors: [{
+              text:
+                `Cannot import ${JSON.stringify(spec)}. T2 apps run offline in a sandbox ` +
+                `with no network — only ${[...allowlist].join(", ")} are importable. ` +
+                `Inline any helper code into your own src/ files instead.`,
+            }],
+          };
+        }
+        if (from !== "ui") return undefined;
+        // @cc/ui's own imports (react/jsx-runtime) resolve as if the app
+        // made them, from the app dir. Its own dir is outside every root.
+        const found = await pluginBuild.resolve(spec, {
+          kind: args.kind,
+          importer: args.importer,
+          resolveDir: app.dir,
+          pluginData: { [CONTAIN_GUARD]: true },
+        });
+        if (found.errors.length > 0) return { errors: found.errors, warnings: found.warnings };
         return {
-          errors: [{
-            text:
-              `Cannot import ${JSON.stringify(args.path)}. T2 apps run offline in a sandbox ` +
-              `with no network — only ${[...ALLOWED_IMPORTS].join(", ")} are importable. ` +
-              `Inline any helper code into your own src/ files instead.`,
-          }],
+          path: found.path,
+          namespace: found.namespace,
+          external: found.external,
+          suffix: found.suffix,
+          sideEffects: found.sideEffects,
+          pluginData: found.pluginData,
         };
+      });
+
+      // Every file that esbuild reads from disk: its real path must stay in
+      // the root of the path that esbuild found (a link that points out of
+      // the app dir is refused here, before esbuild reads the file).
+      pluginBuild.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
+        const root = rootOf(args.path);
+        const real = realOrNull(args.path);
+        if (root === "app" && within(app.real, real)) return undefined;
+        if (root === "vendor" && within(vendor.real, real)) return undefined;
+        if (root === "ui" && real !== null && real === ui.real) return undefined;
+        const shown = root === "app" ? relative(app.dir, args.path).split(sep).join("/") : args.path;
+        return refuse(shown);
       });
     },
   };
@@ -118,6 +229,11 @@ function allowlistPlugin(srcDir) {
 const workspace = resolve(process.argv[2] || "");
 if (!workspace || !existsSync(workspace)) {
   fail(`workspace not found: ${workspace || "(none given)"}`);
+}
+// Every containment check compares real paths with the app dir's real path.
+const appRoot = realOrNull(workspace);
+if (!appRoot) {
+  fail(`workspace not found: ${workspace}`);
 }
 
 const entryPoint = join(workspace, "src", "main.tsx");
@@ -129,7 +245,12 @@ const templatePath = join(workspace, "index.html");
 if (!existsSync(templatePath)) {
   fail(`missing build template: index.html (must contain ${BUNDLE_MARKER})`);
 }
-const template = readFileSync(templatePath, "utf-8");
+// A link at index.html would put another app's file into this bundle.
+const templateReal = realOrNull(templatePath);
+if (!within(appRoot, templateReal)) {
+  fail(`index.html is not a file of this app. ${OWN_FILES_ONLY} Remove the link, then build again.`);
+}
+const template = readFileSync(templateReal, "utf-8");
 if (!template.includes(BUNDLE_MARKER)) {
   fail(`index.html is missing the ${BUNDLE_MARKER} marker`);
 }
@@ -177,12 +298,27 @@ try {
     // most React dev-mode diagnostic strings, keeping the bundle small.
     define: { "process.env.NODE_ENV": '"production"' },
     // Default mode: resolve react/react-dom against the shared vendor cache,
-    // policed by the allowlist plugin. Custom-deps mode: standard resolution
-    // rooted at the workspace's own node_modules (esbuild's default
-    // algorithm — no nodePaths override needed), no allowlist.
+    // under the allowlist. Custom-deps mode: standard resolution rooted at
+    // the workspace's own node_modules (esbuild's default algorithm — no
+    // nodePaths override needed), no allowlist. The containment plugin runs
+    // in both modes.
     nodePaths: hasAppDeps ? [] : [vendorModules],
     alias: uiAvailable ? { [UI_PACKAGE]: UI_SOURCE } : {},
-    plugins: hasAppDeps ? [] : [allowlistPlugin(join(workspace, "src"))],
+    // Keep the path that esbuild found, with any link in it, so the
+    // plugin's onLoad can compare it with the real path.
+    preserveSymlinks: true,
+    // Read no tsconfig.json or jsconfig.json from disk (task 2464). Their
+    // "extends" made esbuild read a file of another app, and its parse error
+    // showed that file's first word. The options above set what a T2 app needs.
+    tsconfigRaw: {},
+    plugins: [
+      containmentPlugin({
+        app: { dir: workspace, real: appRoot },
+        vendor: { dir: resolve(vendor), real: realOrNull(vendor) },
+        ui: uiAvailable ? { dir: resolve(UI_SOURCE), real: realOrNull(UI_SOURCE) } : null,
+        allowlist: hasAppDeps ? null : ALLOWED_IMPORTS,
+      }),
+    ],
   });
 } catch (err) {
   const diagnostics = (err.errors || [])
@@ -205,13 +341,26 @@ if (!bundledJs || !bundledJs.trim()) {
 // marker into the bundle and broke keyed children (WS-43h docker test).
 const finalHtml = template.replace(BUNDLE_MARKER, () => `<script>${bundledJs}</script>`);
 
-const distDir = join(workspace, "dist");
-mkdirSync(distDir, { recursive: true });
+// dist/ must be a real dir inside the app dir. A link at dist/ would write
+// this bundle into another app's dir.
+try {
+  mkdirSync(join(appRoot, "dist"), { recursive: true });
+} catch (err) {
+  fail(`failed to make dist/: ${err.message}`);
+}
+const distDir = realOrNull(join(appRoot, "dist"));
+if (!distDir || distDir === appRoot || !within(appRoot, distDir)) {
+  fail("dist/ is not a dir of this app. Remove the link at dist/, then build again.");
+}
 const finalPath = join(distDir, "bundle.html");
 const tmpPath = join(distDir, ".bundle.html.tmp");
 
 try {
-  writeFileSync(tmpPath, finalHtml, "utf-8");
+  // rmSync removes a planted link itself, never its target. The "wx" flag
+  // (O_EXCL) never writes through a link, and renameSync replaces a link at
+  // bundle.html instead of writing through it.
+  rmSync(tmpPath, { force: true });
+  writeFileSync(tmpPath, finalHtml, { encoding: "utf-8", flag: "wx" });
   renameSync(tmpPath, finalPath);
 } catch (err) {
   try {
