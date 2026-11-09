@@ -58,6 +58,8 @@ export interface FieldSpec {
   units?: readonly string[];
   /** STU-C14. The format of a barcode: `ean13`, `code128` or `qr`. */
   format?: string;
+  /** C13. A lines relation: the field of the object `to` that names this record. It holds no value. */
+  lines?: string;
 }
 
 export type CheckResult = { ok: true; value: unknown } | { ok: false; message: string };

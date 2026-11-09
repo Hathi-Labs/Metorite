@@ -14,7 +14,8 @@ pattern of a relation target.
 **Two checks.**
 
 * :func:`validate_field_spec` checks the spec of one field: its key, its type,
-  ``options``, ``to``, ``many``, ``required`` and ``hot``. It answers a list of
+  ``options``, ``to``, ``many``, ``required``, ``hot`` and ``lines`` (C13,
+  with :func:`lines_problem` for the object it names). It answers a list of
   :class:`SpecProblem`, so A2 turns each into a JSON path. :func:`parse_field_spec`
   raises on the first one, for the store.
 * :func:`check_value` checks one value of one field, and
@@ -131,7 +132,7 @@ VALUE_SHAPES: dict[str, str] = {
 
 _SPEC_KEYS = frozenset({
     "key", "type", "label", "required", "many", "options", "to", "hot",
-    "min", "max", "units", "format",
+    "min", "max", "units", "format", "lines",
 })
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
@@ -209,6 +210,10 @@ class FieldSpec:
     units: tuple[str, ...] | None = None
     #: C14. The format of a barcode.
     format: str | None = None
+    #: C13. A lines relation: the key of the relation field of the object ``to``
+    #: that names this record. The field holds no value, because its lines are
+    #: records of ``to`` (:func:`lines_problem`).
+    lines: str | None = None
 
     def stored_spec(self) -> dict[str, Any]:
         """The ``spec`` column: every part but the key, the type and ``hot``,
@@ -228,6 +233,8 @@ class FieldSpec:
             out["units"] = list(self.units)
         if self.format is not None:
             out["format"] = self.format
+        if self.lines is not None:
+            out["lines"] = self.lines
         return out
 
 
@@ -376,6 +383,48 @@ def _hot_problem(kind: str, many: bool) -> SpecProblem | None:
     return None
 
 
+def _check_lines(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C13. A lines relation names an object of this app and the field of it
+    that points back. It holds no value, so it takes no ``many``, ``hot`` or
+    ``required``. :func:`lines_problem` checks the object that it names."""
+    lines = spec.get("lines")
+    if lines is None:
+        return
+    if kind != "relation":
+        out.append(SpecProblem("lines", "Only a relation field takes `lines`."))
+        return
+    if not isinstance(lines, str) or not _NAME_RE.fullmatch(lines):
+        out.append(SpecProblem(
+            "lines", "`lines` is the key of the field of the line object that names this one."))
+    to = spec.get("to")
+    if isinstance(to, str) and "." in to:
+        out.append(SpecProblem("to", "A lines relation names an object of this app by its name."))
+    if any(spec.get(flag) is True for flag in ("many", "hot", "required")):
+        out.append(SpecProblem(
+            "lines", "A lines relation takes no `many`, `hot` or `required`. It holds no value."))
+
+
+def lines_problem(parent: str, field: FieldSpec, child: str | None,
+                  child_fields: Sequence[FieldSpec] | None) -> str | None:
+    """The one fit rule of the lines relation *field* of the object *parent*
+    (C13), or None. *child* is the object that ``field.to`` names, and
+    *child_fields* its fields. None means that the app holds no such object.
+
+    The field ``field.lines`` of the child is one relation to *parent*, by
+    its bare name, and it is not a lines relation itself. A2 and the store
+    each call this rule, and neither keeps a copy."""
+    if child is None or child_fields is None:
+        return f"`{field.to}` is not an object of this app."
+    if child == parent:
+        return "A lines relation names another object, not its own."
+    via = next((f for f in child_fields if f.key == field.lines), None)
+    if via is None:
+        return f"`{field.lines}` is not a field of `{child}`."
+    if via.type != "relation" or via.many or via.lines is not None or via.to != parent:
+        return f"Field `{via.key}` of `{child}` must be one relation to `{parent}`, by its name."
+    return None
+
+
 def check_can_be_hot(field: FieldSpec) -> None:
     """Raise :class:`FieldError` when *field* cannot turn hot. The store calls it
     when a stored field turns hot, so no other rule of the spec runs again."""
@@ -412,6 +461,7 @@ def validate_field_spec(spec: Mapping[str, Any], *,
     _check_to(kind, spec.get("to"), objects, out)
     _check_extras(kind, spec, out)
     _check_flags(kind, spec, out)
+    _check_lines(kind, spec, out)
     return out
 
 
@@ -439,6 +489,7 @@ def parse_field_spec(spec: Mapping[str, Any], *,
         min=spec.get("min"), max=spec.get("max"),
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
         format=spec.get("format"))
+        to=spec.get("to"), hot=spec.get("hot") is True, lines=spec.get("lines"))
 
 
 def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> FieldSpec:
@@ -461,6 +512,7 @@ def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> Fie
         max=spec["max"] if _int(spec.get("max")) else None,
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
         format=spec["format"] if isinstance(spec.get("format"), str) else None)
+        lines=spec.get("lines") if isinstance(spec.get("lines"), str) else None)
 
 
 # --- the values -------------------------------------------------------------
@@ -726,6 +778,11 @@ _CHECKS: dict[str, Any] = {
 assert tuple(_CHECKS) == FIELD_TYPES, "each field type has one check"
 
 
+def _no_line_value(field: FieldSpec) -> FieldError:
+    return FieldError(field.key, f"Field `{field.key}` holds no value. Its lines are records "
+                      f"of `{field.to}`, and the door saves them with this record.")
+
+
 def is_blank(v: Any) -> bool:
     """True for no value, a text of only spaces, and an empty list."""
     return v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, list) and not v)
@@ -736,7 +793,10 @@ def check_value(field: FieldSpec, value: Any) -> Any:
 
     A ``many`` field takes a list of at most :data:`MAX_MANY_ITEMS` values.
     The answer is normalized: an email in lower case, a datetime in UTC.
+    A lines relation (C13) takes no value.
     """
+    if field.lines is not None:
+        raise _no_line_value(field)
     check = _CHECKS[field.type]
     if field.many:
         if not isinstance(value, list) or len(value) > MAX_MANY_ITEMS:
@@ -753,7 +813,8 @@ def validate_record(fields: Sequence[FieldSpec], data: Any) -> dict[str, Any]:
 
     A key that is not a field is refused. A required field must hold a value
     that is not empty. A ``None`` value means "no value", and the answer
-    drops it. Raises :class:`FieldError` or :class:`RecordError`.
+    drops it. A lines relation (C13) holds no value, so its key is refused.
+    Raises :class:`FieldError` or :class:`RecordError`.
     """
     if not isinstance(data, Mapping):
         raise RecordError("A record is a JSON object of field values.")
@@ -765,6 +826,10 @@ def validate_record(fields: Sequence[FieldSpec], data: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for f in fields:
         value = data.get(f.key)
+        if f.lines is not None:
+            if f.key in data:
+                raise _no_line_value(f)
+            continue
         if is_blank(value):
             if f.required:
                 raise FieldError(f.key, f"Field `{f.key}` is required.")

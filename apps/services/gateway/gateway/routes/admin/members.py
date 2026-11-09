@@ -692,6 +692,8 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     # WS-65 SM-1 adds the four tables of a shared mailbox. A member purge
     # reaches a shared row only while its user_id is the leaver, until SM-8
     # leaves a shared row out of the member scope (shared_mailbox.md §4.2).
+    # WS-17 SG-2 adds `email_signature_settings`, the signature mode of the
+    # mailbox.
     "email_accounts": (
         "crm_auto_lead_cursors",
         "email_actions", "email_ai_drafts", "email_assistant_settings",
@@ -701,8 +703,8 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
         "email_mailbox_grants", "email_mailbox_member_prefs", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
         "email_rules", "email_scheduled_sends", "email_send_log", "email_senders",
-        "email_sync_log", "email_thread_assignments", "email_thread_status",
-        "email_voice_profiles",
+        "email_signature_settings", "email_sync_log", "email_thread_assignments",
+        "email_thread_status", "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
     # (`wa_media` and `wa_message_embeddings` hang off `wa_messages`).

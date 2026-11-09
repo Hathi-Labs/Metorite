@@ -962,6 +962,16 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # SW-68a (agent_coordination.md SW-68): the organizations where `my_work`
+    # (MCP and chat) ranks the tasks under an epic by the plan engine. Comma
+    # list of organization ids, or `*`. Empty: off, and `my_work` keeps its old
+    # order. Only the gateway route reads it, so a SIGHUP reload of the gateway
+    # applies a change. The edge reads no flag. With the flag off, the edge still
+    # makes one plan read (under its 2 second limit), and the answer is the
+    # input order.
+    # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
+    # tests/unit/test_my_work_plan_order_r8.py.
+    my_work_plan_order_orgs: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids
@@ -992,6 +1002,15 @@ class Settings(BaseSettings):
     # reload applies a change. A flip needs a D145 preview of the chat cards
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
+
+    # ── Project updates with health (WS-39 LP-1a, project_management_app.md §14.2a)
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the two update routes answer 404, the two MCP tools
+    # say that the feature is off, and the web line does not draw. The one
+    # reader is `gateway.routes.projects.updates.updates_allowed`. A SIGHUP
+    # reload applies a change. Fence: tests/unit/test_pm_project_updates_r8.py.
+    projects_updates_orgs: str = ""
 
     # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
     #
@@ -1047,6 +1066,16 @@ class Settings(BaseSettings):
     # applies a change (`gateway/flag_reload.py`). Only the owner writes the
     # value. Fence: tests/unit/test_sprint_store_r8.py.
     projects_sprints_orgs: str = ""
+
+    # ── The templates of Projects (WS-39 TPL-1a, task 18) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/projects/templates` route answers 404 and no
+    # template row is written. The one reader is
+    # `gateway.routes.projects.templates.templates_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_pm_templates_r8.py.
+    projects_templates_orgs: str = ""
 
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
@@ -1227,6 +1256,19 @@ class Settings(BaseSettings):
     # in `_orgs`, so a SIGHUP applies a change with no restart.
     # Fence: tests/unit/test_outlook_all_mail_webhook.py.
     outlook_all_mail_webhook_orgs: str = ""
+
+    # ── Email signature layouts (WS-17 SG-2, email_app_master_plan.md §23.5) ─
+    #
+    # `email_signature_templates_orgs` lists the organization ids whose
+    # mailboxes may use a layout signature, or `*` for each one. Empty means
+    # off, the default: the resolver gives the `custom` signature, which is
+    # the behaviour of before, and `POST /email/signature/preview` answers
+    # 404. The one reader is `gateway.routes.email.signature.templates_on`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart. A value on a box is an `enforcement-flip`: name
+    # the flag and the box in the same message.
+    # Fence: tests/unit/test_email_signature_resolver.py.
+    email_signature_templates_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #

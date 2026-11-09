@@ -1621,3 +1621,38 @@ DROP POLICY IF EXISTS email_signature_images_tenant_isolation ON email_signature
 CREATE POLICY email_signature_images_tenant_isolation ON email_signature_images
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_project_updates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_project_updates FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_project_updates_tenant_isolation ON pm_project_updates;
+CREATE POLICY pm_project_updates_tenant_isolation ON pm_project_updates
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_templates FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_templates_tenant_isolation ON pm_templates;
+CREATE POLICY pm_templates_tenant_isolation ON pm_templates
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_template_applies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_template_applies FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_template_applies_tenant_isolation ON pm_template_applies;
+CREATE POLICY pm_template_applies_tenant_isolation ON pm_template_applies
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_lead_pipeline_stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_lead_pipeline_stages FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages;
+CREATE POLICY crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_signature_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_settings_tenant_isolation ON email_signature_settings;
+CREATE POLICY email_signature_settings_tenant_isolation ON email_signature_settings
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

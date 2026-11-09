@@ -22,9 +22,11 @@
  */
 
 import type { ProcessPastEstimate, ProcessPastStatus } from "./api";
-import { autoDraftRepliesOn } from "./assistantSettings";
+import { autoDraftRepliesOn, autoRunChoiceBody } from "./assistantSettings";
 import { atStorageLimit } from "./storage";
-import type { AssistantSettings, AutomationRule, EmailAccount, RuleCopyResult } from "./types";
+import type {
+  AssistantSettings, AssistantSettingsSave, AutomationRule, EmailAccount, RuleCopyResult,
+} from "./types";
 import { shortDate } from "./utils";
 
 // `shortDate` moved to `utils.ts` with EM-T6e, so `storage.ts` reads it with
@@ -616,7 +618,7 @@ export interface RulesStepApi {
   listRules(accountId: string): Promise<ReadonlyArray<RuleShape>>;
   installPresetRules(accountId: string): Promise<{ installed: string[] }>;
   getAssistantSettings(accountId: string): Promise<AssistantSettings>;
-  saveAssistantSettings(settings: AssistantSettings): Promise<AssistantSettings>;
+  saveAssistantSettings(settings: AssistantSettingsSave): Promise<AssistantSettings>;
   /** The PATCH of item 11. It returns the server's copy of the account. */
   finishOnboarding(accountId: string): Promise<EmailAccount>;
   /** "Copy the rules of <label>" (EM-T8f-2, D-EM-24): `POST /email/rules/copy`.
@@ -740,7 +742,10 @@ export function settingsSaver(): SettingsSaver {
 
 /**
  * The Auto-run switch of the rules step (G2). It writes the settings row with
- * the member's choice: `auto_run` changes and every other field stays.
+ * the member's choice: `auto_run` changes and every other field stays. Its
+ * callers are the member's own acts only: the switch, Done
+ * (`saveAutoRunDefault`) and the notice's "Turn on". So it sends the marker
+ * of an explicit choice, and the server stamps it (task 2305).
  */
 export async function setAutoRun(
   api: Pick<RulesStepApi, "getAssistantSettings" | "saveAssistantSettings">,
@@ -748,5 +753,5 @@ export async function setAutoRun(
   on: boolean,
 ): Promise<void> {
   const current = await api.getAssistantSettings(accountId);
-  await api.saveAssistantSettings({ ...current, auto_run: on });
+  await api.saveAssistantSettings(autoRunChoiceBody(current, on));
 }

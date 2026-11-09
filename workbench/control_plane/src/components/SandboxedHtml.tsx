@@ -42,7 +42,7 @@
  * our React (trusted, templated) vs. their DOM/JS (untrusted, sandboxed).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildIconMap } from "@/lib/iconSvg";
 import { appTokenMap } from "@/lib/theme/app-tokens";
@@ -69,6 +69,9 @@ interface SandboxedHtmlProps {
    *  (no "Generated UI / sandboxed" header, no card frame, fills its container).
    *  Inline chat cards keep the default framed chrome. */
   chromeless?: boolean;
+  /** Receives the `<iframe>` element, for a broker that must know which
+   *  window is THIS frame (the Custom App bridge, task 2433). */
+  iframeRef?: RefObject<HTMLIFrameElement | null>;
 }
 
 function describeSubmit(payload: unknown): string {
@@ -100,9 +103,18 @@ export default function SandboxedHtml({
   onAction,
   iconNames,
   chromeless = false,
+  iframeRef,
 }: SandboxedHtmlProps): React.ReactElement {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [autoHeight, setAutoHeight] = useState<number>(height ?? 120);
+  // One element, two holders: our own effects, and the caller's broker.
+  const attachFrame = useCallback(
+    (el: HTMLIFrameElement | null) => {
+      frameRef.current = el;
+      if (iframeRef) iframeRef.current = el;
+    },
+    [iframeRef],
+  );
 
   // Read live rather than taking a prop. Every call site used to derive the
   // colour mode with the identical two lines and thread it down (in
@@ -177,7 +189,7 @@ export default function SandboxedHtml({
   if (chromeless) {
     return (
       <iframe
-        ref={frameRef}
+        ref={attachFrame}
         sandbox="allow-scripts"
         allow=""
         referrerPolicy="no-referrer"
@@ -197,7 +209,7 @@ export default function SandboxedHtml({
         <span className="ml-auto text-[9px] text-muted-foreground/60">sandboxed</span>
       </div>
       <iframe
-        ref={frameRef}
+        ref={attachFrame}
         // allow-scripts ONLY — no allow-same-origin (opaque origin, no ambient authority).
         sandbox="allow-scripts"
         // Belt-and-suspenders: also block by feature policy.

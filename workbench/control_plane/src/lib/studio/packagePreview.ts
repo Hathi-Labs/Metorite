@@ -28,18 +28,23 @@ export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
       options: Array.isArray(f.options) ? f.options : undefined,
       to: f.to ?? undefined,
       ...extrasOf(f as unknown as Record<string, unknown>),
+      ...(typeof f.lines === "string" ? { lines: f.lines } : {}),
     });
   }
   return out;
 }
 
+/** C13. A lines relation holds no value: its lines are records of another object. */
+export const isLinesField = (f: FieldSpec): boolean => typeof f.lines === "string";
+
 /**
  * The columns of the Table: the first fields, with a field of many values last.
  * A long text stays out, as in the sample Table. It wraps into a tall, narrow
- * cell, and the Detail sheet shows it whole.
+ * cell, and the Detail sheet shows it whole. A lines relation stays out too,
+ * because it holds no value to show.
  */
 export function tableFields(fields: readonly FieldSpec[]): FieldSpec[] {
-  const shown = fields.filter((f) => f.type !== "longText");
+  const shown = fields.filter((f) => f.type !== "longText" && !isLinesField(f));
   const single = shown.filter((f) => !f.many);
   const many = shown.filter((f) => f.many);
   return [...single, ...many].slice(0, MAX_TABLE_COLUMNS);
@@ -48,10 +53,20 @@ export function tableFields(fields: readonly FieldSpec[]): FieldSpec[] {
 /**
  * The fields of a Form. A field that a `formula` or `rollup` rule fills is left out:
  * the store refuses a write to it (422 `computed_field`), even `null`. The Detail
- * sheet and the Table still show it.
+ * sheet and the Table still show it. A lines relation (C13) is left out too: it
+ * holds no value, and the store refuses one. The grid of D17 edits the lines.
  */
 export function formFields(fields: readonly FieldSpec[], computed: ReadonlySet<string>): FieldSpec[] {
-  return fields.filter((f) => !computed.has(f.key));
+  return fields.filter((f) => !computed.has(f.key) && !isLinesField(f));
+}
+
+/**
+ * The fields of the Detail sheet: every field but a lines relation (C13). A lines
+ * relation holds no value on the record, so a dash there would read as "no lines".
+ * A computed field stays, because the Detail shows what the store filled.
+ */
+export function detailFields(fields: readonly FieldSpec[]): FieldSpec[] {
+  return fields.filter((f) => !isLinesField(f));
 }
 
 /**

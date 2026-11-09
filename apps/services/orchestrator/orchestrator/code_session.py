@@ -8,6 +8,11 @@ container. ``code_tools.code_task`` takes it only for an org that
 after the parity eval (an owner gate, WS43-G7). The text below is the
 Copilot half.
 
+**One harness (CA-14).** :func:`coding_harness_agent` is the one call of MAF's
+``create_harness_agent``. The ``code_task`` session and app-builder's chat
+agent (:func:`build_app_builder_agent`, WS-43h, under ``app_builder:<org>``)
+both build on it.
+
 The Copilot SDK is Metorite's coding ENGINE (chat_agent_framework_review
 §2): native MAF agents delegate script authoring/editing to a bounded Copilot
 session through the ``code_task`` tool (acb_skills.code_tools) instead of
@@ -316,17 +321,17 @@ async def run_with_empty_retry(agent: Any, task: str) -> str:
     raise CodeSessionEmpty("the coding session gave an empty answer twice.")
 
 
-def code_task_client(model: str) -> Any:
-    """The session's chat client: the gateway ``/v1``, so every call goes through the Router.
+def harness_client(model: str, *, agent: str, source: str) -> Any:
+    """The chat client of a coding harness agent: the gateway ``/v1``.
 
-    ``OpenAIChatCompletionClient`` with :func:`acb_llm.attribution.attributed_openai`,
-    which stamps the member, the app and the run on each request. The headers
-    name the CALLING agent and ``X-CC-Source: code_task`` (done-when 6). The
-    key is the LLM API key, never the identity token, and it stays on the
-    host: the container gets commands, never a client (§4.2).
+    So every call goes through the Router. ``OpenAIChatCompletionClient`` with
+    :func:`acb_llm.attribution.attributed_openai`, which stamps the member,
+    the app and the run on each request. The headers name *agent* and
+    *source*. The key is the LLM API key, never the identity token, and it
+    stays on the host: the container gets commands, never a client (§4.2).
+    The tool calls of one response run in model order (§7.5 rule B).
     """
     from acb_llm.attribution import attributed_openai
-    from acb_skills.write_artifact import artifact_context
     from agent_framework.openai import OpenAIChatCompletionClient
 
     settings = get_settings()
@@ -334,15 +339,58 @@ def code_task_client(model: str) -> Any:
         getattr(settings, "litellm_base_url", "") or "http://127.0.0.1:8080"
     ).rstrip("/")
     gw_key = (getattr(settings, "llm_api_key", "") or "sk-local").strip()
-    caller = str(artifact_context().get("agent_name") or "code-task")
     return OpenAIChatCompletionClient(
         model=model,
         async_client=attributed_openai(
             base_url=f"{gw_base}/v1",
             api_key=gw_key,
-            default_headers={"X-CC-Agent": caller, "X-CC-Source": CODE_TASK_SOURCE},
+            default_headers={"X-CC-Agent": agent, "X-CC-Source": source},
         ),
         function_invocation_configuration=dict(FUNCTION_INVOCATION),
+    )
+
+
+def code_task_client(model: str) -> Any:
+    """The session's chat client (:func:`harness_client`).
+
+    The headers name the CALLING agent and ``X-CC-Source: code_task``
+    (done-when 6).
+    """
+    from acb_skills.write_artifact import artifact_context
+
+    caller = str(artifact_context().get("agent_name") or "code-task")
+    return harness_client(model, agent=caller, source=CODE_TASK_SOURCE)
+
+
+def coding_harness_agent(
+    client: Any,
+    *,
+    name: str,
+    instructions: str,
+    tools: list[Any],
+    store: Any,
+    skills: Any,
+    middleware: list[Any],
+    **options: Any,
+) -> Any:
+    """THE one call of MAF's ``create_harness_agent`` (CA-14, the rule of one harness).
+
+    ``code_task`` and app-builder both build their agent here, on the same
+    factory, with MAF's own file tools over *store* and MAF's own skills.
+    *options* are further ``create_harness_agent`` flags. No own compaction,
+    to-do or mode code exists.
+    """
+    from agent_framework import create_harness_agent
+
+    return create_harness_agent(
+        client,
+        name=name,
+        agent_instructions=instructions,
+        tools=tools,
+        file_access_store=store,
+        skills_provider=skills,
+        middleware=middleware,
+        **options,
     )
 
 
@@ -369,15 +417,13 @@ def _session_tool_pin() -> list[Any]:
 
 def build_code_task_agent(*, store: Any, skills: Any, tools: list[Any], model: str) -> Any:
     """The harness agent of one session (§7.6). WS43-F8 pins its parameters."""
-    from agent_framework import create_harness_agent
-
-    return create_harness_agent(
+    return coding_harness_agent(
         code_task_client(model),
         name="code-task",
-        agent_instructions=_MAF_HARNESS_INSTRUCTIONS,
+        instructions=_MAF_HARNESS_INSTRUCTIONS,
         tools=tools,
-        file_access_store=store,
-        skills_provider=skills,
+        store=store,
+        skills=skills,
         middleware=_session_tool_pin(),
         **HARNESS_FLAGS,
     )
@@ -457,3 +503,102 @@ async def run_maf_code_session(
         reset_artifact_context(token)
     _log.info("code_session.maf_done", chars=len(report))
     return report
+
+
+# ── app-builder on the MAF harness (WS-43h, D84, spec §7.8) ─────────────────
+#
+# Dark by construction. ``agent-app-builder/agents.py`` builds this agent only
+# when ``MAF_CODING_SCOPE`` names ``app_builder`` for the run's own org
+# (:func:`app_builder_engine_for_run`), and the scope is empty by default.
+# Every other run keeps the Copilot agent, unchanged, until WS-43j.
+#
+# The agent is a chat agent, so the executor drives it, as it drives every
+# native MAF agent: Tier 1 streaming, the B6 gate, the injected tools and the
+# native session store. Its model loop runs on the host. Its commands run in
+# the broker's container, which has no network and no key. Nothing in this
+# half imports ``copilot`` (fence WS43-F15).
+
+#: The scope target of app-builder (§7.1, §7.8).
+APP_BUILDER_TARGET = "app_builder"
+#: The agent name, as the registry and the broker name it.
+APP_BUILDER_AGENT = "app-builder"
+#: The ``X-CC-Source`` of each model call: a chat turn, as for every chat agent.
+APP_BUILDER_SOURCE = "chat"
+
+#: The ``create_harness_agent`` flags of app-builder: the ``code_task`` flags,
+#: and no ``ToolApprovalMiddleware``. That middleware needs an
+#: ``AgentSession`` on every run, and the executor passes one only while
+#: ``MAF_NATIVE_SESSIONS`` is on. No tool of this agent asks MAF for an
+#: approval: the file tools and ``run_command`` run with ``never_require``,
+#: and the executor's B6 gate and cards own every approval of a platform tool.
+APP_BUILDER_HARNESS_FLAGS: dict[str, bool] = {
+    **HARNESS_FLAGS,
+    "disable_tool_auto_approval": True,
+}
+
+
+def app_builder_engine_for_run() -> bool:
+    """True when ``MAF_CODING_SCOPE`` names ``app_builder`` for the run's own org.
+
+    The app-builder factory asks this on each run (§7.8). The org comes from
+    the run binding (``executor._current_run_org``), never from input (R5). A
+    run with no org, and a scope that does not parse, answer ``False``, so the
+    factory builds the Copilot agent and never an unsandboxed MAF agent.
+    """
+    try:
+        from orchestrator import sandbox_broker as sb
+        from orchestrator.executor import _current_run_org
+    except ImportError:
+        return False
+    org = _current_run_org()
+    return bool(org) and sb.maf_coding_scope_allows(APP_BUILDER_TARGET, str(org).strip())
+
+
+def app_builder_runtime_for(org: str | None) -> str:
+    """The runtime of an app-builder run in *org* (WS-43h review P3).
+
+    ``"maf"`` when ``MAF_CODING_SCOPE`` names ``app_builder`` for *org*, so
+    the factory builds the harness agent. Else ``"github-copilot"``: the
+    factory builds the Copilot agent, whatever the registry label says.
+    """
+    if not org:
+        return "github-copilot"
+    from orchestrator import sandbox_broker as sb
+
+    allowed = sb.maf_coding_scope_allows(APP_BUILDER_TARGET, str(org).strip())
+    return "maf" if allowed else "github-copilot"
+
+
+def build_app_builder_agent(*, instructions: str, model: str, description: str = "") -> Any:
+    """app-builder's harness agent (§7.8), on the one factory of ``code_task``.
+
+    * Its instructions are the agent's own ``instructions.md`` text, which
+      the caller passes.
+    * Its tools are MAF's eight file tools over
+      ``sandbox_tools.RunAppFileStore``, and ``run_command`` in the broker's
+      container. The executor adds the platform tools of its scope.
+    * Its history is the native session store's own provider
+      (``native_session_store.SessionHistoryProvider``). With
+      ``MAF_NATIVE_SESSIONS`` on, the executor loads and saves the session
+      through it, and the next turn sees the tool output of the turn before.
+      With the flag off, the run's own session holds one turn.
+    * The host floor tools that open the dir with plain path calls, and the
+      host web tools, are withheld (§7.5 rule B, §16.3).
+    """
+    from acb_skills import sandbox_tools
+
+    from orchestrator.native_session_store import SessionHistoryProvider
+
+    store, tools = sandbox_tools.app_builder_session_parts()
+    return coding_harness_agent(
+        harness_client(model, agent=APP_BUILDER_AGENT, source=APP_BUILDER_SOURCE),
+        name=APP_BUILDER_AGENT,
+        instructions=instructions,
+        tools=tools,
+        store=store,
+        skills=None,
+        middleware=sandbox_tools.host_tool_guard(),
+        description=description or None,
+        history_provider=SessionHistoryProvider(),
+        **APP_BUILDER_HARNESS_FLAGS,
+    )

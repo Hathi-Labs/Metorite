@@ -418,7 +418,7 @@ def _object_out(obj: objects_store.StudioObject) -> dict[str, Any]:
         "fields": [{
             "key": f.key, "type": f.type, "label": f.label, "required": f.required,
             "many": f.many, "options": None if f.options is None else list(f.options),
-            "to": f.to, "hot": f.hot,
+            "to": f.to, "hot": f.hot, "lines": f.lines,
             "min": f.min, "max": f.max,
             "units": None if f.units is None else list(f.units),
             "format": f.format} for f in obj.fields],

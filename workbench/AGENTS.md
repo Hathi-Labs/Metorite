@@ -29,6 +29,7 @@ entry says ONE or THE, a second copy is a defect.
 - `lib/composerSize.ts`: ⚠️ do not put `min-h-0` on the body wrapper or `overscroll-contain` on the textarea. Fence: `lib/composerSize.test.ts`.
 - `lib/storage.ts` and `lib/cleanOlderMail.ts`: ⚠️ a removal deletes the copy in Metorite only (D-EM-14), and no word may say that Metorite deletes mail in Outlook. `removalReducer` is the one state machine of the dialog. Fences: `storage.test.ts`, `removeOlderMailDialog.test.ts`.
 - `lib/assistantSettings.ts`: `autoDraftRepliesOn` is true only for an explicit `draft_replies: true`. `lib/chatScope.ts`: a pick in the chat never moves the page.
+- `lib/assistantSettings.ts`: `autoRunChoiceBody` is the one body that carries the Auto-run marker `auto_run_choice` (task 2305). Only the member's own Auto-run acts use it, through `setAutoRun` or the AI settings switch. `persistPatch` and `persist` strip it. Fence: `lib/assistantSettings.test.ts`.
 - No file in `app/email/lib/` imports from `components/`.
 - `ContactTrigger` (`components/ContactCard.tsx`) is a real `<button>`, so a row that holds one must be a div.
 - `lib/sendCard.ts` (shared): the server classes each person, and the card only draws it. A send card needs a ticked To row (`sendCanGo`). Fence: `lib/sendCard.test.ts`.
@@ -85,6 +86,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
   - Single-source modules: `lib/grouping.ts` (`viewDivergence`), `lib/shownFields.ts`, `lib/commands.ts`, `lib/panelMode.ts`, `lib/taskMenu.ts`, `lib/rowState.ts`, `lib/pagedPicker.ts`.
   - `lib/taskMenu.ts` and `lib/commands.ts` stay disjoint in both directions (`taskMenu.test.ts`).
   - `lib/statusSetCopy.ts` holds every sentence about a status set (WS-42 PST-1). No component builds one, and no sentence uses a possessive of a name. Fences: `statusSetCopy.test.ts`, `projectsSettings.test.ts`.
+  - `lib/projectUpdateLine.ts` is the one rule of the line of the newest project update on the Overview (WS-39 LP-1a), and `components/ProjectUpdateLine.tsx` only draws it. The hue of a health comes from `statusAccent.PROJECT_HEALTHS` only. The update comes with the node summary (`summary.latest_update`), so the line draws with the roll-up and moves nothing. With `PROJECTS_UPDATES_ORGS` off the key is absent, and the line draws nothing and keeps no space. The text is a button that opens the whole update in place. The opened text draws with `MarkdownBody` and the props of a task comment, and never with a second renderer. Fence: `lib/projectUpdateLine.test.ts`.
 
 ### Settings, identity and access
 - `app/settings/billing/` -- Settings → Billing (spec `subscription_console.md`). `Checkout.tsx` mounts only inside `data.purchaseEnabled`.

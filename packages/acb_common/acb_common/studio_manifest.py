@@ -52,6 +52,7 @@ from acb_common.studio_fields import (
     NAME_PATTERN,
     FieldError,
     FieldSpec,
+    lines_problem,
     parse_field_spec,
     validate_field_spec,
 )
@@ -232,6 +233,9 @@ class FieldDef(_Strict):
     max: int | None = None
     units: list[str] | None = None
     format: str | None = None
+    #: C13. A lines relation: the field of the object `to` that names this one.
+    #: `studio_fields.lines_problem` holds the rule of the object it names.
+    lines: str | None = None
 
 
 class ObjectDef(_Strict):
@@ -785,6 +789,41 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
+    _check_lines(m, out)
+
+
+def _parsed_fields(o: ObjectDef) -> list[FieldSpec] | None:
+    """The fields of *o*, or None when one does not parse. Its own refusal is
+    in the list already."""
+    try:
+        return [parse_field_spec(f.model_dump()) for f in o.fields]
+    except FieldError:
+        return None
+
+
+def _check_lines(m: Manifest, out: list[ManifestError]) -> None:
+    """Each lines relation (C13) names an object of this app whose field points
+    back, and each object is the lines of one parent at most. The rule is
+    `studio_fields.lines_problem`, which the store runs too."""
+    parsed = {o.name: _parsed_fields(o) for o in m.objects}
+    owners: dict[str, str] = {}
+    for oi, o in enumerate(m.objects):
+        for fi, f in enumerate(o.fields):
+            if f.lines is None or f.type != "relation" or not isinstance(f.to, str):
+                continue
+            path = f"$.objects[{oi}].fields[{fi}].lines"
+            spec = next((s for s in parsed[o.name] or () if s.key == f.key), None)
+            if spec is None or spec.lines is None or (f.to in parsed and parsed[f.to] is None):
+                continue  # a field refusal is in the list already
+            problem = lines_problem(o.name, spec, f.to if f.to in parsed else None,
+                                    parsed.get(f.to))
+            if problem is None and f.to in owners:
+                problem = (f"`{f.to}` is the lines of `{owners[f.to]}` already. "
+                           "An object is the lines of one parent.")
+            if problem is not None:
+                out.append(_err(path, problem))
+            else:
+                owners[f.to] = o.name
 
 
 def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:

@@ -111,6 +111,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - **Any new tool must route its path segments through `_record_uuid` and `_entity_slug`** and bind the results to `slug` and `record`. Fence: `test_crm_agent.py::test_the_path_guard_is_structural_not_a_docstring`.
   - It imports the read tools of `acb_skills.crm_tools` and keeps no copy. A Mirror run drops the record writes (orchestrator contract 19). Fence: `test_crm_mirror_run_tools.py`.
   - Each call sends `X-Actor-Via: chat:crm-assistant`, so the Change history row says `chat`. `crm_create_pipeline` leaves the run of an org off `CRM_PIPELINES_ORGS`. Fence: `test_crm_pipelines_native.py`.
+  - `crm_create_pipeline` makes a lead pipeline too, with `kind="lead"` and an optional `feeds` (CRM-M4a). Its card names the kind and the fed deal pipeline, and a deal body sends neither key. Fence: `test_crm_agent_write.py`.
 - agent-projects/ -- Projects assistant (`projects-assistant`, spec `projects_ai_chat.md`). ⚠️ **The directory is `agent-projects`, the agent is `projects-assistant`.** Its tools live in `apps/skills/skill-projects`, and `agents.py` holds identity only.
   - Every tool calls `/projects/*` as the acting member, so the route's rule is the one authority.
   - **The route manifest is the allowlist.** `skill_projects.manifest.MANIFEST` maps every `/projects` route to a tool and a class: A (read), B (reversible write), C (hard-to-undo write) or X (excluded). The client refuses a route that the manifest does not carry.
@@ -120,7 +121,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - In a `no_egress` run, a write refuses an `agent:` assignee before any write (`skill_projects.writes._refuse_agent_assignee`). Fence: `test_delegation_no_egress.py`.
   - A `GatewayRefusal` reaches the model as text through `skill_projects.refusals.refusals_as_text`, with a strict input model (`extra="forbid"`). Fence: `test_projects_agent_refusals.py`.
 - agent-worker/ -- The internal sub-agent of `spawn_subagents` (WS-67 OA-9, spec `one_assistant_context.md` §6). It is in `_INTERNAL_AGENTS` and in no picker list. It refuses a run with no job, at run and never at build. A child holds only the tools of its job and the read tools of its packs (OA-9c, `Job.pack_tools`), through `subagent_contract.child_pin`. Fences: `test_subagent_worker.py`, `test_subagent_blocked_tools.py`.
-- agent-app-builder/ -- App Workshop builder (Custom Apps), on the Copilot SDK engine. It enforces the platform contract (window.cc only, see docs/app-workshop/README.md §4.0). ⚠️ D85 refuses its Copilot CLI shell, so its build stops until WS-43h runs it in the sandbox.
+- agent-app-builder/ -- App Workshop builder (Custom Apps). It enforces the platform contract (window.cc only, see docs/app-workshop/README.md §4.0). The factory picks the engine on each run (WS-43h, `maf_coding_engine.md` §7.8). An org that `MAF_CODING_SCOPE` names as `app_builder:<org>` gets a MAF harness agent, and its build runs in the sandbox broker, in an app's own workspace only. Every other org gets the Copilot SDK agent until WS-43j, and D85 refuses its Copilot CLI shell. Fence: `test_app_builder_engine.py`.
 
 ## `skills/` — importable tool packages
 Capabilities (tools) an agent picks up, with no identity and no server. Python

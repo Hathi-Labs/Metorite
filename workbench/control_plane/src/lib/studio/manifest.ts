@@ -60,6 +60,8 @@ export interface FieldDef {
   max?: number | null;
   units?: string[] | null;
   format?: string | null;
+  // C13. A lines relation: the field of the object `to` that names this one.
+  lines?: string | null;
 }
 
 export interface ObjectDef {
