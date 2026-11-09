@@ -35,17 +35,20 @@ with the real chat, workspace and artifact routes). The done-when of AM-10:
 * with the registry off the delete purges as today, and the purge leaves no
   ``artifacts`` row with no bytes.
 
-Mutations this suite catches (R7):
+Mutations this suite catches (R7). Each one was run on 2026-11-02, and each
+one turned a test red:
 
 * ``is_other_thread_rel`` drops the kept rule: a new chat with the same id
   deletes or overwrites a kept file;
-* ``session_paths`` or the purge drops ``_NOT_KEPT``: ``prepare_new_session``
-  deletes the kept files;
+* the purge's session clause drops ``_NOT_KEPT``: ``prepare_new_session``
+  deletes the kept history;
 * ``list_artifacts`` drops ``source_deleted_at IS NULL``: the new chat lists
   the old files;
 * ``_sync_purge`` drops ``purge_in_session``: a row with no bytes stays;
-* ``move_in_session`` drops its merge: the late file fails on the store key;
-* the content route drops ``can_read``: Bob reads Alice's kept file.
+* ``move_in_session`` drops its merge: the late file fails on the store key.
+
+``session_paths`` drops ``_NOT_KEPT`` too, and ``_began_loose`` still skips
+a kept path, so that mutation alone stays green on purpose.
 
 Run::
 
@@ -136,6 +139,19 @@ def test_every_path_rule_refuses_a_kept_path() -> None:
             kept_rel(bad, "outputs/a.md")
     with pytest.raises(ValueError):
         kept_rel(kid, rel)
+
+
+def test_no_session_route_reaches_a_kept_path_in_any_dir() -> None:
+    """A personal dir has no thread slug (``None``), and the thread rule does
+    not apply there. The kept rule does: a zip that a personal chat kept is
+    not the next chat's to change, delete or list."""
+    from gateway.routes.workspace import _is_other_thread_path
+
+    kid = str(uuid.uuid4())
+    for own in (None, "some-chat-0000abcd"):
+        assert _is_other_thread_path(f"outputs/.kept/{kid}/outputs/x.zip", own), own
+    assert not _is_other_thread_path("outputs/x.zip", None)
+    assert not _is_other_thread_path("outputs/kept/x.zip", None)
 
 
 def test_the_kept_id_is_stable_for_one_chat_row() -> None:
@@ -385,9 +401,12 @@ def _chat_exists(promoted_: Any, sid: str) -> bool:
 
 
 def _created_at(promoted_: Any, sid: str) -> str:
+    """The row time as ``chat._session_source`` gives it: in UTC."""
+    from datetime import UTC
+
     with promoted_.admin_engine.connect() as c:
         return c.execute(text("SELECT created_at FROM chat_session WHERE id = :s"),
-                         {"s": sid}).scalar().isoformat()
+                         {"s": sid}).scalar().astimezone(UTC).isoformat()
 
 
 def _chat_with_files(promoted_: Any, disk_: Any, client: Any, org: str, member: str,
@@ -425,8 +444,8 @@ def registry_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @_DB_GATE
-def test_a_deleted_chat_keeps_its_files_for_its_owner_and_for_nobody_else(  # noqa: F811
-    graph_as_app, disk, registry_on,
+def test_a_deleted_chat_keeps_its_files_for_its_owner_and_for_nobody_else(
+    graph_as_app, disk, registry_on,  # noqa: F811
 ) -> None:
     from gateway.routes.agent import _guard_run_thread
 
@@ -516,8 +535,8 @@ def test_a_deleted_chat_keeps_its_files_for_its_owner_and_for_nobody_else(  # no
 
 
 @_DB_GATE
-def test_a_failed_move_keeps_the_chat_and_a_second_delete_finishes_it(  # noqa: F811
-    graph_as_app, disk, registry_on, monkeypatch,
+def test_a_failed_move_keeps_the_chat_and_a_second_delete_finishes_it(
+    graph_as_app, disk, registry_on, monkeypatch,  # noqa: F811
 ) -> None:
     """Disk first, then the store in one transaction. A failure on either
     side answers 503 and keeps the chat with every row where it was. A second
@@ -577,8 +596,8 @@ def test_a_failed_move_keeps_the_chat_and_a_second_delete_finishes_it(  # noqa: 
 
 
 @_DB_GATE
-def test_a_late_file_of_the_same_name_joins_the_kept_folder(  # noqa: F811
-    graph_as_app, disk, registry_on,
+def test_a_late_file_of_the_same_name_joins_the_kept_folder(
+    graph_as_app, disk, registry_on,  # noqa: F811
 ) -> None:
     """The pass after the row delete moves a late file into the SAME kept
     folder. A kept file of that name takes the newer bytes and keeps its id,
@@ -627,8 +646,8 @@ def test_a_late_file_of_the_same_name_joins_the_kept_folder(  # noqa: F811
 
 
 @_DB_GATE
-def test_with_the_registry_off_the_delete_purges_and_leaves_no_row_with_no_bytes(  # noqa: F811
-    graph_as_app, disk, registry_on, monkeypatch,
+def test_with_the_registry_off_the_delete_purges_and_leaves_no_row_with_no_bytes(
+    graph_as_app, disk, registry_on, monkeypatch,  # noqa: F811
 ) -> None:
     """The files were registered while the flag was on. With it off the
     delete purges as today, and the purge takes their registry rows with

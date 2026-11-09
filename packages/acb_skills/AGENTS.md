@@ -31,6 +31,7 @@ not write a second copy of that seam. A bare test file name is under
    - It owns the run's artifact context, the ContextVar seam that every workspace tool reads through `artifact_context()`. Never add a module-level dict for run state.
    - A tool with no context fails closed, and never falls back to the cwd or a temp dir. Fence: `test_h201_run_context.py`.
    - In a shared agent's tenant dir, `outputs/` and `inputs/` are the thread's own folders. `agent_paths.is_other_thread_rel` is the ONE rule for another chat's folder. Fence: `test_h227_thread_scope.py`.
+   - The kept folder `outputs/.kept/` holds the files of deleted chats (WS-60 AM-10). `is_other_thread_rel` names it another chat's folder for every session. `agent_paths.kept_rel` is its ONE layout. No thread slug can be `.kept`. Fence: `test_am10_kept_chat_files.py`.
    - `agent_paths.is_blocked_rel` is the ONE secret-name rule. Fence: `test_package_artifacts.py`.
 5a. skill_families.py -- the skill-family registry (spec `skills_registry.md`).
    - `SKILL_FAMILIES` must cover EVERY tool that `orchestrator._tool_injection` injects, each in exactly ONE family. The `core` family equals `_CORE_STANDARD_TOOL_NAMES`. Fence: `test_skills_registry.py`.
@@ -68,6 +69,7 @@ not write a second copy of that seam. A bare test file name is under
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.
 5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here.
    - A link at any depth fails the call. Do not open a mounted dir any other way. Fence: `test_sandbox_safe_open.py`.
+   - `move_file` moves one regular file beneath the root, follows no link on either side, and replaces a file at the target. The chat delete of AM-10 uses it. Fence: `test_am10_kept_chat_files.py`.
 5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (D86, spec §7.4 and §16.3).
    - Only `attach_for_run` hands them out, to ONE run, when `sandbox_broker.covers()` is true for the run's own tenant. They are never injected.
    - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`. Do not write that no data leaves the platform, because a called agent runs outside the sandbox.

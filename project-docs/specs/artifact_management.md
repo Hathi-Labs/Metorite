@@ -12,6 +12,13 @@ the one writer. The blob store registers in the same transaction. The two
 read routes are under `/artifacts`. `scripts/backfill_artifacts.py` registers
 what exists. The flag is off everywhere.
 
+**AM-10 is BUILT, 2026-11-02, dark** (branch `am10-keep-chat-files`,
+migration 328, behind the same flag). With the flag on, a chat delete keeps
+the chat's files in `outputs/.kept/<kept id>/`, and each row names its chat.
+`GET /artifacts/{id}/content` reads them. The fence is
+`tests/unit/test_am10_kept_chat_files.py`. The delete dialog copy (item 8) is
+not built.
+
 **What this spec owns.** What an artifact is, where its row lives, and who
 can see it. How a member finds it again, and how long it stays. How every
 surface reaches the same artifact: chat, Projects, Email, WhatsApp and
@@ -692,10 +699,40 @@ Closes Metorite task #137 with #116's memory work.
 `artifact_versions` with the last five bodies for text kinds under 1 MB, the
 version stepper and a diff view on the artifact page.
 
-### AM-10 · A chat's files outlive the chat — AGENT-SAFE, HIGH tier (D162.8)
+### AM-10 · A chat's files outlive the chat — AGENT-SAFE, HIGH tier (D162.8) · BUILT 2026-11-02, dark
 
 Audited GO-NARROWED on 2026-11-02 (spec-auditor). HIGH tier: it deletes,
 moves and guards member files, so it takes the full loop with Opus.
+
+**Built 2026-11-02, dark** behind `ARTIFACT_REGISTRY_ENABLED` (branch
+`am10-keep-chat-files`). Migration **328** (`328_artifact_source.sql`), because
+open pull requests claim 326 and 327. Check it again at merge (R1). The R8
+file is `tests/unit/test_am10_kept_chat_files.py`. Items 1 to 7 are built.
+Item 8, the dialog copy, is not built: it needs a count read and a UI
+capture, which is more than a copy change.
+
+What the build decided, inside the scope above:
+
+- **The kept prefix is `outputs/.kept/`.** No thread slug can be `.kept`:
+  `instance_slug` strips a leading dot, and the slug grammar needs a letter
+  or a digit first. `is_blocked_rel` refuses a dot dir, both tree walks prune
+  it, and `TenantFileStore` refuses it. `is_other_thread_rel` names
+  the kept folder another chat's folder for every session, so PUT, DELETE
+  and history refuse it too.
+- **The layout** is `agent_paths.kept_rel`, the one rule. `inputs/<slug>/x`
+  goes to `outputs/.kept/<id>/inputs/x`, and `outputs/<slug>/x` goes to
+  `outputs/.kept/<id>/outputs/x`. A loose file goes to
+  `outputs/.kept/<id>/loose/<path>`. The slug drops out, so the path stays
+  short.
+- **The kept id** is a UUID that the server makes from the tenant, the chat
+  id and the row's `created_at` (`workspace.kept_folder_id`). Each try of one
+  delete uses one folder, and a new chat with the same id gets a new one.
+- **The owner** of each kept row is the member who deletes (§7.3, "A room").
+  A kept row with no `session_id` gets the chat's id.
+- **A zip** is on disk only, so the keep stores it in `agent_blob` and
+  registers it at its kept path.
+- **The late pass** runs only while no new chat holds the id. Otherwise it
+  could move a colleague's new files to the member who deleted.
 
 **The registry decides.** When `registry.enabled()` is false, no
 `artifacts` row exists, so nothing could find a moved file. Then the delete
@@ -828,6 +865,7 @@ others gate the slice they name.
 | Only `register_artifact` writes `artifacts` | `tests/unit/test_artifact_registry.py`: a grep over the tree for `INSERT INTO artifacts` outside `acb_memory/artifacts.py` fails |
 | Every new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` (exists) |
 | No second subject grammar | `tests/unit/test_subject_grammar.py`: `artifact_shares.subject` writes go through the one validator |
+| A deleted chat's files reach no new chat with its id, and stay readable by their owner (AM-10) | `tests/unit/test_am10_kept_chat_files.py` (R8) |
 | No bytes without `can_read` | `tests/unit/test_artifact_routes.py`: every bytes route refuses a second member on a personal row, with the two-org fixture (R8) |
 | The sweep never purges a kept row | `tests/unit/test_artifact_sweep.py`, verified red first |
 | The app draws no shell of its own | `src/lib/shell/seams.test.ts` (exists) |

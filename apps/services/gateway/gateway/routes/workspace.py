@@ -996,12 +996,17 @@ def _is_other_thread_path(rel: str, own_slug: str | None) -> bool:
     """True when *rel* lies in the output or upload folder of a thread that is
     not *own_slug*.
 
-    ``None`` (no tenant dir) never matches. The rule is
+    ``None`` (no tenant dir) never matches, except the kept folder of deleted
+    chats (AM-10). No session of any dir reaches a kept file: its one reader
+    is ``GET /artifacts/{id}/content``. The rule is
     ``agent_paths.is_other_thread_rel``, the one rule of every writer.
     """
+    from acb_skills.agent_paths import is_kept_rel, is_other_thread_rel
+
+    if is_kept_rel(rel):
+        return True
     if own_slug is None:
         return False
-    from acb_skills.agent_paths import is_other_thread_rel
 
     return is_other_thread_rel(rel, own_slug)
 

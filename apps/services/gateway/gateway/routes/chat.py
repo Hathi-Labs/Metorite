@@ -504,8 +504,12 @@ def _session_source(
 
     The delete of AM-10 names the kept folder from that time
     (``workspace.kept_folder_id``) and keeps the title on each file. A
-    client sets neither: ``_upsert_session`` names no ``created_at``.
+    client sets neither: ``_upsert_session`` names no ``created_at``. The
+    time is in UTC, so the session time zone of a connection never changes
+    the folder of a retry.
     """
+    from datetime import UTC
+
     from acb_graph import tenant_session
     from sqlalchemy import text
 
@@ -516,7 +520,7 @@ def _session_source(
         ).first()
     if row is None:
         return None
-    return row[0], row[1].isoformat()
+    return row[0], row[1].astimezone(UTC).isoformat()
 
 
 def _delete_session(

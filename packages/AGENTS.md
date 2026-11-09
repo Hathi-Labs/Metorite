@@ -32,6 +32,8 @@ Mem0 and Graphiti memory providers.
 - It has no dependencies on purpose. The CALLER decides `shared`, so acb_memory stays below acb_auth and the gateway in the import graph.
 - `session_cache` keys on the clearance fingerprint and on the thread.
 - `blob_store.py`: `purge_files` and `session_paths` delete the files and the history of a deleted chat. The gateway's `workspace.purge_thread_files` is their one caller. The purge never deletes a `_RUN_ROW` row. Fence: `tests/unit/test_h227_thread_scope.py` (R8).
+  - WS-60 AM-10: the purge also deletes the `artifacts` rows of the same files, in the same transaction. With the registry on, the gateway calls `keep_files` instead, through `workspace.keep_thread_files`. It moves the blob, history and `artifacts` rows into the kept folder in one transaction.
+  - ⚠️ No purge and no `session_paths` read reaches the kept folder. `KEPT_PREFIX` here is a copy of `acb_skills.agent_paths.KEPT_PREFIX`, because this package sits below acb_skills. `acb_memory/artifacts.py` stays the one writer of `artifacts`. Fence: `tests/unit/test_am10_kept_chat_files.py` (R8).
 
 ### acb_graph/
 Postgres entity graph (SQLAlchemy sessions).
