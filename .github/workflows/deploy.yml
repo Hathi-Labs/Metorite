@@ -728,6 +728,7 @@ jobs:
               tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_crm_pipelines_native.py \
+              tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
