@@ -114,13 +114,13 @@ MAX_QR_CHARS = 2_000
 #: A btree entry has a size limit, so the side table never holds a long text.
 HOT_TEXT_CHARS = 256
 
-#: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
-#: serves them, so a model sends basis points for a percent and not a fraction.
 #: C14. The parts of a field spec that belong to one type.
 SPEC_PARTS: dict[str, tuple[str, ...]] = {
     "rating": ("min", "max"), "quantity": ("units",), "barcode": ("format",),
 }
 
+#: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
+#: serves them, so a model sends basis points for a percent and not a fraction.
 VALUE_SHAPES: dict[str, str] = {
     "richText": f"markdown text, at most {MAX_RICH_TEXT_CHARS} characters, with no HTML tag",
     "rating": "a whole number from the field's min to its max (1 to 5 when it has none)",

@@ -724,6 +724,51 @@ def test_r8_a_refusal_names_each_problem_with_its_object_and_field(world) -> Non
     assert ("field_removed", "visit", "qty") in seen
 
 
+# ── STU-C14. The parts of the new field types are part of a field ──────────
+
+_C14_FIELDS: list[dict[str, Any]] = [
+    {"key": "title", "type": "text"},
+    {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+    {"key": "score", "type": "rating", "min": 1, "max": 5},
+    {"key": "serial", "type": "barcode", "format": "ean13"},
+]
+
+
+def test_r8_a_change_of_units_or_max_is_refused_as_field_changed(world) -> None:
+    """A published quantity cannot change its `units`, and a rating cannot change its
+    `max`, because a stored value may no longer fit. `objects_store._FIELD_ATTRS` holds them.
+
+    Mutation: drop `min`, `max`, `units` and `format` from `_FIELD_ATTRS`. This test turns red.
+    """
+    mid = _mid()
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(mid, [_visit(_C14_FIELDS)])))
+    bad = _manifest(mid, [_visit([
+        _C14_FIELDS[0],
+        {"key": "load", "type": "quantity", "units": ["kg"]},
+        {"key": "score", "type": "rating", "min": 1, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "code128"},
+    ])])
+    before = _snapshot(world, pid)
+    assert _run(world, lambda: _save(world.a, ANA, pid, bad))[0] == 200
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 409, got
+    said = {p["field"]: p["message"] for p in got["problems"] if p["kind"] == "field_changed"}
+    assert "(units)" in said["load"]
+    assert "(max)" in said["score"]
+    assert "(format)" in said["serial"]
+    assert _snapshot(world, pid) == before
+
+
+def test_r8_a_resync_of_the_same_c14_fields_writes_nothing(world) -> None:
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(_mid(), [_visit(_C14_FIELDS)])))
+    before = _snapshot(world, pid)
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 200, got
+    after = _snapshot(world, pid)
+    assert after["objects"] == before["objects"]
+    assert after["fields"] == before["fields"]
+
+
 # ── e. The rules ───────────────────────────────────────────────────────────
 
 

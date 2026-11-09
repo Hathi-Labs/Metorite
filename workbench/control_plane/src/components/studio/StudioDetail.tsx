@@ -52,7 +52,7 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
       // The one markdown seam. It makes no element of raw HTML, and the check refuses a tag.
       // A heading in the text stays at the size of the sheet, so it never outranks its label.
       return (
-        <div className="flex min-w-0 flex-col gap-1 break-words [&_h1]:!mt-2 [&_h1]:!text-xs [&_h2]:!mt-2 [&_h2]:!text-xs [&_h3]:!mt-2 [&_h3]:!text-xs [&_h4]:!mt-2 [&_h4]:!text-xs [&_h5]:!mt-2 [&_h5]:!text-xs [&_h6]:!mt-2 [&_h6]:!text-xs">
+        <div className="flex min-w-0 flex-col gap-1 break-words [&_h1:not(:first-child)]:!mt-2 [&_h1:first-child]:!mt-0 [&_h1]:!text-xs [&_h2:not(:first-child)]:!mt-2 [&_h2:first-child]:!mt-0 [&_h2]:!text-xs [&_h3:not(:first-child)]:!mt-2 [&_h3:first-child]:!mt-0 [&_h3]:!text-xs [&_h4:not(:first-child)]:!mt-2 [&_h4:first-child]:!mt-0 [&_h4]:!text-xs [&_h5:not(:first-child)]:!mt-2 [&_h5:first-child]:!mt-0 [&_h5]:!text-xs [&_h6:not(:first-child)]:!mt-2 [&_h6:first-child]:!mt-0 [&_h6]:!text-xs">
           {items.map((v, i) => <MarkdownBody key={i} content={String(v)} />)}
         </div>
       );

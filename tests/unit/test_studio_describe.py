@@ -201,7 +201,7 @@ def test_a_package_read_keeps_the_parts_of_the_new_field_types() -> None:
         {"key": "title", "type": "text"},
     ]}]
     got = {f["key"]: f for f in st._package_objects(objects)[0]["fields"]}
-    assert got["load"]["units"] == ["kg", "t"]
+    assert got["load"]["units"] == ["«kg»", "«t»"]
     assert (got["score"]["min"], got["score"]["max"]) == (0, 10)
     assert got["serial"]["format"] == "ean13"
     assert "units" not in got["title"] and "format" not in got["title"]

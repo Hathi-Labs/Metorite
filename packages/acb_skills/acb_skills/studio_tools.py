@@ -2969,7 +2969,8 @@ def _package_objects(found: Any) -> list[dict[str, Any]]:
                         row[part] = f[part]
                 if isinstance(f.get("units"), list):
                     # The declaration check caps the count and the length of units.
-                    row["units"] = [u for u in f["units"] if isinstance(u, str)]
+                    # A unit is member text, so it shows inside « » as a label does.
+                    row["units"] = [_name(u, True) for u in f["units"] if isinstance(u, str)]
                 if f.get("format") in studio_fields.BARCODE_FORMATS:
                     row["format"] = f["format"]
                 fields.append(row)

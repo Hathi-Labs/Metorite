@@ -282,3 +282,12 @@ describe("the Data tab and the Detail (fix round)", () => {
     expect(html).toContain("[&amp;_h2]:!text-xs");
   });
 });
+
+describe("the first heading of a rich text (fix round 3)", () => {
+  it("has no top margin, so the label sits on its first line", () => {
+    const html = renderToStaticMarkup(createElement(StudioDetail, {
+      fields: [{ key: "r", type: "richText" }], record: { r: "## Findings" },
+    }));
+    expect(html).toContain("[&amp;_h2:first-child]:!mt-0");
+  });
+});
