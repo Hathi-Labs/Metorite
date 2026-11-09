@@ -66,6 +66,7 @@ from gateway.routes.crm.core import (
     _tenant_session,
     add_stage_to_default_pipeline,
     assert_writable,
+    clamp_stage_memberships,
     current_tenant,
     fan_out_stage_values,
     fit_member_values,
@@ -668,7 +669,13 @@ async def patch_status_in(
     CRM-M3b: a deal stage's ``probability`` and ``max_dwell_days`` go to the
     stage row AND to each of its pipeline memberships, so this route sets them
     for every pipeline. ``PATCH /crm/pipelines/{id}/stages/{status_id}`` sets
-    them for one. *members* is the Undo's "before" of each membership."""
+    them for one. *members* is the Undo's "before" of each membership, or
+    None when the row of the change has no :data:`PIPELINES_KEY`.
+
+    Round 2: an Undo (*undoes*) never fans out. It writes only the
+    memberships of *members*. A change that names a membership column logs
+    :data:`PIPELINES_KEY`, an empty object when no membership changed, so its
+    Undo knows that it wrote none."""
     table, _ = _kind(kind)
     row = await require_row(db, table, status_id, "Status")
     mirror = await _check_mode(db, table, values)
@@ -686,11 +693,15 @@ async def patch_status_in(
         )
         # CRM-M3b: after the stage row, its memberships (one lock order).
         moved_before, moved_after = await _membership_values(
-            db, kind, updated, values, members, mirror=mirror,
+            db, kind, updated, values, members,
+            undo=undoes is not None, retyped="type" in after, mirror=mirror,
         )
-        if moved_after:
+        names_members = kind == "deal" and (
+            members is not None or any(c in values for c in MEMBERSHIP_COLUMNS)
+        )
+        if moved_after or names_members:
             before[PIPELINES_KEY], after[PIPELINES_KEY] = moved_before, moved_after
-        if after:
+        if moved_after or any(k != PIPELINES_KEY for k in after):
             await log_change(db, user, Change(
                 area=STATUS_AREAS[kind], action=change_log.CHANGE,
                 summary=_change_summary(
@@ -718,33 +729,62 @@ def _summary_keys(after: dict[str, Any]) -> dict[str, Any]:
 
 async def _membership_values(
     db: Any, kind: str, row: Any, values: dict[str, Any],
-    members: dict[str, dict[str, Any]] | None, *, mirror: bool,
+    members: dict[str, dict[str, Any]] | None, *, undo: bool, retyped: bool, mirror: bool,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """The membership half of a deal stage edit (CRM-M3b, D166).
 
     The route sets a value for every pipeline: each membership takes the
     win chance or the warning days of *values* (``core.fan_out_stage_values``).
-    An Undo passes *members*, the "before" of the change, and each membership
-    that still exists takes back its own value. Before either, a ``type``
-    change of the route meets the clamp of D-CRM-10 in each pipeline. Returns
-    ``(before, after)`` of each membership that changed, by pipeline id."""
+    Before that, a ``type`` change of the route meets the clamp of D-CRM-10
+    in each pipeline, and a 422 names the pipeline that breaks it.
+
+    An Undo (*undo*) never fans out (round 2). It writes back only the
+    memberships of *members*, the "before" of the change, that still exist.
+    *members* is None for a row that main wrote before CRM-M3b: then the Undo
+    writes the stage row only.
+
+    Each write that changes the type (*retyped*) then gives NULL to each
+    membership whose value fails the clamp of the new type
+    (``core.clamp_stage_memberships``, round 2). After the route it finds
+    nothing, because the 422 above or the fan-out came first. After an Undo
+    it catches a membership that took a value while the stage had the other
+    type: a stage add, or the Undo of a take-out. Returns ``(before, after)``
+    of each membership that changed, by pipeline id."""
     if kind != "deal":
         return {}, {}
     status_id = str(row.id)
-    if members is not None:
-        held = await stage_memberships(db, status_id, MEMBERSHIP_COLUMNS)
-        # Repair 1: a stored value that fails the rules of the stage now goes
-        # back as NULL, which reads the stage row (``core.fit_member_values``).
-        back = {
-            pid: await fit_member_values(db, status_id, {
-                c: v for c, v in vals.items() if c in MEMBERSHIP_COLUMNS})
-            for pid, vals in members.items() if pid in held
-        }
-        await write_memberships(db, status_id, back)
-        return {pid: {c: held[pid].get(c) for c in vals} for pid, vals in back.items()}, back
-    if not mirror:
-        await _check_member_clamp(db, row, values)
-    return await fan_out_stage_values(db, status_id, values)
+    if undo:
+        before, after = await _restore_members(db, status_id, members or {})
+    else:
+        if not mirror:
+            await _check_member_clamp(db, row, values)
+        before, after = await fan_out_stage_values(db, status_id, values)
+    if retyped:
+        swept_before, swept_after = await clamp_stage_memberships(db, status_id)
+        for pid, vals in swept_after.items():
+            # The value before THIS change is the older one: keep it.
+            before[pid] = {**swept_before[pid], **before.get(pid, {})}
+            after[pid] = {**after.get(pid, {}), **vals}
+    return before, after
+
+
+async def _restore_members(
+    db: Any, status_id: str, members: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """The Undo half of :func:`_membership_values`: each membership of
+    *members* that still exists takes back its value. Repair 1: a stored
+    value that fails the rules of the stage now goes back as NULL, which
+    reads the stage row (``core.fit_member_values``)."""
+    if not members:
+        return {}, {}
+    held = await stage_memberships(db, status_id, MEMBERSHIP_COLUMNS)
+    back = {
+        pid: await fit_member_values(db, status_id, {
+            c: v for c, v in vals.items() if c in MEMBERSHIP_COLUMNS})
+        for pid, vals in members.items() if pid in held
+    }
+    await write_memberships(db, status_id, back)
+    return {pid: {c: held[pid].get(c) for c in vals} for pid, vals in back.items()}, back
 
 
 async def _check_member_clamp(db: Any, row: Any, values: dict[str, Any]) -> None:

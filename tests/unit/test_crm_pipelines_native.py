@@ -31,6 +31,7 @@ on that skip.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -1549,44 +1550,198 @@ async def test_the_weighted_aggregate_reads_the_lanes_of_the_board(pns) -> None:
         assert (lane["weighted"], agg.json()["total"]) == (expected, expected), pipeline
 
 
-#: The deal surfaces that show a win chance or the warning days of a deal
-#: stage (CRM-M3b, D166). Each reads the membership first.
-_DEAL_READERS = ("aggregate.py", "reports.py", "pipeline.py", "pipelines.py", "records.py")
+#: CRM-M3b round 2 (P3): the reader fence reads each module of the CRM
+#: routes, not five of them.
+_CRM_ROUTES = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
 
-#: Each way to read a stage-row value alone, with a form that once shipped,
-#: so the fence is not vacuous.
-_STAGE_ROW_READS: tuple[tuple[str, str], ...] = (
-    (r"""["'][^"'\n]*\bSELECT\b[^"'\n]*\b(?:probability|max_dwell_days)\b[^"'\n]*"""
-     r"""\bFROM crm_deal_statuses\b""", '"SELECT id, type, probability FROM crm_deal_statuses"'),
-    (r"SELECT \* FROM crm_deal_statuses\b",
-     '"SELECT * FROM crm_deal_statuses ORDER BY position, name"'),
-    (r"""read_statuses\(\s*db,\s*["']crm_deal_statuses["']""",
-     'return await read_statuses(db, "crm_deal_statuses")'),
-    (r"\bs\.(?:probability|max_dwell_days)\b", '"CAST(s.max_dwell_days AS int) AS limit_days"'),
-)
+#: The two values of a deal stage that sit on its membership (migration 398).
+_VALUE_COLUMNS = frozenset({"probability", "max_dwell_days"})
 
 #: The form that reads the membership first. The fence removes it before it looks.
 _MEMBERSHIP_FIRST = re.compile(r"COALESCE\(ps\.(probability|max_dwell_days), s\.\1\)")
 
+#: Each SQL form that reads a stage-row value alone, over the text of one
+#: string. The fence joins adjacent literals, the parts of an f-string and a
+#: ``+`` of literals first, so a SELECT split across two literals is one text.
+_SQL_FORMS: dict[str, re.Pattern[str]] = {
+    # A bare column, not ``x.column`` and not an ``AS column`` name.
+    "select": re.compile(
+        r"\bSELECT\b(?:(?!\bFROM\b).)*(?<![\w.])(?<!AS )(?:probability|max_dwell_days)\b"
+        r"(?:(?!\bSELECT\b).)*\bFROM crm_deal_statuses\b", re.S),
+    "star": re.compile(r"\bSELECT \* FROM crm_deal_statuses\b"),
+    "alias": re.compile(r"\bs\.(?:probability|max_dwell_days)\b"),
+}
+
+#: The helpers that load one stage row or the stage-row list.
+_LOADERS = frozenset({"load_row", "require_row", "read_status", "read_statuses"})
+
+#: The functions that may read the stage-row value alone, each with its
+#: reason. Each one must still read it, so the list cannot rot.
+_STAGE_ROW_OWNERS: dict[tuple[str, str], str] = {
+    ("core.py", "_effective_columns"): (
+        "it builds the stage-row list of GET /crm/statuses, and the list that reads "
+        "the membership first"),
+    ("core.py", "read_deal_stages"): "an org with no deal pipeline has no membership",
+    ("cutover.py", "fold_cutover_overlay"): "a write: the switch folds the overlay",
+    ("seed.py", "<module>"): "a write: a new membership copies the stage row",
+    ("stage_metadata.py", "import_zoho_stages"): "a write: the repair plans the stage row",
+}
+
+#: One mutation of each form that the fence catches. Each must turn it red.
+_MUTATIONS: dict[str, str] = {
+    "select": (
+        "async def lanes(db):\n"
+        "    return await db.execute(text('SELECT id, probability '\n"
+        "                                 'FROM crm_deal_statuses'))\n"),
+    "star": "SQL = 'SELECT * FROM crm_deal_statuses ORDER BY position, name'\n",
+    "alias": "LIMIT = 'CAST(s.max_dwell_days AS int) AS limit_days'\n",
+    "attr": (
+        "async def chance(db, sid):\n"
+        "    stage = await load_row(db, 'crm_deal_statuses', sid)\n"
+        "    return stage.probability\n"),
+    "getattr": (
+        "TABLE = 'crm_deal_statuses'\n"
+        "async def limit(db, sid):\n"
+        "    stage = await require_row(db, TABLE, sid, 'Status')\n"
+        "    return getattr(stage, 'max_dwell_days', None)\n"),
+    "read_status": (
+        "async def one(db, sid):\n"
+        "    return status_wire(await read_status(db, 'crm_deal_statuses', sid))\n"),
+    "read_statuses": "async def all_(db):\n    return await read_statuses(db, 'crm_deal_statuses')\n",
+}
+
+
+def _module_strings(tree: ast.Module) -> dict[str, str]:
+    """The string constants of the module level, by name."""
+    found: dict[str, str] = {}
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        value = getattr(node, "value", None)
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            found.update({t.id: value.value for t in targets if isinstance(t, ast.Name)})
+    return found
+
+
+def _text_of(node: ast.AST, names: dict[str, str]) -> str | None:
+    """The text of a string node: a literal, adjacent literals (the AST joins
+    them), an f-string with each module constant in place, or a ``+`` of
+    those. None when a part is no string."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                parts.append(str(part.value))
+            elif isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name):
+                parts.append(names.get(part.value.id, "{}"))
+            else:
+                parts.append("{}")
+        return "".join(parts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _text_of(node.left, names), _text_of(node.right, names)
+        return left + right if left is not None and right is not None else None
+    return None
+
+
+def _stage_row_reads(source: str) -> list[tuple[str, str]]:
+    """Each read of a stage-row value alone in *source*, as (function, form)."""
+    tree = ast.parse(source)
+    names = _module_strings(tree)
+    parent: dict[ast.AST, ast.AST] = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+    def owner(node: ast.AST) -> str:
+        chain = []
+        while node in parent:
+            node = parent[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                chain.append(node.name)
+        return ".".join(reversed(chain)) or "<module>"
+
+    def loads_a_stage(node: ast.AST) -> str | None:
+        """The name of the loader when *node* loads a deal stage row."""
+        call = node.value if isinstance(node, ast.Await) else node
+        if not isinstance(call, ast.Call):
+            return None
+        func = call.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        tables = [a.value if isinstance(a, ast.Constant) else names.get(getattr(a, "id", ""))
+                  for a in call.args]
+        return name if name in _LOADERS and "crm_deal_statuses" in tables else None
+
+    found: list[tuple[str, str]] = []
+    done: set[int] = set()
+    for node in ast.walk(tree):
+        if id(node) in done or not isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+            continue
+        sql = _text_of(node, names)
+        if sql is None:
+            continue
+        done.update(id(sub) for sub in ast.walk(node))
+        sql = _MEMBERSHIP_FIRST.sub("", sql)
+        found += [(owner(node), form) for form, rule in _SQL_FORMS.items() if rule.search(sql)]
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        rows = {t.id for node in ast.walk(fn) if isinstance(node, ast.Assign)
+                and loads_a_stage(node.value) for t in node.targets if isinstance(t, ast.Name)}
+        for node in ast.walk(fn):
+            loader = loads_a_stage(node) if isinstance(node, ast.Call) else None
+            if loader in ("read_status", "read_statuses"):
+                found.append((owner(node), loader))
+            if isinstance(node, ast.Attribute) and node.attr in _VALUE_COLUMNS and (
+                    getattr(node.value, "id", None) in rows or loads_a_stage(node.value)):
+                found.append((owner(node), "attr"))
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "getattr"
+                    and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value in _VALUE_COLUMNS
+                    and (getattr(node.args[0], "id", None) in rows
+                         or loads_a_stage(node.args[0]))):
+                found.append((owner(node), "getattr"))
+    return found
+
 
 def test_no_deal_reader_reads_the_stage_row_value_alone() -> None:
     """R7 for the rule of ``apps/services/gateway/AGENTS.md`` (CRM-M3b repair
-    5). A deal reader never reads ``s.probability`` or ``s.max_dwell_days``
-    alone, so one deal never shows two win chances. The held-stage read of
-    the board is the one stage-row list: a stage that the pipeline does not
-    list has no membership. Mutation: put back the old ``_weighted`` read ->
-    red."""
-    crm = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
-    for pattern, shipped in _STAGE_ROW_READS:
-        assert re.search(pattern, shipped), ("non-vacuity", pattern)
-    found: list[tuple[str, str]] = []
-    for name in _DEAL_READERS:
-        source = _MEMBERSHIP_FIRST.sub("", (crm / name).read_text(encoding="utf-8"))
-        for pattern, _shipped in _STAGE_ROW_READS:
-            found += [(name, m.group(0)) for m in re.finditer(pattern, source)]
-        held = source.count('EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]')
-        assert held == (1 if name == "pipeline.py" else 0), (name, held)
-    assert found == [], found
+    5, widened in round 2). A deal reader never reads ``probability`` or
+    ``max_dwell_days`` of the stage row alone, so one deal never shows two
+    win chances. The fence parses each module of ``routes/crm/`` and finds:
+
+    - SQL that names a bare column, ``s.<column>`` or ``SELECT *`` with
+      ``FROM crm_deal_statuses``. Adjacent literals, an f-string with a
+      module constant, and a ``+`` of literals join first.
+    - ``read_status`` or ``read_statuses`` of ``crm_deal_statuses``.
+    - ``load_row``, ``require_row``, ``read_status`` or ``read_statuses`` of
+      ``crm_deal_statuses``, and then ``.probability``, ``.max_dwell_days``
+      or ``getattr`` of either, in the same function.
+
+    Only the functions of ``_STAGE_ROW_OWNERS`` may read the stage row, each
+    for its reason. The held-stage read of the board is the one use of the
+    stage-row list: a stage that the pipeline does not list has no
+    membership.
+
+    Out of reach, so a reviewer checks them: a table name in a local name or
+    a parameter (``load_row(db, table, ...)``), a row passed to another
+    function and read there, ``getattr`` with a column in a name, SQL that
+    joins a runtime value between SELECT and FROM, and each reader outside
+    ``routes/crm/`` (``crm_sync``). Mutation: each entry of ``_MUTATIONS``
+    turns the scan red."""
+    for form, mutation in _MUTATIONS.items():
+        assert form in {f for _owner, f in _stage_row_reads(mutation)}, ("non-vacuity", form)
+    found: dict[tuple[str, str], set[str]] = {}
+    held: dict[str, int] = {}
+    for path in sorted(_CRM_ROUTES.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for where, form in _stage_row_reads(source):
+            found.setdefault((path.name, where), set()).add(form)
+        held[path.name] = source.count('EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]')
+    assert len(held) > 40, "the fence reads each module"
+    unexpected = {k: sorted(v) for k, v in found.items() if k not in _STAGE_ROW_OWNERS}
+    assert unexpected == {}, unexpected
+    assert set(_STAGE_ROW_OWNERS) <= set(found), set(_STAGE_ROW_OWNERS) - set(found)
+    assert {name: n for name, n in held.items() if n} == {"pipeline.py": 1}, held
 
 
 @pytest.mark.parametrize("sqlstate", ["40P01", "40001", "55P03"])
@@ -1650,3 +1805,324 @@ async def test_the_undo_of_an_edit_of_a_deleted_stage_says_it_cannot_come_back(p
     words = _words(undo)
     assert '"Qualify" was deleted, so this change cannot come back' in words, words
     assert "took it out" not in words, words
+
+
+# ── CRM-M3b repair round 2 ──────────────────────────────────────────────────
+
+
+async def _undo_of(p: Any, user: Any, row: Any) -> Any:
+    return await _call(p, user, "POST", f"/crm/change-history/{row.id}/undo")
+
+
+def _open_change(p: Any, area: str, action: str) -> Any:
+    """The newest row of *area* and *action* that is no Undo."""
+    return [x for x in _changes(p, area, action) if x.undoes_id is None][-1]
+
+
+def _renewals(p: Any) -> str:
+    """A second deal pipeline, "Renewals", with no stage."""
+    return str(_one(p, "INSERT INTO crm_pipelines (organization_id, name, position, is_default) "
+                       "VALUES (CAST(:o AS uuid), 'Renewals', 1, false) RETURNING id",
+                    o=p.org_a))
+
+
+def _signed(p: Any) -> str:
+    """A second visible ``won`` stage, so "Won" may change its type."""
+    return str(_one(p, "INSERT INTO crm_deal_statuses (organization_id, name, type, position, "
+                       "probability) VALUES (CAST(:o AS uuid), 'Signed', 'won', 35, 100) "
+                       "RETURNING id", o=p.org_a))
+
+
+def _strip(p: Any, row: Any, *keys: str) -> None:
+    """Take *keys* out of "before" and "after" of one change row, as main's
+    code wrote it before CRM-M3b. The guard trigger of migration 341 keeps a
+    row fixed, so the test turns the triggers off for its own write."""
+    with p.admin_engine.begin() as c:
+        c.execute(text("SET LOCAL session_replication_role = replica"))
+        for key in keys:
+            c.execute(text(
+                "UPDATE crm_change_log SET before = before - CAST(:k AS text), "
+                "after = after - CAST(:k AS text) WHERE id = CAST(:id AS uuid)"),
+                {"k": key, "id": str(row.id)})
+
+
+@pytest.mark.parametrize("flag", ["*", ""])
+async def test_a_status_undo_clamps_a_membership_that_came_after_the_change(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Round 2 item 1 (P1), the order of the re-review. "Won" becomes
+    ``open`` at 40 through the old route, a stage add copies 40 into
+    "Renewals", and the Undo of the old route puts the type back. The Undo
+    gives NULL to the membership of Renewals, so Renewals shows ``won`` at
+    100, and a new deal there takes 100. The old route, the stage add and the
+    Undo are not behind ``CRM_PIPELINES_ORGS``, so the case runs with the
+    flag off too. The Undo row logs the NULL, and the Undo of the add works
+    out of order, because the clamp took its 40."""
+    from acb_common import get_settings
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    _signed(pns)
+    renewals = _renewals(pns)
+    monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", flag, raising=False)
+    retype = await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{ids['won']}",
+                         {"type": "open", "probability": 40})
+    assert retype.status_code == 200, retype.text
+    add = await _call(pns, admin, "POST", f"/crm/pipelines/{renewals}/stages",
+                      {"status_id": ids["won"]})
+    assert add.status_code == 201, add.text
+    assert _membership(pns, renewals, ids["won"]) == (40, None)
+    undo = await _undo_of(pns, admin, _open_change(pns, "deal_stage", "change"))
+    assert undo.status_code == 200, undo.text
+    assert _membership(pns, renewals, ids["won"]) == (None, None), "the clamp of the type now"
+    assert _membership(pns, ids["pipeline"], ids["won"]) == (None, None)
+    lane = (await _lanes(pns, admin, renewals))["Won"]
+    assert (lane["type"], lane["probability"]) == ("won", 100)
+    listed = {(pl["id"], s["name"]): (s["type"], s["probability"])
+              for pl in (await _call(pns, admin, "GET", "/crm/pipelines")).json()
+              for s in pl["stages"]}
+    assert listed[(renewals, "Won")] == listed[(ids["pipeline"], "Won")] == ("won", 100)
+    (back,) = [x for x in _changes(pns, "deal_stage", "change") if x.undoes_id]
+    assert back.before["pipelines"][renewals] == {"probability": 40}, back.before
+    assert back.after["pipelines"][renewals] == {"probability": None}, back.after
+    deal = await _call(pns, admin, "POST", "/crm/deals",
+                       {"name": "Renewed", "pipeline_id": renewals, "status_id": ids["won"]})
+    assert deal.status_code == 201 and deal.json()["probability"] == 100, deal.text
+    _one(pns, "DELETE FROM crm_deals WHERE pipeline_id = CAST(:pl AS uuid) RETURNING id",
+         pl=renewals)
+    # The Undo of the add, out of order: the clamp took its 40, so it works.
+    out = await _undo_of(pns, admin, _open_change(pns, "pipeline_stage", "create"))
+    assert out.status_code == 200, out.text
+    assert _membership(pns, renewals, ids["won"]) is None
+    (taken,) = [x for x in _changes(pns, "pipeline_stage", "delete") if x.undoes_id]
+    assert taken.before["probability"] is None, "the take-out logs what it took"
+
+
+@pytest.mark.parametrize("flag", ["*", ""])
+async def test_a_status_undo_clamps_a_membership_that_a_take_out_undo_put_back(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Round 2 item 1, the take-out form of P1. A take-out row that main
+    wrote holds no values, so its Undo copies the stage row: 40 while "Won"
+    is ``open``. The Undo of the old route then puts the type back, and the
+    membership of Renewals takes NULL. Renewals shows ``won`` at 100."""
+    from acb_common import get_settings
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    _signed(pns)
+    renewals = _renewals(pns)
+    with pns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, status_id, position) "
+            "VALUES (CAST(:o AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), 0)"),
+            {"o": pns.org_a, "p": renewals, "s": ids["won"]})
+    monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", flag, raising=False)
+    out = await _call(pns, admin, "DELETE", _values_path(renewals, ids["won"]))
+    assert out.status_code == 200, out.text
+    taken = _open_change(pns, "pipeline_stage", "delete")
+    _strip(pns, taken, "probability", "max_dwell_days")
+    retype = await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{ids['won']}",
+                         {"type": "open", "probability": 40})
+    assert retype.status_code == 200, retype.text
+    change = _open_change(pns, "deal_stage", "change")
+    put = await _undo_of(pns, admin, taken)
+    assert put.status_code == 200, put.text
+    assert _membership(pns, renewals, ids["won"]) == (40, None), "a copy of the stage row"
+    undo = await _undo_of(pns, admin, change)
+    assert undo.status_code == 200, undo.text
+    assert _membership(pns, renewals, ids["won"]) == (None, None)
+    lane = (await _lanes(pns, admin, renewals))["Won"]
+    assert (lane["type"], lane["probability"]) == ("won", 100)
+
+
+@pytest.mark.parametrize("flag", ["*", ""])
+async def test_a_status_undo_writes_only_the_memberships_its_row_names(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Round 2 item 2 (P2), the order of the re-review. Every membership of
+    "Proposal" holds 70 and the stage row 50. The old route sets 70, so it
+    writes no membership, and its row logs ``pipelines: {}``. Its Undo puts
+    the stage row back to 50 and leaves the membership at 70, because an
+    Undo never fans out. The older change then still undoes (200). With the
+    flag on, the 70 comes from the route of one pipeline. With the flag off,
+    a stage add copies it, and the other membership goes out."""
+    from acb_common import get_settings
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    path = f"/crm/statuses/deal/{ids['proposal']}"
+    if flag:
+        pid = ids["pipeline"]
+        edit = await _call(pns, admin, "PATCH", _values_path(pid, ids["proposal"]),
+                           {"probability": 70})
+        assert edit.status_code == 200, edit.text
+        older = _open_change(pns, "pipeline_stage", "change")
+    else:
+        monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", "", raising=False)
+        pid = _renewals(pns)
+        assert (await _call(pns, admin, "PATCH", path, {"probability": 70})).status_code == 200
+        add = await _call(pns, admin, "POST", f"/crm/pipelines/{pid}/stages",
+                          {"status_id": ids["proposal"]})
+        assert add.status_code == 201, add.text
+        older = _open_change(pns, "pipeline_stage", "create")
+        undone = await _undo_of(pns, admin, _open_change(pns, "deal_stage", "change"))
+        assert undone.status_code == 200, undone.text
+        out = await _call(pns, admin, "DELETE", _values_path(ids["pipeline"], ids["proposal"]))
+        assert out.status_code == 200, out.text
+    assert _membership(pns, pid, ids["proposal"]) == (70, None)
+    same = await _call(pns, admin, "PATCH", path, {"probability": 70})
+    assert same.status_code == 200, same.text
+    change = _open_change(pns, "deal_stage", "change")
+    assert change.before == {"probability": 50, "pipelines": {}}, change.before
+    assert change.after == {"probability": 70, "pipelines": {}}, change.after
+    undo = await _undo_of(pns, admin, change)
+    assert undo.status_code == 200, undo.text
+    assert _membership(pns, pid, ids["proposal"]) == (70, None), "an Undo never fans out"
+    assert (await _lanes(pns, admin, pid))["Proposal"]["probability"] == 70
+    assert _one(pns, "SELECT probability FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=ids["proposal"]) == 50
+    (back,) = [x for x in _changes(pns, "deal_stage", "change")
+               if x.undoes_id == change.id]
+    assert back.after == {"probability": 50, "pipelines": {}}, back.after
+    shown = {r["id"]: r for r in (await _call(pns, admin, "GET", "/crm/change-history")
+                                 ).json()["rows"]}
+    assert shown[str(older.id)]["can_undo"] is True
+    first = await _undo_of(pns, admin, older)
+    assert first.status_code == 200, first.text
+    if flag:
+        assert _membership(pns, pid, ids["proposal"]) == (None, None)
+        assert (await _lanes(pns, admin, pid))["Proposal"]["probability"] == 50
+    else:
+        assert _membership(pns, pid, ids["proposal"]) is None
+
+
+@pytest.mark.parametrize("flag", ["*", ""])
+async def test_the_undo_of_a_row_from_before_m3b_writes_the_stage_row_only(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Round 2 item 2. A change row that main wrote has no ``pipelines``
+    key. Its Undo puts the stage row back and writes no membership: a value
+    that a pipeline took since stays. With the flag on, the edit of one
+    pipeline sets it. With the flag off, a stage add copies it."""
+    from acb_common import get_settings
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    old = await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{ids['proposal']}",
+                      {"probability": 70})
+    assert old.status_code == 200, old.text
+    change = _open_change(pns, "deal_stage", "change")
+    _strip(pns, change, "pipelines")
+    with pns.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_pipeline_stages SET probability = NULL "
+                       "WHERE status_id = CAST(:s AS uuid)"), {"s": ids["proposal"]})
+    if flag:
+        pid = ids["pipeline"]
+        assert (await _call(pns, admin, "PATCH", _values_path(pid, ids["proposal"]),
+                            {"probability": 30})).status_code == 200
+        kept = (30, None)
+    else:
+        monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", "", raising=False)
+        pid = _renewals(pns)
+        assert (await _call(pns, admin, "POST", f"/crm/pipelines/{pid}/stages",
+                            {"status_id": ids["proposal"]})).status_code == 201
+        kept = (70, None)
+    undo = await _undo_of(pns, admin, change)
+    assert undo.status_code == 200, undo.text
+    assert _one(pns, "SELECT probability FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=ids["proposal"]) == 50
+    assert _membership(pns, pid, ids["proposal"]) == kept
+    if not flag:
+        assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+
+
+@pytest.mark.parametrize("flag", ["*", ""])
+async def test_the_undo_of_an_edit_never_refuses_for_the_clamp(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Round 2 item 3, the order of the re-review. "Proposal" gets 60 and
+    then 100 in the default pipeline, and the old route makes it ``won`` at
+    100. The Undo of the second edit puts back 60, which a ``won`` stage
+    does not take, so it writes NULL and answers 200, never 409. "Qualify"
+    takes the same steps, undone newest first: each Undo answers 200, and
+    the pipeline follows the stage row again. The edits need the flag. The
+    type change and the Undo do not, so they run with the flag off too."""
+    from acb_common import get_settings
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    edits: dict[str, list[Any]] = {}
+    for key in ("proposal", "qualify"):
+        path = _values_path(ids["pipeline"], ids[key])
+        for chance in (60, 100):
+            assert (await _call(pns, admin, "PATCH", path, {"probability": chance})
+                    ).status_code == 200
+        edits[key] = [x for x in _changes(pns, "pipeline_stage", "change")
+                      if x.after["status_id"] == ids[key]]
+    monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", flag, raising=False)
+    retyped = {}
+    for key in ("proposal", "qualify"):
+        r = await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{ids[key]}",
+                        {"type": "won", "probability": 100})
+        assert r.status_code == 200, r.text
+        retyped[key] = _open_change(pns, "deal_stage", "change")
+    # The order of the review: the edit first.
+    second = await _undo_of(pns, admin, edits["proposal"][1])
+    assert second.status_code == 200, second.text
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    lane = (await _lanes(pns, admin, ids["pipeline"]))["Proposal"]
+    assert (lane["type"], lane["probability"]) == ("won", 100)
+    (put,) = [x for x in _changes(pns, "pipeline_stage", "change")
+              if x.undoes_id == edits["proposal"][1].id]
+    assert put.after == {"status_id": ids["proposal"], "probability": None}, put.after
+    # Newest first: the type change, then each edit. Each answers 200.
+    for row in (retyped["qualify"], *reversed(edits["qualify"])):
+        r = await _undo_of(pns, admin, row)
+        assert r.status_code == 200, (row.summary, r.text)
+    assert _membership(pns, ids["pipeline"], ids["qualify"]) == (None, None)
+    lane = (await _lanes(pns, admin, ids["pipeline"]))["Qualify"]
+    assert (lane["type"], lane["probability"]) == ("open", 10)
+
+
+@pytest.mark.parametrize("flag", ["*", ""])
+async def test_a_stage_repair_clamps_each_membership_and_no_edit_undo_sticks(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Round 2 items 1 and 3. The stage repair of the Zoho import changes a
+    type and logs no change row (``stage_metadata.apply_repair``). A stage
+    row at 100 makes the repair write the type alone. Each membership value
+    that ``won`` does not take goes to NULL, so the pipeline shows 100. The
+    Undo of each edit then answers 200, never a 409 that no Undo can clear:
+    the clamp took the value of the edit."""
+    from acb_common import get_settings
+    from acb_common.db import tenant_session
+    from gateway.routes.crm.stage_metadata import RepairPlan, apply_repair
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    # "Proposal": the old route sets 100 in each pipeline, then an edit sets 60.
+    assert (await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{ids['proposal']}",
+                        {"probability": 100})).status_code == 200
+    # "Qualify": the stage row is 100 and the membership follows it.
+    _one(pns, "UPDATE crm_deal_statuses SET probability = 100 WHERE id = CAST(:s AS uuid) "
+              "RETURNING id", s=ids["qualify"])
+    for key in ("proposal", "qualify"):
+        assert (await _call(pns, admin, "PATCH", _values_path(ids["pipeline"], ids[key]),
+                            {"probability": 60})).status_code == 200
+    edits = {x.after["status_id"]: x for x in _changes(pns, "pipeline_stage", "change")}
+    monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", flag, raising=False)
+    url = pns.app_url.render_as_string(hide_password=False)
+    plan = RepairPlan(updates={ids["proposal"]: {"type": "won"}, ids["qualify"]: {"type": "won"}})
+    async with tenant_engine_scope(url), tenant_session(pns.org_a) as db:
+        await apply_repair(db, plan)
+    lanes = await _lanes(pns, admin, ids["pipeline"])
+    for key, name in (("proposal", "Proposal"), ("qualify", "Qualify")):
+        assert _membership(pns, ids["pipeline"], ids[key]) == (None, None), key
+        assert (lanes[name]["type"], lanes[name]["probability"]) == ("won", 100), key
+        r = await _undo_of(pns, admin, edits[ids[key]])
+        assert r.status_code == 200, (key, r.text)
+        assert (await _lanes(pns, admin, ids["pipeline"]))[name]["probability"] == 100
+    rows = {r["id"]: r for r in (await _call(pns, admin, "GET", "/crm/change-history")
+                                ).json()["rows"]}
+    assert not any(rows[str(x.id)]["can_undo"] for x in edits.values())

@@ -32,7 +32,10 @@ membership copies the values: of the copied pipeline on a copy, else of the
 stage row. A take-out keeps them in its row, and its Undo puts them back.
 Each copied or restored value must pass the rules of the stage now, else it
 is NULL (``core.fitted_value_sql``), so no pipeline shows a ``won`` stage
-below 100.
+below 100. A type change gives NULL to each membership value that the new
+type does not take (``core.clamp_stage_memberships``). So the Undo of an edit
+or of a stage add counts a NULL that the clamp wrote as its own value, and
+never refuses for the clamp (CRM-M3b round 2).
 
 **Who may do what.** ``GET /crm/pipelines`` is open to each member the CRM access
 rule admits, because every board needs it. The three writes need
@@ -129,6 +132,7 @@ from gateway.routes.crm.core import (
     copied_values_sql,
     current_tenant,
     default_pipeline_id,
+    fit_member_values,
     insert_row,
     load_row,
     lock_pipeline_creates,
@@ -1469,8 +1473,21 @@ async def set_stage_values_in(
         ),
         {**{c: values[c] for c in changed}, "p": pipeline_id, "s": status_id},
     )
-    words = ", ".join(_VALUE_WORDS[c] for c in changed)
-    await log_change(db, user, Change(
+    await log_change(db, user, _values_change(
+        pipeline_id, pipeline, stage, status_id,
+        {c: stored[c] for c in changed}, {c: values[c] for c in changed},
+    ), undoes=undoes, via=via)
+    return True
+
+
+def _values_change(
+    pipeline_id: str, pipeline: Any, stage: Any, status_id: str,
+    stored: dict[str, Any], written: dict[str, Any],
+) -> Change:
+    """The ``pipeline_stage`` row of a value edit in one pipeline: *stored*
+    is the value of each column before, *written* the value after."""
+    words = ", ".join(_VALUE_WORDS[c] for c in written)
+    return Change(
         area="pipeline_stage", action=change_log.CHANGE,
         summary=(
             f"Changed the stage {quoted(stage.name)} in the pipeline "
@@ -1478,11 +1495,27 @@ async def set_stage_values_in(
         ),
         ladder=change_log.TEAM, entity_id=str(pipeline_id),
         # The name of the stage sits in "before" only, for the words of the Undo.
-        before={"status_id": status_id, "stage": stage.name,
-                **{c: stored[c] for c in changed}},
-        after={"status_id": status_id, **{c: values[c] for c in changed}},
-    ), undoes=undoes, via=via)
-    return True
+        before={"status_id": status_id, "stage": stage.name, **stored},
+        after={"status_id": status_id, **written},
+    )
+
+
+async def _still_holds(
+    db: Any, status_id: str, stored: dict[str, Any], logged: dict[str, Any],
+) -> bool:
+    """True when each membership value of *logged* still sits in *stored*,
+    or the clamp took it (CRM-M3b round 2).
+
+    The clamp took a value when the membership holds NULL and the logged
+    value fails the rules of the stage NOW (``core.fitted_value_sql``). Only
+    a write that fits a value to the clamp puts NULL there in its place. So
+    the Undo of an edit or of a stage add never refuses for the clamp. A
+    value that changed for another reason still refuses."""
+    fitted = await fit_member_values(db, status_id, logged)
+    return all(
+        stored.get(c) == v or (stored.get(c) is None and fitted.get(c) is None)
+        for c, v in logged.items()
+    )
 
 
 def _changes_value(column: str, stored: Any, wanted: Any, stage: Any) -> bool:
@@ -1562,7 +1595,8 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
     with its win chance and its warning days. A changed value goes back
     (CRM-M3b). The pipeline row and the place of the stage are locked first."""
     pipeline_id = str(logged.entity_id or "")
-    if await load_row(db, "crm_pipelines", pipeline_id, lock=True) is None:
+    pipeline = await load_row(db, "crm_pipelines", pipeline_id, lock=True)
+    if pipeline is None:
         raise change_log.gone(logged.area)
     if logged.action == change_log.CREATE:
         after = logged.after or {}
@@ -1572,17 +1606,21 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
         )).first()
         # The stage must still sit in the pipeline at the place of this
         # change. The name of the stage in "after" is for the reader only.
+        # Round 2: a value that the clamp took since counts as still there
+        # (:func:`_still_holds`).
+        logged_values = {c: after[c] for c in MEMBERSHIP_COLUMNS if c in after}
         if place is None or not change_log.same_values(
-            {"status_id": status_id, "position": int(place.position or 0),
-             **{c: getattr(place, c, None) for c in MEMBERSHIP_COLUMNS}},
-            {k: after[k] for k in _ADDED_KEYS if k in after},
+            {"status_id": status_id, "position": int(place.position or 0)},
+            {k: after[k] for k in _ADDED_KEYS if k in after and k not in logged_values},
+        ) or not await _still_holds(
+            db, status_id, {c: getattr(place, c, None) for c in logged_values}, logged_values,
         ):
             raise change_log.changed_since()
         if not await remove_stage_in(db, user, pipeline_id, status_id, undoes=logged.id):
             raise change_log.changed_since()
         return
     if logged.action == change_log.CHANGE:
-        await _undo_stage_values(db, user, pipeline_id, logged)
+        await _undo_stage_values(db, user, pipeline_id, pipeline, logged)
         return
     before = logged.before or {}
     status_id = str(before.get("status_id") or "")
@@ -1609,18 +1647,27 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
         raise change_log.changed_since()
 
 
-async def _undo_stage_values(db: Any, user: Any, pipeline_id: str, logged: Logged) -> None:
+async def _undo_stage_values(
+    db: Any, user: Any, pipeline_id: str, pipeline: Any, logged: Logged,
+) -> None:
     """The Undo of a win chance or warning days edit in one pipeline (CRM-M3b).
 
-    The membership must still hold the values of "after", else 409
-    ``changed_since``. "before" holds the stored values (repair 3), so the
-    Undo puts NULL back where the membership followed the stage row. A stage
-    that is deleted answers 409 ``gone``, and the words say that the change
-    cannot come back. A membership that is gone answers 409 ``gone`` too, and
-    the change stays open: the Undo of the take-out puts the stage back, and
-    then this Undo works. It goes back through :func:`set_stage_values_in`,
-    the helper of the route. A refusal of that helper means that the stage
-    changed since (a new type), so it answers 409 ``changed_since`` too."""
+    The membership must still hold the values of "after", or NULL where the
+    clamp took a value (:func:`_still_holds`), else 409 ``changed_since``.
+    "before" holds the stored values (repair 3), so the Undo puts NULL back
+    where the membership followed the stage row. A stage that is deleted
+    answers 409 ``gone``, and the words say that the change cannot come back.
+    A membership that is gone answers 409 ``gone`` too, and the change stays
+    open: the Undo of the take-out puts the stage back, and then this Undo
+    works. It goes back through :func:`set_stage_values_in`, the helper of
+    the route.
+
+    Round 2: the Undo never refuses for the clamp. A stored value that
+    fails the rules of the stage NOW goes back as NULL
+    (``core.fit_member_values``), as each other Undo does. A stage repair
+    (``stage_metadata.apply_repair``) changes a type with no change row, so a
+    refusal there would stay for ever. When the pipeline shows already what
+    the Undo puts back, the Undo writes nothing and logs its row."""
     before, after = logged.before or {}, logged.after or {}
     status_id = str(after.get("status_id") or before.get("status_id") or "")
     columns = [c for c in MEMBERSHIP_COLUMNS if c in after]
@@ -1643,19 +1690,23 @@ async def _undo_stage_values(db: Any, user: Any, pipeline_id: str, logged: Logge
             "be undone. Undo the change that took it out first, and then undo this."
         ))
     stored = {c: getattr(member, c, None) for c in columns}
-    if not change_log.same_values(stored, {c: after[c] for c in columns}):
+    if not await _still_holds(db, status_id, stored, {c: after[c] for c in columns}):
         raise change_log.changed_since()
+    back = await fit_member_values(db, status_id, {c: before.get(c) for c in columns})
     try:
         done = await set_stage_values_in(
-            db, user, pipeline_id, status_id, {c: before.get(c) for c in columns},
-            undoes=logged.id,
+            db, user, pipeline_id, status_id, back, undoes=logged.id,
         )
     except HTTPException as exc:
         if exc.status_code != 422:
             raise
         raise change_log.changed_since() from None
     if not done:
-        raise change_log.changed_since()
+        # The clamp took the value of the edit, and the pipeline shows what
+        # the Undo puts back. Nothing to write: the row records the Undo.
+        await log_change(db, user, _values_change(
+            pipeline_id, pipeline, stage, status_id, stored, stored,
+        ), undoes=logged.id)
 
 
 @router.get(

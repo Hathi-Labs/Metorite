@@ -1309,6 +1309,9 @@ _DEAL_ORDERS: tuple[tuple[str, ...], ...] = (
     ("edit_chance", "take_out", "undo_edit_chance", "undo_take_out", "undo_p"),
     ("edit_chance", "undo_p", "undo_edit_chance"),
     ("take_out", "edit_chance", "undo_take_out", "edit_chance", "delete_s", "undo_p"),
+    # CRM-M3b round 2 (P2): the old route sets the value that P holds, so it
+    # writes no membership. Its Undo never fans out, so the edit still undoes.
+    ("edit_chance", "chance_all", "undo_chance_all", "undo_edit_chance", "undo_p"),
 )
 _LEAD_ORDERS: tuple[tuple[str, ...], ...] = (
     ("undo_s", "undo_p"),
@@ -1363,14 +1366,18 @@ async def _run_order(p: Any, admin: Any, kind: str, how: str, ops: tuple[str, ..
     undoes = {"undo_s": (_area(kind), "create"), "undo_p": ("pipeline", "create"),
               "undo_take_out": ("pipeline_stage", "delete"),
               "undo_rename": ("pipeline", "change"), "undo_hide": (_area(kind), "change"),
-              "undo_edit_chance": ("pipeline_stage", "change")}
+              "undo_edit_chance": ("pipeline_stage", "change"),
+              "undo_chance_all": (_area(kind), "change")}
     writes = {"delete_s": ("DELETE", f"/crm/statuses/{kind}/{sid}", None),
               "take_out": ("DELETE", f"/crm/pipelines/{pid}/stages/{sid}", None),
               "rename": ("PATCH", f"/crm/pipelines/{pid}", {"name": f"{p_name} 2"}),
               "hide": ("PATCH", f"/crm/statuses/{kind}/{sid}", {"hidden": True}),
               # CRM-M3b: the win chance of S in P only (deal orders).
               "edit_chance": ("PATCH", f"/crm/pipelines/{pid}/stages/{sid}",
-                              {"probability": 35, "max_dwell_days": 6})}
+                              {"probability": 35, "max_dwell_days": 6}),
+              # The old route, for every pipeline of S (deal orders).
+              "chance_all": ("PATCH", f"/crm/statuses/{kind}/{sid}",
+                             {"probability": 35, "max_dwell_days": 6})}
     for op in ops:
         if op in writes:
             method, path, payload = writes[op]

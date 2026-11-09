@@ -1900,6 +1900,48 @@ async def fan_out_stage_values(
     return before, after
 
 
+async def clamp_stage_memberships(
+    db: Any, status_id: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Each membership of one deal stage that holds a value that fails the
+    rules of the stage NOW takes NULL there (CRM-M3b round 2).
+
+    A write that changes the ``type`` of a stage calls it after the stage row:
+    the status PATCH, its Undo and the stage repair. NULL reads the stage row,
+    which those writes keep clamped. So no pipeline shows a ``won`` stage at
+    a win chance other than 100, and a value that a membership took while
+    the stage had another type cannot stay. The rule is
+    :func:`fitted_value_sql`. It locks the memberships ``FOR UPDATE`` in
+    pipeline id order, as :func:`stage_memberships` does.
+
+    Returns ``(before, after)`` of each membership that it changed, by
+    pipeline id, so the change row of the caller can put each one back."""
+    fitted = ", ".join(
+        f"ps.{c} AS {c}, {fitted_value_sql(c, f'ps.{c}')} AS fitted_{c}"
+        for c in MEMBERSHIP_COLUMNS
+    )
+    rows = (await db.execute(
+        text(
+            f"SELECT ps.pipeline_id, {fitted} FROM crm_pipeline_stages ps "
+            "JOIN crm_deal_statuses s ON s.id = ps.status_id "
+            "WHERE ps.status_id = CAST(:s AS uuid) ORDER BY ps.pipeline_id FOR UPDATE OF ps"
+        ),
+        {"s": str(status_id)},
+    )).fetchall()
+    before: dict[str, dict[str, Any]] = {}
+    after: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        broken = [
+            c for c in MEMBERSHIP_COLUMNS
+            if getattr(row, c, None) is not None and getattr(row, f"fitted_{c}", None) is None
+        ]
+        if broken:
+            before[str(row.pipeline_id)] = {c: getattr(row, c, None) for c in broken}
+            after[str(row.pipeline_id)] = dict.fromkeys(broken)
+    await write_memberships(db, status_id, after)
+    return before, after
+
+
 async def require_deal_pipeline(db: Any, pipeline_id: str) -> Any:
     """The row of one deal pipeline, else 404 (CRM-M4a).
 

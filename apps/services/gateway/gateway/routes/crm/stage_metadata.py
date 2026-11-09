@@ -50,6 +50,7 @@ from gateway.routes.crm.core import (
     STATUS_TYPES,
     _tenant_session,
     actor,
+    clamp_stage_memberships,
     fan_out_stage_values,
     insert_row,
     refuse_in_mirror_mode,
@@ -518,6 +519,10 @@ async def apply_repair(db: Any, plan: RepairPlan) -> None:
         # CRM-M3b: the repaired win chance holds in every pipeline of the
         # stage, because each reader takes the membership value first.
         await fan_out_stage_values(db, status_id, values)
+        if "type" in values:
+            # CRM-M3b round 2: a new type gives NULL to each membership value
+            # that its clamp does not take, so NULL reads the repaired row.
+            await clamp_stage_memberships(db, status_id)
     for values in plan.creates:
         row = await insert_row(db, STATUS_TABLE, values)
         plan.types_after[str(row.id)] = str(values["type"])
