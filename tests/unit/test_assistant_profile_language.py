@@ -46,7 +46,13 @@ def test_an_unknown_tag_stays_bare_and_round_trips() -> None:
 
 def test_the_rule_text_is_pinned() -> None:
     rule = ap.LANGUAGE_RULE_LINE
-    assert "answer the member in the member's language" in rule
+    # Owner, 2026-11-09: "if it's set to English as a preference but is
+    # talking Hindi, it should still attempt to talk in Hindi." The language
+    # of the message wins; the profile language is only the fallback.
+    assert "answer in the language that the member uses in this message" in rule
+    assert "also when it differs from their profile language" in rule
+    assert "profile language only when the language of the message is unclear" in rule
+    assert "language in their profile setting, else" not in rule
     assert "Write every saved record in English" in rule
     for word in ("task and project titles and descriptions", "comments", "notes",
                  "CRM records", "calendar events", "email or message drafts"):

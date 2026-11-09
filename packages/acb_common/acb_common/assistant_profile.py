@@ -1959,10 +1959,12 @@ LANGUAGE_NAMES: dict[str, str] = {
 
 # The one language rule of every chat turn (PZ-51, personalization.md 5.3).
 # ``executor._context_preamble_parts`` adds it to each turn, with or without
-# a profile block. Owner, 2026-11-09: the core truth is saved in English.
+# a profile block. Owner, 2026-11-09: the core truth is saved in English, and
+# the language of the message wins over the profile language.
 LANGUAGE_RULE_LINE = (
-    "Language rule: answer the member in the member's language. That is the "
-    "language in their profile setting, else the language of their message. "
+    "Language rule: answer in the language that the member uses in this "
+    "message, also when it differs from their profile language. Use the "
+    "profile language only when the language of the message is unclear. "
     "Write every saved record in English: task and project titles and "
     "descriptions, comments, notes, CRM records, calendar events, and email "
     "or message drafts. Do this even when the member writes in another "

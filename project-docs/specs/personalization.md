@@ -505,7 +505,10 @@ So every chat turn carries `LANGUAGE_RULE_LINE` (`acb_common.assistant_profile`)
 `executor._context_preamble_parts` adds it. That builder serves both channels
 and every agent, so the rule holds with or without a language set, and with
 the profile block on or off. The assistant answers in the language of the
-setting, else the language of the message. It writes every saved record in
+member's message, also when it differs from the profile language. It uses the
+profile language only when the language of the message is unclear. The owner
+set this order on 2026-11-09: "if it's set to English as a preference but is
+talking Hindi, it should still attempt to talk in Hindi." It writes every saved record in
 English: task and project titles and descriptions, comments, notes, CRM
 records, calendar events, and email or message drafts. The one exception is
 the member's explicit request for another language in that record.
