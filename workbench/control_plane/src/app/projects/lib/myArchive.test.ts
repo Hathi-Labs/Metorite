@@ -12,6 +12,7 @@ import {
   archiveRows,
   pruneSelection,
   restoreBody,
+  restoreFailure,
   restorableIds,
   restorePlan,
   restoreReceipt,
@@ -81,6 +82,9 @@ describe("Restore", () => {
     expect(restoreReceipt(3)).toBe("3 tasks restored from the archive");
     expect(restoreShortfall(3, 3)).toBeNull();
     expect(restoreShortfall(3, 2)).toContain("1 task could not be restored");
+    expect(restoreFailure(undefined, "Network down.")).toMatch(/Try again\.$/);
+    expect(restoreFailure(503, "Busy.")).toMatch(/Try again\.$/);
+    expect(restoreFailure(409, "Its project is archived.")).not.toContain("Try again");
     expect(restoredIds({ results: [{ task_id: "a" }, { task_id: "c" }] })).toEqual(["a", "c"]);
   });
 });

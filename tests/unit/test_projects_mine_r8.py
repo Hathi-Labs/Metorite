@@ -454,6 +454,36 @@ class TestTheArchiveView:
             # The world is shared by the module: file the task again.
             assert (await _post("archive")).status_code == 200
 
+    async def test_the_bulk_body_of_the_view_restores_many(self, armed):
+        """The exact body of the view's "Restore N tasks": the bulk route with
+        ``action: "unarchive"``. Both rows leave the archive and join the list."""
+        ids = [armed.t["a_filed"], armed.t["a_filed_personal"]]
+        headers = {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": A}
+
+        async def _post(path: str, body: dict) -> httpx.Response:
+            async def _go() -> httpx.Response:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=_gateway()), base_url="http://gw",
+                ) as client:
+                    return await client.post(path, headers=headers, json=body)
+
+            async with tenant_engine_scope(armed.app_dsn):
+                return await asyncio.create_task(_go())
+
+        r = await _post("/projects/tasks/bulk", {"task_ids": ids, "action": "unarchive"})
+        try:
+            assert r.status_code == 200, r.text
+            assert r.json()["applied"] == 2, r.text
+            filed = {x["id"] for x in await _list_mine(armed, A, archived_only="true")}
+            live = {x["id"] for x in await _list_mine(armed, A)}
+            for task in ids:
+                assert task not in filed
+                assert task in live
+        finally:
+            # The world is shared by the module: file both tasks again.
+            back = await _post("/projects/tasks/bulk", {"task_ids": ids, "action": "archive"})
+            assert back.status_code == 200, back.text
+
 
 class TestTheOneMine:
     async def test_the_list_answers_my_three_arms_and_nothing_else(self, armed):

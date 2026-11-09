@@ -109,6 +109,16 @@ export function restoreShortfall(requested: number, restored: number): string | 
     : `${left} tasks could not be restored. They may have changed. Reload the archive and try again.`;
 }
 
+/**
+ * The words of a restore that threw. "Try again." goes only on an error a retry
+ * can fix: no status (network) or a 5xx. A 403, 404 or 409 says what to change.
+ */
+export function restoreFailure(status: number | undefined, message: string): string {
+  const head = `The restore did not go through. ${message}`.trim();
+  const retry = status === undefined || status >= 500;
+  return retry ? `${head} Try again.` : `${head} Reload the archive to see what changed.`;
+}
+
 /** The ids a bulk reply says it restored. */
 export function restoredIds(reply: {
   results?: ReadonlyArray<{ task_id: string }>;

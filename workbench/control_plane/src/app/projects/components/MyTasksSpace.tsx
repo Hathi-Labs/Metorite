@@ -212,7 +212,7 @@ export function MyTasksChips({
 }) {
   return (
     <div className="border-b border-border px-3 py-1.5 glass:px-4 glass:py-2" data-my-tasks-chips="">
-      <ScrollStrip label="My tasks lists" className="gap-1">
+      <ScrollStrip label="My tasks lists" className="gap-1" revealKey={chip}>
         {MY_TASKS_CHIPS.map((entry) => {
           const count = chipCount(summary, entry.id);
           return (

@@ -31,7 +31,7 @@ import { useUndo } from "@/components/UndoProvider";
 import { clickSelect } from "@/lib/selection";
 import type { UndoEntry } from "@/lib/undo";
 
-import { type TaskRow, projectsApi } from "../lib/api";
+import { ProjectsApiError, type TaskRow, projectsApi } from "../lib/api";
 import { shortDate } from "../lib/outlook";
 import {
   ARCHIVED_PROJECT_REASON,
@@ -43,6 +43,7 @@ import {
   archiveRows,
   pruneSelection,
   restoreBody,
+  restoreFailure,
   restorableIds,
   restorePlan,
   restoreReceipt,
@@ -94,6 +95,8 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const live = useRef(true);
+  // The reload that follows a partial restore keeps its own notice once.
+  const holdNotice = useRef(false);
 
   useEffect(() => {
     live.current = true;
@@ -107,6 +110,8 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
     readArchive().then(
       (rows) => {
         if (!current) return;
+        if (holdNotice.current) holdNotice.current = false;
+        else setNotice(null);
         setTasks(rows);
         setError(null);
       },
@@ -130,6 +135,7 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
   useEffect(() => {
     setSelected((cur) => pruneSelection(cur, rows));
   }, [rows]);
+
 
   const again = useCallback(() => {
     setReload((n) => n + 1);
@@ -156,7 +162,10 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
       }
       setSelected(new Set());
       const short = restoreShortfall(plan.kind === "one" ? 1 : plan.ids.length, done.length);
-      if (short) setNotice(short);
+      if (short) {
+        setNotice(short);
+        holdNotice.current = true;
+      }
       if (done.length > 0) {
         let back = true;
         const entry: UndoEntry = {
@@ -191,7 +200,8 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
       }
       again();
     } catch (err) {
-      setNotice(`The restore did not go through. ${String((err as Error).message)} Try again.`);
+      const status = err instanceof ProjectsApiError ? err.status : undefined;
+      setNotice(restoreFailure(status, String((err as Error).message)));
     } finally {
       if (live.current) setBusy(false);
     }
@@ -199,6 +209,7 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
 
   function pick(row: ArchiveRow, shift: boolean) {
     if (!row.canRestore) return;
+    setNotice(null);
     const next = clickSelect({ selected, anchor }, restorable, row.task.id, shift);
     setSelected(next.selected);
     setAnchor(next.anchor);
@@ -235,7 +246,10 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
           checked={everyone}
           indeterminate={count > 0 && !everyone}
           disabled={restorable.length === 0 || busy}
-          onChange={() => setSelected(everyone ? new Set() : new Set(restorable))}
+          onChange={() => {
+            setNotice(null);
+            setSelected(everyone ? new Set() : new Set(restorable));
+          }}
           aria-label="Select every archived task that can be restored"
         />
         {count > 0 ? (
@@ -251,7 +265,7 @@ export function MyArchiveView({ projectPath, projectArchived, onOpenTask, versio
             >
               Restore {count === 1 ? "task" : `${count} tasks`}
             </Button>
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelected(new Set())}>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setNotice(null); setSelected(new Set()); }}>
               Clear
             </Button>
           </>
