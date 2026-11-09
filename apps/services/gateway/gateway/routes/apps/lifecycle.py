@@ -5,18 +5,26 @@ Creating an app writes its workspace at ``apps_root()/{slug}``: ``app.json``
 ``git init`` + baseline commit (checkpoints ride the same repo later). The DB
 row is authoritative for visibility/status; the workspace is authoritative for
 the manifest (the DB copy is the scaffold-time fallback).
+
+⚠️ A new app (create, fork) reserves its slug with its INSERT BEFORE any file
+write (task 2429). The slug is unique over all orgs, and every folder is a
+sibling under ``apps_root()``. FORCE RLS shows only the rows of the caller's
+org, so a read of the slugs cannot see the slug of another org. See
+``_reserve_app``. Fence: ``tests/unit/test_app_create_slug_r8.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
+import secrets
+import shutil
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext
-from acb_common.child_env import child_env
+from acb_skills import safe_open
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
     _log,
@@ -159,27 +167,20 @@ def starter_index_html(name: str) -> str:
 
 
 def _git_init(workspace: Path) -> None:
-    """Best-effort ``git init`` + baseline commit — never fails creation."""
-    git_env = [
-        "-c", "user.name=Metorite",
-        "-c", "user.email=metorite@local",
-    ]
+    """Best-effort ``git init`` + baseline commit — never fails creation.
+
+    Through ``durability._git``, the one host git of an app dir, with its
+    safe flags and its config check (§7.5 rule A, WS-43h).
+    """
+    from gateway.routes.apps.durability import _GIT_IDENT, _git
+
     for args in (
-        ["git", "init"],
-        ["git", "add", "-A"],
-        ["git", *git_env, "commit", "-m", "initial scaffold"],
+        ("init",),
+        ("add", "-A"),
+        (*_GIT_IDENT, "commit", "-m", "initial scaffold"),
     ):
-        try:
-            subprocess.run(
-                args, cwd=str(workspace), capture_output=True,
-                timeout=30, check=False,
-                env=child_env(),
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            _log.warning(
-                "apps.git_init_skipped",
-                workspace=str(workspace), error=str(exc)[:120],
-            )
+        if _git(workspace, *args) is None:
+            _log.warning("apps.git_init_skipped", workspace=str(workspace))
             return
 
 
@@ -187,12 +188,10 @@ def _scaffold_workspace(
     workspace: Path, manifest: dict[str, Any], name: str,
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "app.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+    safe_open.write_bytes(
+        workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
     )
-    (workspace / "index.html").write_text(
-        starter_index_html(name), encoding="utf-8",
-    )
+    safe_open.write_bytes(workspace, "index.html", starter_index_html(name).encode("utf-8"))
     _git_init(workspace)
 
 
@@ -210,11 +209,10 @@ def _fork_workspace(
     newly-created app."""
     new_workspace.mkdir(parents=True, exist_ok=True)
     for rel, (content, _sha) in files.items():
-        target = new_workspace / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    (new_workspace / "app.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+        # The safe opener refuses a link at any depth (WS-43h review P0).
+        safe_open.write_bytes(new_workspace, rel, content.encode("utf-8"))
+    safe_open.replace_bytes(
+        new_workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
     )
     _git_init(new_workspace)
 
@@ -227,11 +225,140 @@ def _sync_workspace_manifest(workspace: Path, fields: dict[str, Any]) -> None:
         return
     manifest.update(fields)
     try:
-        (workspace / "app.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+        safe_open.replace_bytes(
+            workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _log.warning("apps.manifest_sync_failed", error=str(exc)[:120])
+
+
+# ── A new app: reserve the slug, then claim the folder (task 2429) ──────────
+
+#: The INSERT of a new app. It runs BEFORE any file write, so it reserves the
+#: slug. A slug that another org holds makes no row and raises nothing, so the
+#: session stays usable, and the next slug is tried. The row commits with the
+#: session, so a failure after it gives the slug back.
+_RESERVE_SQL = (
+    """INSERT INTO apps
+       (slug, name, icon, description, owner_email,
+        manifest, workspace_path)
+       VALUES (:slug, :name, :icon, :description, :owner,
+               :manifest ::jsonb, :workspace_path)
+       ON CONFLICT (slug) DO NOTHING
+       RETURNING *"""
+)
+
+#: The tries of a sequential slug (``name``, ``name-2`` …), when another org
+#: holds it or a folder is on disk.
+SLUG_TRIES = 10
+#: Then the tries of a slug with a random suffix, so a common name never runs
+#: out (the ``packages_store.SLUG_HEX`` pattern).
+HEX_TRIES = 3
+#: The hex digits of the random suffix.
+SLUG_HEX = 8
+
+_NO_SLUG = (
+    "Could not pick a free short name for this app. "
+    "Try a slightly different name."
+)
+
+#: Gives back the slug of a row whose folder another writer took. The row is
+#: this request's own, and it is not committed.
+_UNRESERVE_SQL = "DELETE FROM apps WHERE id = :id"
+
+
+def _folder_free(folder: Path) -> bool:
+    """True when nothing is on disk at *folder*, a broken link included.
+
+    A folder with no row (a failed write, a failed delete) is never written.
+    The new app takes the next slug instead."""
+    return not (folder.exists() or folder.is_symlink())
+
+
+def _random_hex() -> str:
+    return secrets.token_hex(SLUG_HEX // 2)
+
+
+def _slug_candidates(name: str, taken: set[str]) -> Iterator[str]:
+    """The slugs to try for *name*: first ``name``, ``name-2`` … up to
+    :data:`SLUG_TRIES`, then :data:`HEX_TRIES` slugs with a random suffix."""
+    for _ in range(SLUG_TRIES):
+        slug = generate_slug(name, taken)
+        taken.add(slug)
+        yield slug
+    stem = generate_slug(name)[:48 - 1 - SLUG_HEX].rstrip("-")
+    for _ in range(HEX_TRIES):
+        yield f"{stem}-{_random_hex()}"
+
+
+async def _reserve_app(
+    db: Any,
+    name: str,
+    *,
+    owner: str,
+    icon: str,
+    description: str,
+    manifest_for: Callable[[str], dict[str, Any]],
+) -> tuple[Any, Path, dict[str, Any]]:
+    """Insert the row of a new app, then make its folder. Answer the row, the
+    folder and the manifest. Write no file in the folder before this returns.
+
+    The slug is unique over all orgs, but FORCE RLS shows only the slugs of
+    the caller's org. So the read below cannot see the slug of another org,
+    and the INSERT is the real check. A concurrent INSERT of the same slug
+    waits on the unique key until this session ends. When another writer
+    made the folder after the check, the row goes, and the next slug is tried.
+    """
+    root = apps_root()
+    taken = {
+        r.slug for r in (await db.execute(
+            text("SELECT slug FROM apps"),
+        )).fetchall()
+    }
+    loop = asyncio.get_event_loop()
+    for slug in _slug_candidates(name, taken):
+        workspace = root / slug
+        if not _folder_free(workspace):
+            continue
+        manifest = manifest_for(slug)
+        row = (await db.execute(text(_RESERVE_SQL), {
+            "slug": slug,
+            "name": name,
+            "icon": icon,
+            "description": description,
+            "owner": owner,
+            "manifest": json.dumps(manifest),
+            "workspace_path": str(workspace),
+        })).fetchone()
+        if row is None:
+            continue
+        if await loop.run_in_executor(None, _claim_folder, workspace):
+            return row, workspace, manifest
+        await db.execute(text(_UNRESERVE_SQL), {"id": str(row.id)})
+    raise HTTPException(status_code=409, detail=_NO_SLUG)
+
+
+def _claim_folder(workspace: Path) -> bool:
+    """Make the folder of a new app. Answer False for a folder that is there
+    already, and never write into it.
+
+    Only the request that made the folder writes it, or removes it after a
+    failure."""
+    try:
+        workspace.mkdir()
+    except FileExistsError:
+        return False
+    return True
+
+
+async def _discard_new_folder(workspace: Path) -> None:
+    """Remove the folder of a new app whose row did not commit.
+
+    Only a folder that :func:`_claim_folder` made in this request comes here.
+    """
+    await asyncio.get_event_loop().run_in_executor(
+        None, lambda: shutil.rmtree(workspace, ignore_errors=True),
+    )
 
 
 # ── Row → model ──────────────────────────────────────────────────────────────
@@ -352,39 +479,28 @@ async def create_app(
     if not name:
         raise HTTPException(status_code=422, detail="Name is required")
     owner = _uid(user)
-    async with _tenant_session() as db:
-        taken = {
-            r.slug for r in (await db.execute(
-                text("SELECT slug FROM apps"),
-            )).fetchall()
-        }
-        slug = generate_slug(name, taken)
-        workspace = apps_root() / slug
-        manifest = default_manifest(
-            slug, name, body.icon.strip(), body.description.strip(),
-        )
-        await asyncio.get_event_loop().run_in_executor(
-            None, _scaffold_workspace, workspace, manifest, name,
-        )
-        row = (await db.execute(
-            text(
-                """INSERT INTO apps
-                   (slug, name, icon, description, owner_email,
-                    manifest, workspace_path)
-                   VALUES (:slug, :name, :icon, :description, :owner,
-                           :manifest ::jsonb, :workspace_path)
-                   RETURNING *"""
-            ),
-            {
-                "slug": slug,
-                "name": name,
-                "icon": body.icon.strip(),
-                "description": body.description.strip(),
-                "owner": owner,
-                "manifest": json.dumps(manifest),
-                "workspace_path": str(workspace),
-            },
-        )).fetchone()
+    icon = body.icon.strip()
+    description = body.description.strip()
+    loop = asyncio.get_event_loop()
+    made: Path | None = None
+    try:
+        async with _tenant_session() as db:
+            # The row reserves the slug BEFORE any file write (task 2429).
+            row, workspace, manifest = await _reserve_app(
+                db, name, owner=owner, icon=icon, description=description,
+                manifest_for=lambda s: default_manifest(
+                    s, name, icon, description),
+            )
+            made = workspace
+            await loop.run_in_executor(
+                None, _scaffold_workspace, workspace, manifest, name,
+            )
+    except Exception:
+        # The row rolled back, so the folder that this request made goes too.
+        if made is not None:
+            await _discard_new_folder(made)
+        raise
+    slug = row.slug
     # Durability: mirror the fresh scaffold into app_files right away so a
     # brand-new draft survives a disk loss (best-effort, never fails create).
     await sync_workspace_best_effort(row)
@@ -410,52 +526,41 @@ async def fork_app(
     no publish history of its own).
     """
     owner = _uid(user)
-    async with _tenant_session() as db:
-        source_row, _source_grants = await get_app_or_404(db, slug, user)
-        source_workspace = await ensure_workspace(db, source_row)
-        files = await asyncio.get_event_loop().run_in_executor(
-            None, _read_workspace_files, source_workspace,
-        )
-        taken = {
-            r.slug for r in (await db.execute(
-                text("SELECT slug FROM apps"),
-            )).fetchall()
-        }
-        name = f"{source_row.name} (fork)"
-        new_slug = generate_slug(name, taken)
-        new_workspace = apps_root() / new_slug
+    loop = asyncio.get_event_loop()
+    made: Path | None = None
+    try:
+        async with _tenant_session() as db:
+            source_row, _source_grants = await get_app_or_404(db, slug, user)
+            source_workspace = await ensure_workspace(db, source_row)
+            files = await loop.run_in_executor(
+                None, _read_workspace_files, source_workspace,
+            )
+            name = f"{source_row.name} (fork)"
+            source_manifest = dict(
+                read_workspace_manifest(source_workspace)
+                or parse_db_manifest(source_row.manifest)
+                or {}
+            )
 
-        manifest = dict(
-            read_workspace_manifest(source_workspace)
-            or parse_db_manifest(source_row.manifest)
-            or {}
-        )
-        manifest["slug"] = new_slug
-        manifest["name"] = name
+            def manifest_for(new_slug: str) -> dict[str, Any]:
+                return {**source_manifest, "slug": new_slug, "name": name}
 
-        await asyncio.get_event_loop().run_in_executor(
-            None, _fork_workspace, new_workspace, files, manifest,
-        )
-
-        row = (await db.execute(
-            text(
-                """INSERT INTO apps
-                   (slug, name, icon, description, owner_email,
-                    manifest, workspace_path)
-                   VALUES (:slug, :name, :icon, :description, :owner,
-                           :manifest ::jsonb, :workspace_path)
-                   RETURNING *"""
-            ),
-            {
-                "slug": new_slug,
-                "name": name,
-                "icon": source_row.icon or "",
-                "description": source_row.description or "",
-                "owner": owner,
-                "manifest": json.dumps(manifest),
-                "workspace_path": str(new_workspace),
-            },
-        )).fetchone()
+            # The row reserves the slug BEFORE any file write (task 2429).
+            row, new_workspace, manifest = await _reserve_app(
+                db, name, owner=owner, icon=source_row.icon or "",
+                description=source_row.description or "",
+                manifest_for=manifest_for,
+            )
+            made = new_workspace
+            await loop.run_in_executor(
+                None, _fork_workspace, new_workspace, files, manifest,
+            )
+    except Exception:
+        # The row rolled back, so the folder that this request made goes too.
+        if made is not None:
+            await _discard_new_folder(made)
+        raise
+    new_slug = row.slug
     await sync_workspace_best_effort(row)
     _log.info("apps.forked", source_slug=slug, slug=new_slug, owner=owner)
     publish_app_activity(new_slug, user=owner, action="created")
@@ -581,9 +686,13 @@ async def delete_app(
     # (a corrupt workspace_path must never delete arbitrary directories).
     root = apps_root().resolve()
     if workspace != root and workspace.is_relative_to(root):
-        import shutil
-        await asyncio.get_event_loop().run_in_executor(
-            None, lambda: shutil.rmtree(workspace, ignore_errors=True),
-        )
+        def _remove() -> None:
+            # Follows no link inside the app dir (WS-43h review P0).
+            try:
+                safe_open.remove_tree(workspace.parent, workspace.name)
+            except (OSError, ValueError) as exc:
+                _log.warning("apps.workspace_remove_failed", error=str(exc)[:120])
+
+        await asyncio.get_event_loop().run_in_executor(None, _remove)
     _log.info("apps.deleted", slug=slug, by=_uid(user))
     return {"slug": slug, "deleted": True}

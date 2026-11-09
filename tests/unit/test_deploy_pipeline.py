@@ -840,11 +840,20 @@ def test_the_release_needs_the_r8_gate_with_the_one_way_past(parsed: dict) -> No
 
 def test_the_r8_shards_have_pr_checks_two_databases(parsed: dict, pr_check: dict) -> None:
     services = parsed["jobs"][R8_SUITE]["services"]
-    assert services == pr_check["jobs"]["test"]["services"], (
-        "the R8 shards must start exactly pr-check's two Postgres services"
-    )
+    # CIV-23: pr-check publishes to a host port Docker picks (four box runners
+    # share one daemon), and a step writes the DSNs. Every other key matches.
+    pr_services = {
+        k: {f: v for f, v in svc.items() if f not in ("ports", "options")}
+        for k, svc in pr_check["jobs"]["test"]["services"].items()
+    }
+    assert {
+        k: {f: v for f, v in svc.items() if f not in ("ports", "options")} for k, svc in services.items()
+    } == pr_services, "the R8 shards must start exactly pr-check's two Postgres services"
+    assert all(
+        s["ports"] == [5432] for s in pr_check["jobs"]["test"]["services"].values()
+    ), "pr-check publishes to a host port that Docker picks"
     assert services["platform-postgres"]["image"] == "postgres:16"
-    assert services["platform-postgres"]["ports"] == ["5433:5432"]
+    assert services["platform-postgres"]["ports"] == ["5433:5432"]  # r8-suite keeps fixed ports
     # The stock image has no pgvector, and 01_schema.sql cannot build there.
     assert services["tenant-postgres"]["image"] == "pgvector/pgvector:pg16"
     assert services["tenant-postgres"]["ports"] == ["5434:5432"]

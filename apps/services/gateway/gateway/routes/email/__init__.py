@@ -17,6 +17,15 @@ from __future__ import annotations
 
 from gateway.routes.email import automation, core, digest, transport  # noqa: F401
 
+# WS-17 SG-1: imported for its routes only (the upload, the retire and the
+# public image). Its names stay in its own module.
+from gateway.routes.email import signature_images as _signature_images
+
+# WS-17 SG-2: imported for its route only (the preview of a layout signature).
+from gateway.routes.email import signature_preview as _signature_preview
+
+_ = (_signature_images, _signature_preview)
+
 # Flatten submodule namespaces into the package so the historical public surface
 # (incl. private ``_helpers`` the scheduler/tests import by name) is preserved.
 # NOTE: this copies BINDINGS once, at import. A name later reassigned on its

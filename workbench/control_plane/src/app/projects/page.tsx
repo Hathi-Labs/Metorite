@@ -284,6 +284,7 @@ import {
   groupByPath,
   splitArchived,
 } from "./lib/archivedRoots";
+import { archiveBar } from "./lib/archiveBar";
 import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
@@ -1813,7 +1814,7 @@ function ProjectsWorkspace() {
             key: `project-archive:${project.id}`,
             loading: `Restoring ${project.name}…`,
             success: () => `Restored ${project.name}`,
-            error: "Couldn't restore the project",
+            error: "Couldn't restore the project. Check your connection and try again.",
           }
         );
       },
@@ -1942,6 +1943,18 @@ function ProjectsWorkspace() {
   // An app pane (Reports, the AI chat, Settings) is not a view of the
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
+  const archiveBarNow = useMemo(
+    () =>
+      archiveBar(
+        selected
+          ? ((flatten(allRoots).find((e) => e.node.id === selected.id)?.node as
+              | ProjectRow
+              | undefined) ?? selected)
+          : null,
+        allRoots as ProjectRow[]
+      ),
+    [selected, allRoots]
+  );
   const noProjectChrome =
     dashboardOnly ||
     app === "reports" ||
@@ -4849,6 +4862,9 @@ function ProjectsWorkspace() {
   const personalHeadRootId = personalHeading(personal).root?.id ?? null;
   const personalIds = new Set(flatten(personal).map((e) => e.node.id));
   const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
+  // ARC-1 — a task of an archived project cannot be restored alone.
+  const myTasksProjectArchived = (projectId: string) =>
+    pathTo(allRoots, projectId).some((node) => Boolean((node as ProjectRow).archived_at));
   const openMineIn = (id: string) => {
     const row = flatten(visibleRoots).find((e) => e.node.id === id);
     if (!row) return;
@@ -4873,6 +4889,7 @@ function ProjectsWorkspace() {
       people={people}
       personLabels={personLabels}
       projectPath={myTasksPath}
+      projectArchived={myTasksProjectArchived}
       isPrivateProject={(id) => personalIds.has(id)}
       personalRootId={personal[0]?.id ?? null}
       onOpenTask={(task) => void openWithStatuses(task, true)}
@@ -5870,6 +5887,36 @@ function ProjectsWorkspace() {
     slotOpen: app === "ai-chat",
   });
 
+  // ⚠️ Not `noProjectChrome`: that also hides the header actions on a space
+  // or folder dashboard, and a filed SPACE must still say it is filed (rule 1
+  // names spaces). Only the app's own pages, which show no node, drop it.
+  const onAppPage =
+    app === "reports" || app === "ai-chat" || app === "settings" || isMyWorkId(app);
+  const archiveBarEl =
+    !onAppPage && selected && archiveBarNow ? (
+      <div
+        role="status"
+        data-archive-bar=""
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border bg-muted px-3 py-1.5 text-xs text-muted-foreground glass:px-4"
+      >
+        <span className="min-w-0 flex-1">{archiveBarNow.text}</span>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="ArchiveRestore"
+          className="shrink-0"
+          onClick={() =>
+            projectMenuActions.onUnarchive(
+              archiveBarNow.root ?? (selected as ProjectRow)
+            )
+          }
+        >
+          Restore
+        </Button>
+      </div>
+    ) : null;
+
+
   if (isMobile) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -5879,6 +5926,8 @@ function ProjectsWorkspace() {
           actions={projectActions(true)}
           tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
+
+        {archiveBarEl}
 
         {workArea}
 
@@ -6040,6 +6089,12 @@ function ProjectsWorkspace() {
                 <div className="ml-auto flex shrink-0 items-center gap-1">{headerTools()}</div>
               ) : null}
             </div>
+            {/* ARC-2a (§9b.6 rule 1) — one bar for an archived space, project
+                or subproject. `selected` is a snapshot, so the bar reads the
+                row again from the tree: Restore then clears it with no
+                reload. Restore is the rail menu's Unarchive, run on the row
+                whose archive filed this one. */}
+            {archiveBarEl}
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
             {/* A space and a folder have no views to switch between and no

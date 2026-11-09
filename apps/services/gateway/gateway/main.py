@@ -956,6 +956,14 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # signed `org` in the URL, then clientState inside that tenant.
     "/email/webhook/microsoft",
 
+    # WS-17 SG-1 (D-EM-68) — a hosted signature image. Every reader of a mail
+    # fetches it with no session. The 256-bit token in the URL IS the
+    # credential: the route checks the org is a UUID, binds
+    # tenant_session(org) and reads the one row whose token matches, under
+    # RLS. Every miss is the same 404. It serves image bytes only, with
+    # nosniff and `default-src 'none'`. routes/email/signature_images.py.
+    "/email/signature-image/{org}/{token}.{ext}",
+
     # Meta webhook — verify-token on GET, signature on POST.
     "/whatsapp/webhook",
 
@@ -1900,6 +1908,16 @@ try:
     app.include_router(_chat_transcribe_router)
 except Exception:  # pragma: no cover
     pass
+
+# Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
+# The workbench takes one slot here before it starts esbuild. The counter
+# lives in the tenant Redis wrapper. No `try`: the module needs only
+# acb_auth, acb_common and fastapi, and a router that silently failed to
+# import would answer 404, which the workbench reads as an outage.
+# Fence: `test_artifact_compile_slot.py::test_the_real_gateway_app_serves_both_routes`.
+from gateway.routes.artifact_compile import router as _artifact_compile_router  # noqa: E402
+
+app.include_router(_artifact_compile_router)
 
 try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first

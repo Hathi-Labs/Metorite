@@ -652,9 +652,11 @@ jobs:
               tests/unit/test_customer_console_billing_reads.py \
               tests/unit/test_customer_console_billing_checkout.py \
               tests/unit/test_customer_console_tasks.py \
+              tests/unit/test_customer_console_stt_assemblyai.py \
               tests/unit/test_customer_console_catalog.py \
               tests/unit/test_customer_console_decide.py \
               tests/unit/test_customer_console_try_voice.py \
+              tests/unit/test_catalog_health_r8.py \
               tests/unit/test_customer_console_embed.py \
               tests/unit/test_customer_console_aroh_app.py \
               tests/unit/test_operator_identity.py \
@@ -706,6 +708,7 @@ jobs:
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
               tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_lines_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
@@ -727,11 +730,17 @@ jobs:
               tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_crm_pipelines_native.py \
+              tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_email_signature_images_r8.py \
+              tests/unit/test_email_signature_settings_r8.py \
               tests/unit/test_mcp_edge_attachment_r8.py \
+              tests/unit/test_mcp_edge_comment_edit_r8.py \
               tests/unit/test_projects_status_slot_r8.py \
+              tests/unit/test_pm_project_updates_r8.py \
+              tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────

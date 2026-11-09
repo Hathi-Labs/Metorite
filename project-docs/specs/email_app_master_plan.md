@@ -37,6 +37,7 @@
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > 🔨 **§21.13 (H-391) is BUILT on branch `email-whatsapp-confirm`, not merged (2026-10-24).** Archive, label, move, reply, send a draft, schedule, forward and new mail work from WhatsApp. The member approves each one with a reply code. Migration 298, dark behind `WHATSAPP_ASSISTANT_WRITES`.
 > 🔨 **§22 is BUILT on branch `email-chat-parity-w1`, not merged (2026-10-23).** The chat edits whole rules, runs and copies them, teaches the classifier, runs the cleaner, and manages the voice profile and each mailbox. No migration, no flag, and no new outward act in a held chat.
+> 🔨 **§12.3.13.7 task 2305 is BUILT on branch `mt-9c4b68a8-auto-run-chosen-at`, not merged (2026-11-09, migration 390).** Only the member's own Auto-run act records a choice, so a save of another field no longer hides the "Turn on" notice of task 2267.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -14217,7 +14218,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
-| PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`). Owner decision 2026-11-08 (task 2267): ON by default in setup, and a notice for existing Gmail mailboxes, built on branch `mt-b9f7225f-gmail-autorun-default` | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
+| PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`). Owner decision 2026-11-08 (task 2267): ON by default in setup, and a notice for existing Gmail mailboxes, built on branch `mt-b9f7225f-gmail-autorun-default`. Task 2305: only the member's own Auto-run act records a choice (`auto_run_chosen_at`, migration 390), built on branch `mt-9c4b68a8-auto-run-chosen-at` | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. ✅ Merged NARROWED #1060 (2026-10-16) | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
@@ -15004,9 +15005,37 @@ Three points bind.
 3. **Unchanged.** `rules.auto_run_on` and `AUTO_RUN_OFF_WITHOUT_ROW` stay. A Gmail mailbox with no
    stored choice still makes no background write. That is the Google-review promise of this slice.
 
-`GET /email/assistant/settings` gives the new read-only field `auto_run_chosen`. It is true when a
-settings row exists. The PUT ignores it, and its answer gives true. Fences:
-`tests/unit/test_email_auto_draft_defaults.py` and `autoRunNotice.test.ts`.
+`GET /email/assistant/settings` gives the new read-only field `auto_run_chosen`. The PUT ignores
+it. Task 2305 corrects its rule below. Fences: `tests/unit/test_email_auto_draft_defaults.py` and
+`autoRunNotice.test.ts`.
+
+**Only the member's own act records a choice (task 2305, 2026-11-09).** Each client spreads the GET
+body into the PUT. So a save of the signature, or of any switch, on a Gmail mailbox with no row
+wrote a row with `auto_run = false`. The old rule read that row as a choice, and the notice never
+showed. Five points bind.
+
+1. **The stamp.** Migration 390 adds `email_assistant_settings.auto_run_chosen_at`, a nullable
+   `timestamptz` with no default and no backfill. NULL means no explicit choice.
+2. **The marker.** The PUT body takes the write-only field `auto_run_choice`. Its name differs from
+   the GET field, so a copy of the GET body never carries it. The PUT stamps only for
+   `auto_run_choice: true` with a value of `auto_run`. It stamps once with `COALESCE`, and no body
+   clears the stamp. A body without the marker leaves the stamp as it is.
+3. **Who sends the marker.** The web client sends it from the member's own Auto-run acts only
+   (`autoRunChoiceBody`). These acts are the switch in AI settings, the switch and Done of setup,
+   and "Turn on" of the notice. `persistPatch` and `persist` strip it. Each chat path sends it only when
+   the model passed `auto_run`: `update_assistant_settings`, its held path and
+   `apply_settings_to_mailboxes`.
+4. **The rule.** `auto_run_chosen` is `auto_run_chosen_at IS NOT NULL OR auto_run`, and false with
+   no row. The GET and the PUT answer use the one rule (`assistant.auto_run_chosen`). So a row from
+   before 390 reads chosen only when it stores ON.
+5. **Unchanged.** `rules.auto_run_on` never reads the stamp. The stamp tells the screen that the
+   member chose, and it never turns a background write on.
+
+An old bundle sends no marker in the deploy window, so its toggle does not stamp, and the notice
+shows once more. That is safe. Fences: `tests/unit/test_email_background_writes.py`
+(`TestTheAutoRunChoiceUnderForceRLS`, R8, and the migration and reader checks),
+`tests/unit/test_email_auto_draft_defaults.py`, `tests/unit/test_held_settings.py`,
+`assistantSettings.test.ts`, `onboardingRules.test.ts` and `autoRunNotice.test.ts`.
 
 ##### 12.3.13.8 EM-G11d and EM-G11e — the Untrusted Mail Content Control (UMCC) (PR-G5, PR-G6)
 
@@ -22483,7 +22512,10 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 
 ## 23. Email signatures: a good signature in one minute (2026-11-07)
 
-**Status: SPECIFIED, not built.** Task 1959. Owner request in chat, 2026-11-07: "design and
+**Status: SPECIFIED. SG-1 MERGED as `6a4b08bc9` (task 2177, migration 378). SG-2 is BUILT on
+the branch `mt-a19ff63c-signature-renderer` (task 2178, migration 393), in review, dark behind
+`EMAIL_SIGNATURE_TEMPLATES_ORGS`. SG-3 to SG-9 are not built.** Task 1959. Owner request in chat,
+2026-11-07: "design and
 create good signatures for our email." The orchestrator checked the anchors at `origin/main`
 `f7904d365` on 2026-11-07. A spec-auditor checked them again on the same day, and round 2 of
 this section applies its corrections. Re-check each anchor at dispatch.
@@ -22602,34 +22634,67 @@ The preview shows light, dark and phone width.
 
 - `routes/email/signature_render.py` holds the five layouts and `render(layout, fields,
   brand) -> (html, text)`. It is pure, so a test needs no database.
+- **The table** (SG-2, migration 393). `email_signature_settings` holds one row for each
+  mailbox:
+  - `account_id`: the primary key, a child of `email_accounts` with ON DELETE CASCADE.
+  - `organization_id`: its own tenant column, with ENABLE and FORCE RLS and one policy, in the
+    shape of `341_crm_change_log.sql`. The generated phases 01 to 04 carry the table.
+  - `mode`: `custom`, `template` or `company`, default `custom` (D-EM-64).
+  - `layout`: one of the five layouts. A `template` row needs one.
+  - `fields`: a JSON object of at most 16 KB, the field map of 23.3.1.
+  - `reply_mode`: `full`, `short` or `none`, default `full` (D-EM-71).
+  - `created_at` and `updated_at`.
+  - A mailbox with no row is `custom`. The migration writes no row and changes no other table.
 - `resolve_signature(db, account_id, kind)` lives in `signature.py`. It reads the mode:
-  - `custom`: it gives `email_assistant_settings.signature`, unchanged.
+  - `custom`: it gives `email_assistant_settings.signature`, unchanged. It reads it through
+    `stored_signature`, the one select of that column.
   - `template`: it renders the member's layout and fields.
   - `company`: it reads `email_signature_brand`, merges the member's personal fields, and
-    renders.
+    renders. **SG-4 builds this branch.** `load_org_setting` is sync, so SG-4 calls it with
+    `asyncio.to_thread` under `contextvars.copy_context().run`, which keeps the bound tenant.
+    Until SG-4, a `company` row gives the `custom` bytes.
   - For `kind` `reply` or `forward`, it applies `reply_mode`.
-- The resolver is async and runs in the send path. `load_org_setting` is sync, so the resolver
-  reads `org_settings` through the open session, or wraps the call in `asyncio.to_thread`.
+  - A row that does not render, or that has no field to show, gives the `custom` bytes.
+- With `EMAIL_SIGNATURE_TEMPLATES_ORGS` off, the resolver reads no row of the new table. Its
+  one query is the select of main, so each reader sends the bytes of main (rule 7).
 - `build_signed_bodies` and `sign_html` keep their signatures.
 - `POST /email/signature/preview` renders a layout and a field map for the form. It writes
-  nothing.
+  nothing and reads no table. While the flag is off, it answers 404.
 
-**The readers.** Each one calls the resolver in SG-2 (anchors at `f7904d365`):
+**The kind rule.** Each reader passes the kind from a field that exists now. The send takes
+`reply` when the request names `reply_to_message_id`, and `new` when it does not. A draft row
+holds no kind field, so each draft path passes `new` until SG-5 adds the kind of the draft.
 
-| Reader | Anchor | `kind` |
-|---|---|---|
-| The send | `transport/send.py:216` | Of the draft |
-| The forward | `transport/forward.py:290` | `forward` |
-| The meeting-notes mail | `routes/notes/dispatch.py:319` | `new` |
-| `_account_signature`, with its eight callers and `held_card.py:949` | `automation/drafting.py:86-94` | Of the draft |
-| The second raw read beside `build_signed_bodies` | `automation/drafting.py:4100` | Of the draft |
-| `_load_assistant_about`, which feeds `step.signature`, `actions.py:748`, `:816` and `followups.py:248` | `automation/assistant.py:69-74` | Of the step |
-| `GET /email/assistant/settings` and the PUT answer, read by `lib/signature.ts:35` | `automation/assistant.py:286`, `:332-337`, `:517-518` | `new`, plus `reply` for SG-5 |
-| The reply card subselect | `automation/reply_card.py:95` | `reply` |
+**The send keeps the form that the body holds** (`SignatureForms.for_body`). A draft path wrote
+the `new` form into the body. A send of a `reply` then finds that form, keeps it, and adds no
+second one. So a reply carries one signature for each `reply_mode`, before and after SG-5.
+
+**The readers.** Each one calls the resolver (anchors on the SG-2 branch, 2026-11-09):
+
+| Reader | Anchor | Call | `kind` |
+|---|---|---|---|
+| The sanctioned read of the stored HTML | `routes/email/signature.py:219-229` | `stored_signature` | None |
+| The send | `transport/send.py:221` | `resolve_signature_for_send` | `reply` or `new` |
+| The forward | `transport/forward.py:293` | `resolve_signature_for_send` | `forward` |
+| The meeting-notes mail | `routes/notes/dispatch.py:321` | `resolve_signature` | `new` |
+| `_account_signature`, with its callers at `drafting.py:522`, `:800`, `:3521`, `:3596`, `:3757`, `:4101`, `:4298` and `held_card.py:949` | `automation/drafting.py:88-99` | `resolve_signature` | `new` |
+| `/drafts/send` | `automation/drafting.py:4160` | `resolve_signature` | `new` |
+| `_load_assistant_about`, which feeds `step.signature`, `actions.py:748`, `:816` and `followups.py:248` | `automation/assistant.py:78` | `resolve_signature` | `new` |
+| `GET /email/assistant/settings` and the PUT answer, read by `lib/signature.ts:35` | `automation/assistant.py:326`, `:549` | `signature_forms` | `new` |
+| The reply card | `automation/reply_card.py:481` | `resolve_signature` | `reply` |
+
+The SG-1 save (`signature_images.signature_for_save`) also calls `stored_signature`. It compares
+the new HTML with the stored HTML, and it sends nothing.
+
+The GET answers `signature` as the stored free HTML, the model of today's editor. It answers
+`signature_text` as the text of the `new` form, which the composer seeds.
 
 **The same string reaches the strip.** `strip_signature_text` and `_holds_signature` look for
 the signature text in a draft. The draft write and the send must resolve with the same `kind`.
-Otherwise the send cannot find the text, and the mail carries two signatures or none.
+Otherwise the send cannot find the text, and the mail carries two signatures or none. Each
+caller of `strip_signature_text` takes its signature from the resolver:
+`_cleanup_thread_drafts` (`drafting.py:525`), `_learn_from_sent` (`:801`, `:808`),
+`_compose_assist_run` (`:2840`), `_compose_draft` (`:2886`) and `_fold_draft` (`:3435`).
 
 #### 23.3.4 Hosted images
 
@@ -22767,12 +22832,13 @@ draft write and the send pass the same `kind` (23.3.3), so the send finds the te
 
 ### 23.4 Tenancy (R5) and safety
 
-- `email_signature_images` and the new signature table (SG-2) carry their own
+- `email_signature_images` (SG-1) and `email_signature_settings` (SG-2) carry their own
   `organization_id`, with ENABLE and FORCE RLS and one policy, and use `_tenant_session`.
 - The public route binds the tenant from the URL, and returns a row only when the 256-bit token
   matches under that tenant's RLS (D-EM-68). The id of the organization opens nothing by itself.
-- The key of the new signature table is `account_id`, and each route calls
-  `_assert_account_owner(..., level="send")`, as `PUT /email/assistant/settings` does.
+- The key of `email_signature_settings` is `account_id`, and each route that writes it (SG-3)
+  calls `_assert_account_owner(..., level="send")`, as `PUT /email/assistant/settings` does.
+  SG-2 adds no writer. The preview route reads no table, so it needs no owner check.
 - The company signature is per organization in `org_settings`. A member reads it, and only
   `admin:settings:manage` writes it.
 - The re-encode runs on bytes that a member sent. The sniff and the 2 MB cap run first, in the
@@ -22789,16 +22855,20 @@ before the merge.
 
 `EMAIL_SIGNATURE_TEMPLATES_ORGS`, default empty. It gates the layout form, the company section,
 the import and the chat tools. With the flag off, the resolver gives the `custom` HTML, which
-is today's behaviour. The public image route is never gated. A mail that went out must keep
-its logo after a flag change.
+is today's behaviour, and the preview route answers 404. The public image route is never
+gated. A mail that went out must keep its logo after a flag change.
+
+SG-2 adds the flag to `settings.py`, `env_guard.py` and `.env.example`. Its one reader is
+`signature.templates_on`, which fails closed. The name ends in `_ORGS`, so a SIGHUP applies a
+change with no restart.
 
 ### 23.6 Slices
 
 | Slice | What | Tier | Gate | Depends on | Task |
 |---|---|---|---|---|---|
 | **SG-0** | This section, and the slice tasks | LOW | AGENT-SAFE | — | 1959 |
-| **SG-1** | Hosted images: the table, the confined upload child, the upload and retire routes, the public route in its three lists, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | AGENT-SAFE, dark | — | 2177 |
-| **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at each reader of 23.3.3, the grep fence, the preview route | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-1 | 2178 |
+| **SG-1** | Hosted images: the table, the confined upload child, the upload and retire routes, the public route in its three lists, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | AGENT-SAFE, dark | — | 2177, merged (`6a4b08bc9`) |
+| **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at each reader of 23.3.3, the grep fence, the preview route | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-1 | 2178, built, in review |
 | **SG-3** | The member form: the layout gallery, the fields from the profile, the live preview in light, dark and phone width, the reply choice. An owner preview | STANDARD | AGENT-SAFE, dark | SG-2 | 2179 |
 | **SG-4** | The company signature: the `org_settings` key, the admin section, "Use the company signature" | STANDARD | AGENT-SAFE, dark | SG-2 | 2180 |
 | **SG-5** | Replies and forwards: the composers ask for `kind`, and the short signature seeds a reply | STANDARD | AGENT-SAFE, dark | SG-2 | 2181 |
@@ -22806,6 +22876,58 @@ its logo after a flag change.
 | **SG-7** | Import: Gmail `sendAs`, the Outlook paste | STANDARD | AGENT-SAFE, dark | SG-1 | 2183 |
 | **SG-8** | The live check: the owner sends a signature with a logo to own addresses, and reads it in Gmail web, Outlook web, Outlook desktop and a phone app | OWNER | OWNER-GATE (outbound mail) | SG-3 | 2184 |
 | **SG-9** | Later: write the signature back to Gmail | Later | — | SG-7 | 2185 |
+
+**SG-1 as built (2026-11-08).** These points narrow or correct 23.3.4 and 23.7:
+
+- The upload refuses WebP with "This image is a WebP file. Upload it again as a PNG or a
+  JPEG." MuPDF 1.28.2 cannot open WebP (measured). It opens GIF, so the upload takes GIF and stores it
+  as PNG.
+- The workbench proxy `/api/email/[...path]` forwarded JSON only. It now passes a multipart
+  POST through, so the upload reaches the gateway.
+- Two more fences hold the routes: `test_email_owner_scope_fence.py` (the retire and the
+  public route are exempt with reasons) and `test_email_account_ref.py` (the upload reads
+  `account_id` through `resolve_account_filter`).
+- The settings-row warning "One image in your signature may not show in Gmail" with "Fix it"
+  moved to SG-3. The editor keeps a legacy `data:` image, and a save of a changed signature
+  hosts it.
+- On Linux the child proves its confinement: the kernel must refuse a new socket and a new
+  file. The parent refuses any other answer.
+- Follow-up: a save hosts its `data:` images in one transaction, and that transaction commits
+  before the settings upsert. A later failure of the upsert leaves the hosted images.
+
+**SG-2 as built (2026-11-09).** These points narrow or correct 23.3.2, 23.3.3 and 23.7:
+
+- The audit narrowed SG-2: `kind` comes only from a field that exists (23.3.3, the kind rule).
+  SG-4 builds the `company` branch, and SG-5 adds the kind of a draft.
+- The send keeps the form that the body holds (23.3.3). Without this rule, a template with
+  `reply_mode` `short` gave a reply two signatures, because each draft path seeds `new`. The
+  rule also keeps the stored form, so a draft written in `custom` mode and sent after a change
+  to `template` carries one signature (23.9). Fence:
+  `test_email_signature_resolver.py::test_a_mode_change_between_draft_and_send_gives_one_signature`.
+- The resolver cannot see a change of a template FIELD between a draft and its send. The draft
+  holds the old text, so the send adds the new one under it. SG-3 owns this case, because its
+  writer changes the fields. `_in_body` also searches the quoted text. SG-5 owns that case.
+  The stored-form rule makes it wider. After a change from `custom` to `template`, a reply
+  whose quote holds the old custom signature gets no signature at the send. SG-5 must
+  search only the text above the quote.
+- Keep the flag off until SG-5 merges. Until then `short` and `none` change only the reply card
+  and a forward with no signature in its body.
+- A layout image must have the address shape of a hosted image of SG-1
+  (`/email/signature-image/<org>/<token>.<ext>`). The renderer is pure, so it checks the shape
+  and not the host. The SG-3 writer must store only an address that starts with
+  `public_base_url()`. A link takes https only, and a bare host gets `https://`.
+- `templates_on` is the one reader of the flag. Fence:
+  `test_email_signature_resolver.py::test_templates_on_is_the_one_reader_of_the_flag`.
+- Each font size is 13 px, or 15 px for the name. The legal line is grey, at 13 px.
+- `role` is not in the server allowlist of D-EM-70, so a clean of a rendered layout removes
+  it. The resolver never cleans a rendered layout. SG-6 must keep this in mind for the card.
+- The GET now answers `signature` as `""` for a stored NULL, where main answered `null`. Each
+  client reads the value with a fallback to `""`, and the send bytes do not change.
+- `notes/dispatch.py` names no email table now, so its entry in `OUTSIDE_EMAIL_READERS` of
+  `test_email_owner_scope_fence.py` is gone. The preview route has an `OWNER_SCOPE_EXEMPT`
+  entry. The member purge map names the new table.
+- The preview route sends no request from the UI yet, so it needs no row in `chat_parity.py`.
+  SG-3 adds the UI call, and with it the parity row.
 
 The flag flip of `EMAIL_SIGNATURE_TEMPLATES_ORGS` needs the `enforcement-flip` grant. The
 person who flips it names the flag and the box in the same message.
@@ -22816,8 +22938,11 @@ person who flips it names the flag and the box in the same message.
 |---|---|
 | Each layout obeys the render contract, and the renderer escapes each field | `tests/unit/test_email_signature_render.py` (SG-2) |
 | A mailbox with no row resolves to the stored `custom` bytes unchanged | `tests/unit/test_email_signature_resolver.py` (SG-2) |
-| No code outside `signature.py` selects `signature` from `email_assistant_settings` (a source scan) | `tests/unit/test_email_signature_resolver.py` (SG-2) |
+| No code outside `signature.py` selects `signature` from `email_assistant_settings` (a source scan). Each reader of 23.3.3 calls the resolver with its kind. Each caller of `strip_signature_text` takes the resolved signature | `tests/unit/test_email_signature_resolver.py` (SG-2) |
 | The draft write and the send resolve with the same `kind`, and a reply carries one signature | `tests/unit/test_email_signature_resolver.py` (SG-2, SG-5) |
+| With the flag off and no row, each reader sends the bytes of main (rule 7) | `tests/unit/test_email_signature_resolver.py`, `tests/unit/test_email_signature_settings_r8.py` (SG-2) |
+| `email_signature_settings` has FORCE RLS and one policy. Organization B cannot read a row of A, and WITH CHECK refuses a row of another org. The CHECKs hold the modes, and a row goes with its mailbox | `tests/unit/test_email_signature_settings_r8.py` (SG-2, R8), `tests/unit/test_tenant_coverage.py` |
+| The preview route answers 404 with the flag off, renders with the renderer of the send, and writes nothing | `tests/unit/test_email_signature_resolver.py` (SG-2) |
 | An admin change reaches a `company` mailbox at the next resolve, and a member cannot write the brand key | `tests/unit/test_email_signature_resolver.py` (SG-4) |
 | Organization B cannot read an image of organization A. A token of A under the id of B gives 404. A bad token gives 404. The route serves a retired image | `tests/unit/test_email_signature_images_r8.py` (SG-1, R8) |
 | The public route is in `PUBLIC_ROUTES`, in the email `exempt` list and in `GATED_ROUTERS` | `tests/unit/test_org_access_enforcement.py`, `tests/unit/test_default_deny_auth.py` (SG-1) |
@@ -22834,7 +22959,8 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs
 uv run pytest tests/unit/test_email_signature_sanitize.py tests/unit/test_email_signature_images.py \
   tests/unit/test_email_signature_images_r8.py tests/unit/test_email_signature_placement.py \
   tests/unit/test_org_access_enforcement.py tests/unit/test_default_deny_auth.py
-uv run pytest tests/unit/test_email_signature_render.py tests/unit/test_email_signature_resolver.py
+uv run pytest tests/unit/test_email_signature_render.py tests/unit/test_email_signature_resolver.py \
+  tests/unit/test_email_signature_settings_r8.py tests/unit/test_tenant_coverage.py
 uv run ruff check apps/services/gateway
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
 uv run python scripts/affected_tests.py --run
@@ -22857,7 +22983,8 @@ bash scripts/ci_local.sh && bash scripts/premerge.sh
   SG-1 is live.
 - **A company change between a draft and its send.** The draft holds the old plain text, so
   the send may not find it to upgrade it to HTML. SG-2 and SG-4 add a test, and the send must
-  give one signature, never two.
+  give one signature, never two. SG-2 added it for a change of mode
+  (`test_a_mode_change_between_draft_and_send_gives_one_signature`). SG-4 adds the company case.
 - **The token is the capability.** Anybody who holds an image URL can fetch that image, as with
   any logo on a website. The token never leaves in anything but a signature, and the image is
   public by intent.

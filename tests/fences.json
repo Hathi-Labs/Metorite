@@ -82,6 +82,7 @@
       "tests/unit/test_projects_migration.py",
       "tests/unit/test_projects_org_vocabularies.py",
       "tests/unit/test_projects_timeline_page_size.py",
+      "tests/unit/test_provider_registry.py",
       "tests/unit/test_psycopg_seam.py",
       "tests/unit/test_pull_retries_failed_apply.py",
       "tests/unit/test_sandbox_broker_seam.py",

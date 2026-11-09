@@ -97,6 +97,20 @@ async def active(
     return {"runs": runs, "count": len(runs)}
 
 
+def _effective_runtime(name: str, entry: dict[str, Any], org: str | None) -> str:
+    """The runtime that a run of *name* in *org* takes, not only its label.
+
+    WS-43h (review P3): app-builder is labelled ``"maf"``, and its factory
+    builds the Copilot agent for an org outside ``app_builder:<org>``.
+    """
+    label = str(entry.get("agent_runtime") or entry.get("runtime") or "maf")
+    try:
+        from orchestrator.code_session import APP_BUILDER_AGENT, app_builder_runtime_for
+    except ImportError:
+        return label
+    return app_builder_runtime_for(org) if name == APP_BUILDER_AGENT else label
+
+
 @router.get("/roster")
 async def roster(
     viewer: UserContext = _VIEWER,
@@ -158,7 +172,7 @@ async def roster(
             "name": name,
             "display_name": aliases.get(name, ""),
             "description": str(a.get("description") or ""),
-            "runtime": a.get("agent_runtime") or a.get("runtime") or "maf",
+            "runtime": _effective_runtime(name, a, org),
             "status": "working" if live else "idle",
             "active_runs": len(live),
             "last_ts": live[0].get("ts") if live else None,

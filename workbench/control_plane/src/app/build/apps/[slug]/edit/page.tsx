@@ -23,8 +23,8 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useMonacoTheme } from "@/lib/theme/surfaces";
-import Editor from "@monaco-editor/react";
+import CodeEditor from "@/components/CodeEditor";
+import UnsavedMark from "@/components/UnsavedMark";
 import AgentChat from "@/components/AgentChat";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import Tabs from "@/components/Tabs";
@@ -44,6 +44,7 @@ import { useChatScope } from "@/hooks/useChatSessions";
 import {
   buildAppSrcDoc,
   extractCcIconNames,
+  newBridgeNonce,
   useCcBridge,
   type CcConsoleEvent,
   type CcToolConfirmDecision,
@@ -816,7 +817,6 @@ function PublishModal({
 function Workshop({ slug }: { slug: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const monacoTheme = useMonacoTheme();
 
   const [app, setApp] = useState<AppMeta | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1002,7 +1002,18 @@ function Workshop({ slug }: { slug: string }) {
   const onConsoleEvent = useCallback((e: CcConsoleEvent) => {
     setConsoleEvents((prev) => [e, ...prev].slice(0, CONSOLE_EVENT_CAP));
   }, []);
-  useCcBridge(slug, { mode: "draft", onConsoleEvent, onToolConfirm });
+  // Only THIS page's preview frame, holding this nonce, reaches the broker
+  // (task 2433). The test runner's hidden frame has a broker of its own.
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const getPreviewFrame = useCallback(() => previewFrameRef.current, []);
+  const [bridgeNonce] = useState(newBridgeNonce);
+  useCcBridge(slug, {
+    mode: "draft",
+    nonce: bridgeNonce,
+    getFrame: getPreviewFrame,
+    onConsoleEvent,
+    onToolConfirm,
+  });
 
   // ── App meta + files ────────────────────────────────────────────────
   // Fetch-on-mount wiring: same pattern (and lint carve-out) as
@@ -1603,8 +1614,10 @@ function Workshop({ slug }: { slug: string }) {
 
   const srcDoc = useMemo(
     () =>
-      draftBundle ? buildAppSrcDoc(draftBundle, { slug, mode: "draft" }) : null,
-    [draftBundle, slug]
+      draftBundle
+        ? buildAppSrcDoc(draftBundle, { slug, mode: "draft", nonce: bridgeNonce })
+        : null,
+    [draftBundle, slug, bridgeNonce]
   );
   // The sandboxed frame can't fetch its own icons (no network) — pre-resolve
   // whatever `ccIcon(...)`/`data-cc-icon` names the app's own HTML asks for
@@ -1860,10 +1873,20 @@ function Workshop({ slug }: { slug: string }) {
                 {srcDoc ? (
                   previewDevice === "mobile" ? (
                     <div className="w-[390px] max-w-full shrink-0 h-[780px] max-h-full rounded-[2rem] border-4 border-border overflow-hidden shadow-lg bg-background">
-                      <SandboxedHtml chromeless html={srcDoc} iconNames={previewIcons} />
+                      <SandboxedHtml
+                        chromeless
+                        html={srcDoc}
+                        iconNames={previewIcons}
+                        iframeRef={previewFrameRef}
+                      />
                     </div>
                   ) : (
-                    <SandboxedHtml chromeless html={srcDoc} iconNames={previewIcons} />
+                    <SandboxedHtml
+                      chromeless
+                      html={srcDoc}
+                      iconNames={previewIcons}
+                      iframeRef={previewFrameRef}
+                    />
                   )
                 ) : (
                   <div className="flex flex-col items-center justify-center flex-1 gap-3 text-center px-6">
@@ -2027,12 +2050,7 @@ function Workshop({ slug }: { slug: string }) {
                       <span className="font-mono text-[11.5px] text-foreground truncate">
                         {selectedPath}
                       </span>
-                      {fileDirty && (
-                        <span
-                          title="Unsaved changes"
-                          className="w-1.5 h-1.5 rounded-full bg-warning shrink-0"
-                        />
-                      )}
+                      {fileDirty && <UnsavedMark />}
                     </>
                   ) : (
                     <span className="text-xs text-muted-foreground">
@@ -2072,19 +2090,10 @@ function Workshop({ slug }: { slug: string }) {
                       <Icon name="Loader2" className="w-4 h-4 animate-spin text-muted-foreground" />
                     </div>
                   ) : (
-                    <Editor
-                      height="100%"
+                    <CodeEditor
                       language={monacoLanguage(selectedPath)}
-                      theme={monacoTheme}
                       value={editedContent}
-                      onChange={(v) => setEditedContent(v ?? "")}
-                      options={{
-                        minimap: { enabled: false },
-                        fontSize: 12.5,
-                        wordWrap: "on",
-                        scrollBeyondLastLine: false,
-                        automaticLayout: true,
-                      }}
+                      onChange={setEditedContent}
                     />
                   )}
                 </div>

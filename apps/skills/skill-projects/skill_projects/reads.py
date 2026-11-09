@@ -279,6 +279,17 @@ async def project_summary(project_id: str = "") -> str:
         out.append("  " + " · ".join(facts))
         if node.get("description"):
             out.append(f"  description: {data(str(node['description'])[:600])}")
+    # WS-39 LP-1a: the newest update, the line the Overview draws. The key is
+    # there only while project updates are on for the organization.
+    latest = payload.get("latest_update")
+    if isinstance(latest, dict):
+        from skill_projects.inbox import UPDATE_HEALTHS  # inbox imports this module
+
+        health = UPDATE_HEALTHS.get(str(latest.get("health")), str(latest.get("health")))
+        out.append(
+            f"  latest update: {health} · by {data(latest.get('author') or '?')}"
+            f" · {latest.get('posted_at')} · {data(str(latest.get('body') or '')[:300])}"
+        )
     out.append(
         f"  tasks {payload.get('tasks', 0)} · overdue {payload.get('overdue', 0)}"
         f" · projects {payload.get('projects', 0)}"
@@ -646,13 +657,88 @@ async def _clock_line() -> str:
     return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
 
 
+#: The seconds that the plan read may take (SW-68a). The edge has the same limit.
+PLAN_ORDER_BUDGET_S = 2.0
+
+
+async def _plan_ordered(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """SW-68a: *rows* in the order of the plan engine, and the plan of each
+    task that sits under an epic. The gateway route does the ranking, so the
+    MCP ``my_work`` and this list use one rule (``plan_order.py``). A task
+    outside every epic keeps its place. ANY failure of the read (a timeout, a
+    connect or protocol error, a refusal, a body of the wrong shape) keeps
+    today's order. The plan is an aid and never hides the work."""
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows, {}, {}
+    try:
+        # The same 2 second limit as the edge: a slow read keeps today's order.
+        async with asyncio.timeout(PLAN_ORDER_BUDGET_S):
+            answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
+        if not isinstance(answer, dict):
+            return rows, {}, {}
+        order, plans = answer.get("order"), answer.get("plan")
+        labels = answer.get("labels")
+        if not isinstance(order, list) or not isinstance(plans, dict):
+            return rows, {}, {}
+        by_id = {str(r["id"]): r for r in rows if r.get("id")}
+        ranked = [by_id[i] for i in order if i in by_id]
+        if len(ranked) != len(by_id) or len(set(order)) != len(order):
+            return rows, {}, {}
+        return ([*ranked, *(r for r in rows if not r.get("id"))], plans,
+                labels if isinstance(labels, dict) else {})
+    except Exception:  # the plan is an aid, see the docstring
+        return rows, {}, {}
+
+
+def _blocker_text(task_id: str, label: Any) -> str:
+    """``#7 Fix the extruder`` for a visible blocker. The title is fenced as
+    member text. With no label the short id is all there is."""
+    if isinstance(label, dict) and label.get("title"):
+        number = f"#{label['number']} " if label.get("number") else ""
+        return f"{number}{data(label['title'])}"
+    return task_id.split("-", 1)[0]
+
+
+def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
+    """One line for a task that sits under an epic: ready or blocked, the
+    slack, and what blocks it. A blocker is named by its number and title. A
+    blocker the member cannot see has no name."""
+    if not isinstance(plan, dict):
+        return ""
+    if plan.get("ready"):
+        slack = plan.get("slack_mins")
+        return "  plan: ready" + (f" · slack {slack} mins" if isinstance(slack, int) else "")
+    named = [_blocker_text(str(i), (labels or {}).get(str(i))) for i in plan.get("blocked_by") or []]
+    parts = [f"blocked by {', '.join(named)}"] if named else []
+    if plan.get("blocked_by_hidden"):
+        parts.append("blocked by a task hidden from you")
+    return "  plan: " + (" · ".join(parts) or "blocked")
+
+
+async def _personal_home(home: list[str]) -> None:
+    """Add the member's personal project to the head lines of ``my_work``, or
+    say there is none yet."""
+    try:
+        mine = await get("/projects/my/project")
+    except GatewayRefusal:
+        home.append("No personal project yet. create_personal_task makes it.")
+        return
+    if mine and mine.get("id"):
+        home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_work(
     view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
 ) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
     across every project. view="inbox" lists the member's task inbox: only
-    what they captured, as the app's inbox shows it. untriaged=true reads the
+    what they captured, as the app's inbox shows it. view="archived" lists the
+    tasks they archived, across projects (ARC-1), as the Archive chip of My
+    tasks shows them. To bring one back, use unarchive_task. untriaged=true reads the
     work assigned to them that they have not planned, with who
     assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
     task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
@@ -684,13 +770,14 @@ async def my_work(
         # 404 until the member captures their first private task. That is
         # an empty state, not a failure: the trial showed the model telling
         # the member their inbox "failed to load".
-        try:
-            mine = await get("/projects/my/project")
-        except GatewayRefusal:
-            mine = None
-            home.append("No personal project yet. create_personal_task makes it.")
-        if mine and mine.get("id"):
-            home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+        await _personal_home(home)
+    elif which == "archived":
+        # ARC-1: the one list route over mine, filed tasks only. The app's
+        # Archive chip reads the same two words (`scope`, `archived_only`).
+        payload = await get(
+            "/projects/tasks", {**params, "scope": "mine", "archived_only": True},
+        )
+        title = "My archive"
     else:
         if include_done:
             params["include_done"] = True
@@ -700,6 +787,10 @@ async def my_work(
     total = int((payload or {}).get("total") or 0)
     if not rows:
         return "\n".join([*home, f"{title}: nothing."])
+    plans: dict[str, Any] = {}
+    labels: dict[str, Any] = {}
+    if which not in ("inbox", "archived"):
+        rows, plans, labels = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
@@ -714,6 +805,9 @@ async def my_work(
             head += " · " + " · ".join(overlay)
         out.append(head)
         out.append(ident)
+        note = _plan_note(plans.get(str(row.get("id"))), labels)
+        if note:
+            out.append(note)
     return "\n".join(out)
 
 
