@@ -168,6 +168,9 @@ class TestTheWriteContractIsInsertOnly:
         "/catalog/tier-rates",
         "/catalog/tier-margins",
         "/catalog/credit-price",
+        # MS-1 (§6A.18, 2026-11-09). A health fix writes a tier chain, so it
+        # is a bind: a NEW chain row, never an update.
+        "/catalog/health/fix",
     )
 
     #: ⚠️ **NOT insert-only, and never was.** These write FACTS about a model
@@ -292,7 +295,8 @@ class TestTheWriteContractIsInsertOnly:
         from customer_console.operator_roles import MATRIX
 
         for route in ("/catalog/bindings", "/catalog/rates",
-                      "/catalog/tier-rates", "/catalog/credit-price"):
+                      "/catalog/tier-rates", "/catalog/credit-price",
+                      "/catalog/health/fix"):
             rule = MATRIX[("POST", route)]
             assert rule.elevated is True, route
         # And reading is not a privilege.
