@@ -387,7 +387,9 @@ Rules that make it work:
   Windows PC with Ubuntu 24.04 in WSL, on the tailnet as `metorite-home`.
   From this PC, `ssh metorite-home` reaches user `dev`, and
   `ssh metorite-home-admin` reaches `acb`, who has sudo.
-  `scripts/home_server/` sets it up.
+  `scripts/home_server/` sets it up. **To give the box a session, or to run
+  CI there, read `docs/home_box.md`.** It holds the lane start and wake
+  commands, the keeper, the merge queue, the accounts and the traps.
 - **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
   **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
   distro takes the run only when the home server is busy or does not answer.
