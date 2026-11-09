@@ -452,6 +452,9 @@ class WorkGateway:
             return {"rows": [], "total": 0, "counts": {}}
         if rest == "agent-runs":
             return {"rows": []}
+        if rest == "plan/order":
+            # SW-68a: no epic in the fake, so the plan keeps the input order.
+            return {"order": [], "plan": {}}
         return None
 
     def _node_read(self, parts: list[str]) -> Any:
