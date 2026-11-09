@@ -41,6 +41,7 @@ from skill_projects.writes import (
     _resolve_status,
     _split,
     _task,
+    is_team_space,
     mailbox_line,
     space_refusal,
 )
@@ -134,6 +135,49 @@ async def project_authorities(project_id: str, include_removed: bool = False) ->
         )
     if not rows:
         out.append("(no page is pinned as its authority)")
+    return "\n".join(out)
+
+
+#: What the member reads while PROJECTS_TEMPLATES_ORGS is off for the
+#: organization (WS-39 TPL-1a). The routes answer 404, and a tool makes no card.
+TEMPLATES_OFF = "Project templates are not on for this organization yet. Nothing was changed."
+
+
+def _template_line(row: dict[str, Any]) -> str:
+    """One template as one line: the name, what it holds, and its id."""
+    counts = row.get("counts") or {}
+    line = (
+        f"- {data(row.get('name'))} · {int(counts.get('tasks') or 0)} starter tasks"
+        f" · {int(counts.get('statuses') or 0)} statuses"
+        f" · {int(counts.get('types') or 0)} task types"
+        f" · {int(counts.get('fields') or 0)} fields"
+        f" · {int(counts.get('tags') or 0)} tags · template_id {row.get('id')}"
+    )
+    if row.get("description"):
+        line += f"\n  {data(row.get('description'))}"
+    return line
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def list_templates() -> str:
+    """The project templates of the organization, by name (WS-39 TPL-1a).
+    Each row has its template_id and what it holds: the statuses, task types,
+    fields, tags and starter tasks. Every member of the organization sees
+    the same list. create_project_from_template makes a new project from one,
+    and save_as_template saves a project as a new one, each behind a card."""
+    try:
+        got = (await get("/projects/templates")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return TEMPLATES_OFF
+        raise
+    rows = got.get("rows") or []
+    out = [legend(), f"Project templates ({len(rows)}):"]
+    out.extend(_template_line(row) for row in rows)
+    if not rows:
+        out.append("(no template yet. save_as_template saves a project as one)")
+    if got.get("more"):
+        out.append("(more templates exist. This list shows the first ones by name)")
     return "\n".join(out)
 
 
@@ -850,6 +894,129 @@ async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> st
     return f"Marked {marked} read.\n  done: {marked} marked"
 
 
+# ── WS-39 LP-1a: the updates of a project, with their health ─────────────────
+
+#: The three values of the health of a project update, and their words. The
+#: gateway's ``updates.HEALTH_LABELS`` holds the same, and a test pins them.
+UPDATE_HEALTHS: dict[str, str] = {
+    "on_track": "On track",
+    "at_risk": "At risk",
+    "off_track": "Off track",
+}
+
+#: The cap of the text, as the gateway's ``updates.MAX_UPDATE_CHARS``.
+MAX_UPDATE_CHARS = 20_000
+
+#: What the member reads while PROJECTS_UPDATES_ORGS is off for the organization.
+UPDATES_OFF = "Project updates are not on for this organization yet."
+
+#: The default page of ``list_project_updates``, and the route's cap.
+UPDATES_PAGE = 5
+UPDATES_PAGE_MAX = 50
+
+
+def _health_key(value: str) -> str | None:
+    """``on_track``, ``at_risk`` or ``off_track`` from the member's words, or None."""
+    key = "_".join(str(value or "").strip().lower().replace("-", " ").split())
+    return key if key in UPDATE_HEALTHS else None
+
+
+def _not_a_project(node: dict[str, Any]) -> bool:
+    """A team space or a folder holds no update. The gateway refuses it too."""
+    return is_team_space(node) or str(node.get("kind") or "project") == "folder"
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def list_project_updates(project_id: str, limit: int = UPDATES_PAGE, before: str = "") -> str:
+    """The updates of a project, newest first. Each has its health (On track,
+    At risk or Off track), its text, the member who posted it, the time and
+    its update_id. The first line is the newest update. To read older
+    updates, pass the update_id of the last line as before.
+    post_project_update posts a new update behind a card."""
+    pid, node = await _node(project_id)
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or UPDATES_PAGE), UPDATES_PAGE_MAX))}
+    if str(before or "").strip():
+        params["before"] = uuid_of(before, "before")
+    try:
+        got = (await get(f"/projects/nodes/{pid}/updates", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return UPDATES_OFF
+        raise
+    rows = got.get("rows") or []
+    out = [legend(), f"Updates of {data(node.get('name'))}, newest first ({len(rows)} shown):"]
+    for row in rows:
+        health = UPDATE_HEALTHS.get(str(row.get("health")), str(row.get("health")))
+        out.append(
+            f"- {health} · by {data(row.get('author') or '?')} · {row.get('posted_at')}"
+            f" · update_id {row.get('id')}"
+        )
+        out.append(f"  text: {data(str(row.get('body') or '')[:1200])}")
+    if got.get("next_before"):
+        out.append(f"(older updates exist. Pass before={got['next_before']} to read them)")
+    if not rows:
+        out.append("(no update yet)")
+    return "\n".join(out)
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def post_project_update(project_id: str, health: str, body: str) -> str:
+    """Post an update on a project: its health and a short text, in the
+    member's own words. health is on_track, at_risk or off_track. The member
+    picks it, so ask the member when the words do not say it. The card shows
+    the project, the health and the exact text. The newest update shows on
+    the project, so a later update takes the place of this one there."""
+    wanted = _health_key(health)
+    if wanted is None:
+        return (
+            "health is on_track, at_risk or off_track. Ask the member which one "
+            "fits, and post nothing until the member says."
+        )
+    text_body = str(body or "").strip()
+    if not text_body or "\x00" in text_body:
+        return "An update needs a text. Ask the member what the update says."
+    if len(text_body) > MAX_UPDATE_CHARS:
+        return (
+            f"The text is {len(text_body)} characters, and an update holds at most "
+            f"{MAX_UPDATE_CHARS}. Make it shorter."
+        )
+    pid, node = await _node(project_id)
+    if _not_a_project(node):
+        return (
+            f"{data(node.get('name'))} is a space or a folder, and it has no project "
+            "updates. Ask the member which project inside it the update is for."
+        )
+    # A filed project takes no new update. Say so before the card, as
+    # `writes._file_destinations` does for a task.
+    if node.get("archived_at") or node.get("archived"):
+        return (
+            f"{data(node.get('name'))} is archived, so it takes no new update. "
+            "Restore it first, or post on another project."
+        )
+    # The read before the card: it also says when the feature is off, so the
+    # member never answers a card that cannot post.
+    try:
+        await get(f"/projects/nodes/{pid}/updates", {"limit": 1})
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return UPDATES_OFF
+        raise
+    label = UPDATE_HEALTHS[wanted]
+    if not await _confirm(
+        title="Post this project update?",
+        detail=f"on {data(node.get('name'))}",
+        context=_fields_block(
+            {"project": data(node.get("name")), "health": label, "body": text_body}
+        ),
+    ):
+        return CANCELLED
+    row = (await post(f"/projects/nodes/{pid}/updates", {"health": wanted, "body": text_body})) or {}
+    return (
+        f"Posted the update on {data(node.get('name'))}: {label}"
+        f" (update id {row.get('id')}).\n  full_id: {pid}"
+    )
+
+
 __all__ = [  # noqa: RUF022 — reads first, then the writes
     "calendar",
     "intake_queue",
@@ -861,8 +1028,10 @@ __all__ = [  # noqa: RUF022 — reads first, then the writes
     "project_views",
     "watchers",
     "my_decisions",
+    "list_project_updates",
     "capture_intake",
     "mark_notifications_read",
     "save_view",
     "triage_intake",
+    "post_project_update",
 ]

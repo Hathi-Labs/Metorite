@@ -361,6 +361,8 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/packages": "studio_save",
     # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
     "PUT /api/studio/packages/{}/draft": "studio_save",
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -649,6 +651,8 @@ DEBT: dict[str, str] = {
     # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
+    "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
     "POST /api/tasks/ai/backfill-context": "P-1",
     "POST /api/tasks/capture/from-email": "P-1",
@@ -675,6 +679,9 @@ DEBT: dict[str, str] = {
     "POST /api/email/reply-card/discard": "P-2",
     "POST /api/email/rules/generate": "P-2",
     "POST /api/email/rules/patterns/review": "P-2",
+    # Paid by SG-6 (task 2182): the chat sets a signature image from an image
+    # the member attaches.
+    "POST /api/email/signature/images": "P-2",
     # ── Notes ──
     "DELETE /api/notes/glossary/{}": "P-4",
     "DELETE /api/notes/meetings/{}": "P-4",
@@ -997,7 +1004,7 @@ DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 9,
     "calendar": 1,
-    "email": 13,
+    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
@@ -1012,7 +1019,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
-    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

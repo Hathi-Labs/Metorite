@@ -71,8 +71,14 @@ router = APIRouter(
     #   webhook/microsoft— Graph change notification. It echoes the
     #                      validationToken, verifies the signed `org` in its
     #                      own URL, then checks clientState inside that tenant.
+    #   signature-image  — WS-17 SG-1 (D-EM-68). A mail reader fetches a
+    #                      signature logo with no session. The 256-bit token in
+    #                      the URL is the capability, and the route reads it
+    #                      under tenant_session(org) and RLS. Never gated, so a
+    #                      mail that went out keeps its logo.
     dependencies=[require_feature_router("email", exempt=[
         "/email/webhook/microsoft",
+        "/email/signature-image/{org}/{token}.{ext}",
     ])],
 )
 

@@ -22483,7 +22483,9 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 
 ## 23. Email signatures: a good signature in one minute (2026-11-07)
 
-**Status: SPECIFIED, not built.** Task 1959. Owner request in chat, 2026-11-07: "design and
+**Status: SPECIFIED. SG-1 is BUILT on the branch `mt-fd373072-signature-images` (task 2177,
+migration 378), in review. SG-2 to SG-9 are not built.** Task 1959. Owner request in chat,
+2026-11-07: "design and
 create good signatures for our email." The orchestrator checked the anchors at `origin/main`
 `f7904d365` on 2026-11-07. A spec-auditor checked them again on the same day, and round 2 of
 this section applies its corrections. Re-check each anchor at dispatch.
@@ -22797,7 +22799,7 @@ its logo after a flag change.
 | Slice | What | Tier | Gate | Depends on | Task |
 |---|---|---|---|---|---|
 | **SG-0** | This section, and the slice tasks | LOW | AGENT-SAFE | — | 1959 |
-| **SG-1** | Hosted images: the table, the confined upload child, the upload and retire routes, the public route in its three lists, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | AGENT-SAFE, dark | — | 2177 |
+| **SG-1** | Hosted images: the table, the confined upload child, the upload and retire routes, the public route in its three lists, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | AGENT-SAFE, dark | — | 2177, built, in review |
 | **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at each reader of 23.3.3, the grep fence, the preview route | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-1 | 2178 |
 | **SG-3** | The member form: the layout gallery, the fields from the profile, the live preview in light, dark and phone width, the reply choice. An owner preview | STANDARD | AGENT-SAFE, dark | SG-2 | 2179 |
 | **SG-4** | The company signature: the `org_settings` key, the admin section, "Use the company signature" | STANDARD | AGENT-SAFE, dark | SG-2 | 2180 |
@@ -22806,6 +22808,24 @@ its logo after a flag change.
 | **SG-7** | Import: Gmail `sendAs`, the Outlook paste | STANDARD | AGENT-SAFE, dark | SG-1 | 2183 |
 | **SG-8** | The live check: the owner sends a signature with a logo to own addresses, and reads it in Gmail web, Outlook web, Outlook desktop and a phone app | OWNER | OWNER-GATE (outbound mail) | SG-3 | 2184 |
 | **SG-9** | Later: write the signature back to Gmail | Later | — | SG-7 | 2185 |
+
+**SG-1 as built (2026-11-08).** These points narrow or correct 23.3.4 and 23.7:
+
+- The upload refuses WebP with "This image is a WebP file. Upload it again as a PNG or a
+  JPEG." MuPDF 1.28.2 cannot open WebP (measured). It opens GIF, so the upload takes GIF and stores it
+  as PNG.
+- The workbench proxy `/api/email/[...path]` forwarded JSON only. It now passes a multipart
+  POST through, so the upload reaches the gateway.
+- Two more fences hold the routes: `test_email_owner_scope_fence.py` (the retire and the
+  public route are exempt with reasons) and `test_email_account_ref.py` (the upload reads
+  `account_id` through `resolve_account_filter`).
+- The settings-row warning "One image in your signature may not show in Gmail" with "Fix it"
+  moved to SG-3. The editor keeps a legacy `data:` image, and a save of a changed signature
+  hosts it.
+- On Linux the child proves its confinement: the kernel must refuse a new socket and a new
+  file. The parent refuses any other answer.
+- Follow-up: a save hosts its `data:` images in one transaction, and that transaction commits
+  before the settings upsert. A later failure of the upsert leaves the hosted images.
 
 The flag flip of `EMAIL_SIGNATURE_TEMPLATES_ORGS` needs the `enforcement-flip` grant. The
 person who flips it names the flag and the box in the same message.
