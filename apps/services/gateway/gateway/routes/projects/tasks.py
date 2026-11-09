@@ -26,6 +26,7 @@ from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     DIRECTIONS,
+    STATUS_CATEGORIES,
     TASK_SORTS,
     TASK_SOURCES,
     ListResponse,
@@ -76,6 +77,7 @@ from gateway.routes.projects.custom_fields import (
 from gateway.routes.projects.filters import (
     attach_assignees,
     attach_relation_counts,
+    attach_status_facets,
     build_task_filters,
 )
 from gateway.routes.projects.notifications import (
@@ -252,6 +254,10 @@ async def list_tasks(
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, page_rows)
         await attach_relation_counts(db, page_rows)
+        # The lane each task sits in, on the row. A board that spans a
+        # subproject with its OWN statuses cannot look one up in the
+        # selected project's set, and used to drop the task instead.
+        await attach_status_facets(db, page_rows)
         return ListResponse(rows=page_rows, total=int(total))
 
 
@@ -378,6 +384,11 @@ async def patch_task(
                        f"'{guarded}'.",
             )
     new_status = values.pop("status_id", None)
+    # A stage, for a board drawing category columns. Resolved inside the
+    # session below, because the answer depends on the task's own set.
+    wanted_category = values.pop("status_category", None)
+    if wanted_category is not None:
+        validate_choice(wanted_category, STATUS_CATEGORIES, "status_category")
     custom = values.pop("custom_fields", None)
 
     async with _tenant_session() as db:
@@ -431,6 +442,16 @@ async def patch_task(
                 await record_field_change(
                     db, created_by=actor(user), task_id=task_id, changes=changes,
                 )
+        if new_status is None and wanted_category is not None:
+            # The first lane of that stage in the set this task actually
+            # uses — `status_owner_id`, never the root. A task in an
+            # overriding subproject must land in ITS "In progress", not in
+            # the space's, which `require_status_in_project` would refuse.
+            lane = await load_default_status(
+                db, await status_owner_id(db, str(before.project_id)),
+                wanted_category,
+            )
+            new_status = str(lane.id)
         moved = None
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(

@@ -13,6 +13,10 @@
 
 import type { StatusRow, TaskRow } from "./api";
 import {
+  CATEGORY_LABEL,
+  STATUS_CATEGORIES,
+} from "@/lib/statusCategory";
+import {
   DEFAULT_SHOWN,
   sameFieldSet,
   sanitizeShownFields,
@@ -440,6 +444,13 @@ export function groupTasks(
   }
 
   if (by === "status") {
+    const own = new Set(ctx.statuses.map((status) => status.id));
+    // A task whose lane is not in the set this board loaded. Since migration
+    // 196 that is a legitimate row, not corruption: a subproject can own its
+    // statuses, and `?include_subtree=` puts its tasks on the space's board.
+    const spans = tasks.some((task) => !own.has(task.status_id));
+    if (spans) return byStatusCategory(tasks, ctx.statuses);
+
     const ordered = [...ctx.statuses].sort((a, b) => a.position - b.position);
     return ordered.map((status) => ({
       key: status.id,
@@ -484,4 +495,102 @@ export function groupTasks(
     if (b.key === UNSET) return -1;
     return a.label.localeCompare(b.label);
   });
+}
+
+/** The board key for a stage column, kept apart from any lane id. */
+export const CATEGORY_KEY_PREFIX = "category:";
+
+/** The stage a category column stands for, or null for a lane column. */
+export function categoryOfKey(key: string): string | null {
+  return key.startsWith(CATEGORY_KEY_PREFIX)
+    ? key.slice(CATEGORY_KEY_PREFIX.length)
+    : null;
+}
+
+/**
+ * Group by STAGE rather than by lane, for a view that spans two status sets.
+ *
+ * ## Why this exists at all
+ *
+ * Grouping by lane asks "which row of `pm_task_statuses`", and that question
+ * has no shared answer across sets. A space's "In progress" and an overriding
+ * subproject's "Building" are different rows, so a lane-keyed board draws a
+ * column for one and drops the tasks of the other — silently, because
+ * `tasks.filter(t => t.status_id === status.id)` simply matches nothing. The
+ * header still counts them, so the board and its own count disagree and no
+ * error is raised anywhere.
+ *
+ * The CATEGORY is the half both sets share. `statusCategory.ts` says so
+ * already, and the personal Tasks lens has grouped by it since WS-39 for the
+ * identical reason: *"IN PROCESS in Marketing next to Building in Engineering
+ * are the same fact under two names"*. This is that decision applied to a
+ * board, not a second vocabulary.
+ *
+ * ## What it draws
+ *
+ * Columns in lifecycle order, for every stage that either the loaded set has a
+ * lane in or the tasks in view actually occupy. Keeping the loaded set's empty
+ * stages matches the single-set board, where an empty "In progress" column
+ * means "nothing is in progress" and its absence would mean "there is no such
+ * state".
+ *
+ * A task whose category is unknown gets the residue column rather than being
+ * dropped — the whole point. That happens when the lane was deleted underneath
+ * the page, or when the server has not attached the facets. Naming it is what
+ * turns an invisible task into a repairable one.
+ */
+function byStatusCategory(
+  tasks: TaskRow[],
+  statuses: readonly StatusRow[]
+): TaskGroup[] {
+  const laneCategory = new Map(
+    statuses.map((status) => [status.id, status.category])
+  );
+  const categoryOf = (task: TaskRow): string | null =>
+    task.status_category ?? laneCategory.get(task.status_id) ?? null;
+
+  const present = new Set<string>();
+  for (const status of statuses) present.add(status.category);
+  for (const task of tasks) {
+    const category = categoryOf(task);
+    if (category) present.add(category);
+  }
+
+  const ordered = [
+    ...STATUS_CATEGORIES.filter((category) => present.has(category)),
+    // A stage neither this file nor the vocabulary knows: a server ahead of
+    // this build. Shown under its raw name, never dropped.
+    ...[...present].filter(
+      (category) =>
+        !(STATUS_CATEGORIES as readonly string[]).includes(category)
+    ),
+  ];
+
+  const groups: TaskGroup[] = ordered.map((category) => ({
+    key: `${CATEGORY_KEY_PREFIX}${category}`,
+    label: CATEGORY_LABEL[category] ?? category,
+    tasks: tasks.filter((task) => categoryOf(task) === category),
+  }));
+
+  const stray = tasks.filter((task) => categoryOf(task) === null);
+  if (stray.length > 0) {
+    groups.push({ key: UNSET, label: "Unsorted", tasks: stray });
+  }
+  return groups;
+}
+
+/**
+ * How many distinct status SETS the tasks in view come from.
+ *
+ * The board says this out loud when it is more than one, because category
+ * columns otherwise look like a bug: somebody who named a lane "Building" opens
+ * the space board and sees "In progress". One quiet line is the difference
+ * between a considered view and an apparently broken one.
+ */
+export function statusSetsInView(tasks: readonly TaskRow[]): number {
+  const owners = new Set<string>();
+  for (const task of tasks) {
+    if (task.status_owner_id) owners.add(task.status_owner_id);
+  }
+  return owners.size;
 }

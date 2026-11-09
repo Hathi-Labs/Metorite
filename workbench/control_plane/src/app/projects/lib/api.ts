@@ -98,6 +98,24 @@ export interface TaskRow {
   parent_task_id?: string | null;
   type_id?: string | null;
   status_id: string;
+  /**
+   * The lane this task sits in, denormalised onto the row by the list endpoint
+   * (`filters.attach_status_facets`).
+   *
+   * ⚠️ **Do not look a `status_id` up in the selected project's set.** Since
+   * migration 196 a subproject can own its statuses, so a board on a space with
+   * `include_subtree` legitimately holds tasks from two or more sets. The
+   * lookup misses, and the failure is silent — the card cannot draw its lane
+   * and `groupTasks` used to drop the task from every column while the header
+   * still counted it. These fields are what make a foreign lane drawable.
+   *
+   * Absent from `getTask`, which reads the whole set for the panel instead.
+   */
+  status_name?: string | null;
+  status_color?: string | null;
+  status_category?: string | null;
+  /** The project whose set the lane belongs to — how a view sees it spans two. */
+  status_owner_id?: string | null;
   title: string;
   description?: string | null;
   importance?: number | null;

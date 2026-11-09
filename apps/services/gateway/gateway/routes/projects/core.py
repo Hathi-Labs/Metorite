@@ -525,6 +525,17 @@ class TaskIn(BaseModel):
     parent_task_id: str | None = None
     type_id: str | None = None
     status_id: str | None = None
+    #: A STAGE rather than a lane, resolved to the first lane of that category
+    #: in the task's OWN set. Ignored when `status_id` is given.
+    #:
+    #: This exists for a board whose columns are categories, which is what a
+    #: view spanning two status sets has to draw (migration 196). Such a column
+    #: has no single lane id to write: the same "In progress" column holds a
+    #: task from a space and a task from a subproject that overrides, and the
+    #: two belong in different rows of `pm_task_statuses`. Sending the stage
+    #: lets the server answer the question per task, which is the only place
+    #: that knows the answer.
+    status_category: str | None = None
     title: str | None = None
     description: str | None = None
     importance: int | None = None

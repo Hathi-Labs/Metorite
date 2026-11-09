@@ -9,7 +9,7 @@
  * there is no rank column on the task, and one drop writes exactly one row.
  */
 
-import { UNSET } from "./grouping";
+import { categoryOfKey, UNSET } from "./grouping";
 
 export interface PositionedTask {
   id: string;
@@ -154,8 +154,21 @@ export function buildColumnDropUpdate(
   groupKey: string | null
 ): Record<string, string | number | null> | null {
   switch (columnBy) {
-    case "status":
+    case "status": {
+      // A board spanning two status sets draws STAGE columns, because the two
+      // sets share no lane ids (`grouping.byStatusCategory`). Such a column has
+      // no one lane to write: the same "In progress" column holds a task from
+      // the space and a task from a subproject that overrides it, and they
+      // belong in different rows. So the stage travels instead, and the server
+      // resolves it against each task's own set.
+      const category = groupKey === null ? null : categoryOfKey(groupKey);
+      if (category !== null) return { status_category: category };
+      // The residue column. It is where a task with no resolvable lane is
+      // shown so it can be repaired — it is not a destination, and writing
+      // `status_id: "__unset__"` would be a 422 with a confusing message.
+      if (groupKey === UNSET) return null;
       return { status_id: groupKey };
+    }
     case "type":
       return { type_id: groupKey };
     case "project":

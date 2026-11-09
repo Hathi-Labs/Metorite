@@ -621,3 +621,64 @@ async def attach_assignees(db: Any, rows: list[dict[str, Any]]) -> list[dict[str
     for row in rows:
         row["assignees"] = by_task.get(str(row["id"]), [])
     return rows
+
+
+#: The lane a task sits in, denormalised onto the task row.
+_STATUS_FACETS_SQL = (
+    "SELECT s.id, s.name, s.color, s.category, s.project_id "
+    "  FROM pm_task_statuses s WHERE s.id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+async def attach_status_facets(
+    db: Any, rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fill each row's ``status_name``, ``status_color``, ``status_category``
+    and ``status_owner_id``, mutating in place.
+
+    ⚠️ **This exists because a board can now hold two status SETS at once.**
+
+    Until 2026-09-06 every task in one view came from one set, so the client
+    held that set in a map and looked each ``status_id`` up in it. A subproject
+    that overrides its statuses (migration 196) breaks that assumption, and it
+    breaks it SILENTLY: `groupTasks` buckets by lane id, a foreign id matches no
+    column, and the task disappears from the board while the header still counts
+    it. `?include_subtree=` makes that the normal case for a space, not an edge.
+
+    So the row carries its own lane. A client can then draw and group any task
+    it was given without knowing which sets are in play, which is the only shape
+    that stays correct as more projects override.
+
+    ``status_owner_id`` is the set the lane belongs to — what lets a client see
+    that a view spans more than one, and say so instead of quietly grouping by
+    category for a reason nobody can find.
+
+    Every row gets every key. A missing key and a null read the same to a
+    careless client, and a task always has a status: ``pm_tasks.status_id`` is
+    NOT NULL, so a null here means the lane was deleted underneath us, which is
+    a repair case the client must be able to SEE rather than one it drops.
+    """
+    for row in rows:
+        row["status_name"] = None
+        row["status_color"] = None
+        row["status_category"] = None
+        row["status_owner_id"] = None
+    ids = [
+        str(r["status_id"]) for r in rows if r.get("status_id") is not None
+    ]
+    if not ids:
+        return rows
+
+    found = (await db.execute(
+        text(_STATUS_FACETS_SQL), {"ids": sorted(set(ids))},
+    )).fetchall()
+    by_id = {str(r.id): r for r in found}
+    for row in rows:
+        lane = by_id.get(str(row.get("status_id")))
+        if lane is None:
+            continue
+        row["status_name"] = lane.name
+        row["status_color"] = lane.color
+        row["status_category"] = lane.category
+        row["status_owner_id"] = str(lane.project_id)
+    return rows
