@@ -24,7 +24,6 @@ from gateway.routes.apps._common import (
     is_valid_slug,
     resolve_ai_budget,
     resolve_ai_tier,
-    resolve_app_file,
     role_for,
     scope_set_hash,
 )
@@ -86,11 +85,15 @@ def test_slug_generation_stays_within_48_chars() -> None:
 
 # ── Path containment ─────────────────────────────────────────────────────────
 
-def test_resolve_app_file_allows_workspace_paths(tmp_path: Path) -> None:
+def test_clean_app_rel_allows_workspace_paths(tmp_path: Path) -> None:
+    from acb_skills import safe_open
+    from gateway.routes.apps._common import clean_app_rel
+
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.jsx").write_text("ok")
-    resolved = resolve_app_file(tmp_path, "src/app.jsx")
-    assert resolved == (tmp_path / "src" / "app.jsx").resolve()
+    rel = clean_app_rel("src/app.jsx")
+    assert rel == "src/app.jsx"
+    assert safe_open.read_bytes(tmp_path, rel) == b"ok"
 
 
 @pytest.mark.parametrize("bad", [
@@ -103,22 +106,29 @@ def test_resolve_app_file_allows_workspace_paths(tmp_path: Path) -> None:
     "..",
     "",
 ])
-def test_resolve_app_file_blocks_bad_paths(tmp_path: Path, bad: str) -> None:
+def test_clean_app_rel_blocks_bad_paths(tmp_path: Path, bad: str) -> None:
+    from gateway.routes.apps._common import clean_app_rel
+
     with pytest.raises(HTTPException) as exc:
-        resolve_app_file(tmp_path, bad)
+        clean_app_rel(bad)
     assert exc.value.status_code == 400
 
 
-def test_resolve_app_file_blocks_symlink_escape(tmp_path: Path) -> None:
+def test_a_symlink_escape_is_refused(tmp_path: Path) -> None:
+    from acb_skills import safe_open
+    from gateway.routes.apps._common import clean_app_rel
+
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("secret")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "link").symlink_to(outside)
-    with pytest.raises(HTTPException) as exc:
-        resolve_app_file(workspace, "link/secret.txt")
-    assert exc.value.status_code == 400
+    try:
+        (workspace / "link").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("this box cannot make a symlink")
+    with pytest.raises(safe_open.UnsafePath):
+        safe_open.read_bytes(workspace, clean_app_rel("link/secret.txt"))
 
 
 # ── Visibility matrix ────────────────────────────────────────────────────────

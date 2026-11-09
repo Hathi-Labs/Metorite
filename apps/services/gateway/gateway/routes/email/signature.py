@@ -23,13 +23,18 @@ quoted conversation on every signed reply — see :mod:`.quoting` for the split.
 from __future__ import annotations
 
 import html as _html
+import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from typing import Any
 
+from acb_common import get_logger
 from gateway.routes.email.quoting import split_quoted_html, split_quoted_text
 from sqlalchemy import text
+
+_log = get_logger("gateway.email.signature")
 
 # A value that contains an HTML tag is treated as HTML; otherwise it's plain
 # text the user typed and we escape + linebreak it.
@@ -207,8 +212,10 @@ def build_signed_bodies(
 
 # ── The stored signature, and the clean on save (WS-17 SG-1, D-EM-70) ───────
 
-#: The read of the stored free HTML of one mailbox. SG-2 makes the resolver
-#: the one reader of this column (D-EM-66). It lives here for that reason.
+#: The read of the stored free HTML of one mailbox. The resolver below is the
+#: one reader of this column (D-EM-66). No code outside this module selects
+#: ``signature`` from ``email_assistant_settings``. Fence:
+#: ``tests/unit/test_email_signature_resolver.py`` (a source scan).
 STORED_SIGNATURE_SQL = (
     "SELECT signature FROM email_assistant_settings WHERE account_id = :aid")
 
@@ -216,9 +223,198 @@ STORED_SIGNATURE_SQL = (
 async def stored_signature(db: Any, account_id: str) -> str:
     """The signature that ``email_assistant_settings`` holds now, or ``""``.
 
-    The caller has checked the mailbox and opened ``_tenant_session``."""
+    The caller has checked the mailbox and opened ``_tenant_session``. The
+    readers of the send path ask :func:`resolve_signature`, which calls this
+    for a ``custom`` mailbox."""
     row = (await db.execute(text(STORED_SIGNATURE_SQL), {"aid": account_id})).fetchone()
     return (getattr(row, "signature", None) or "") if row else ""
+
+
+# ── The resolver (WS-17 SG-2, D-EM-64, D-EM-66, D-EM-71) ────────────────────
+
+#: The kinds of mail that ask for a signature (D-EM-66).
+SIGNATURE_KINDS: tuple[str, ...] = ("new", "reply", "forward")
+#: The modes of a mailbox signature (D-EM-64). A mailbox with no row is
+#: ``custom``.
+SIGNATURE_MODES: tuple[str, ...] = ("custom", "template", "company")
+#: What a reply or a forward carries (D-EM-71). ``short`` is the compact
+#: layout of the same fields.
+REPLY_MODES: tuple[str, ...] = ("full", "short", "none")
+
+#: The row of one mailbox in ``email_signature_settings``. RLS of the bound
+#: tenant holds the org. The resolver reads it only while the flag holds the
+#: org, so with the flag off the send runs the one query of main.
+SETTINGS_SQL = (
+    "SELECT mode, layout, fields, reply_mode FROM email_signature_settings "
+    "WHERE account_id = :aid")
+
+
+def templates_on(org: object = None) -> bool:
+    """True when ``EMAIL_SIGNATURE_TEMPLATES_ORGS`` holds organization *org*.
+    THE reader of the flag (§23.5).
+
+    The value is a comma list of organization ids, or ``*`` for each one.
+    Empty means off, the default. Then the resolver gives the ``custom``
+    bytes, as main does, and the preview route answers 404. It reads the
+    settings at each call, so a SIGHUP applies a change (``docs/flag_reload.md``).
+    *org* defaults to the bound tenant, and no request field reaches it (R5).
+    It fails closed: a fault, or no tenant under a list of ids, reads as off.
+    """
+    try:
+        from acb_common import get_settings
+        from acb_common.assistant_profile import _parse_orgs
+
+        orgs = _parse_orgs(
+            str(getattr(get_settings(), "email_signature_templates_orgs", "") or ""),
+            star=True)
+        if not orgs or "*" in orgs:
+            return bool(orgs)
+        if org is None:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        return str(org or "").strip().lower() in orgs
+    except Exception:
+        return False
+
+
+def _check_kind(kind: str) -> None:
+    if kind not in SIGNATURE_KINDS:
+        raise ValueError(f"Unknown signature kind: {str(kind)[:20]!r}")
+
+
+def _in_body(signature: str, body_text: str | None) -> bool:
+    """True when the body holds the text of the signature, by the test of
+    :func:`build_signed_bodies`. That test decides whether a send adds one."""
+    sig_text = signature_text(signature)
+    return bool(sig_text) and sig_text in (body_text or "")
+
+
+@dataclass(frozen=True)
+class SignatureForms:
+    """The signature of one mailbox, in each form that a reader asks for.
+
+    ``stored`` is the free HTML of ``email_assistant_settings.signature``, the
+    model of today's editor. ``full`` is the signature of new mail. ``short``
+    is the compact form of a layout signature, or ``""`` when the mode has no
+    fields. ``reply_mode`` says what a reply and a forward carry."""
+
+    stored: str
+    full: str
+    short: str = ""
+    reply_mode: str = "full"
+
+    def of(self, kind: str) -> str:
+        """The signature of a mail of ``kind`` (D-EM-66, D-EM-71)."""
+        _check_kind(kind)
+        if kind == "new" or self.reply_mode == "full":
+            return self.full
+        if self.reply_mode == "none":
+            return ""
+        return self.short or self.full
+
+    def for_body(self, kind: str, body_text: str | None) -> str:
+        """The signature that a send of ``kind`` adds to ``body_text``.
+
+        A mail carries one signature (§23.3.3, §23.9). A draft path writes the
+        ``new`` form into the body until SG-5 passes the kind of the draft. So
+        when the body holds the ``new`` form and not the form of ``kind``, the
+        send keeps the ``new`` form. ``build_signed_bodies`` then finds it in
+        the text and adds no second one.
+
+        The same holds for the ``stored`` form. A draft written while the
+        mailbox was ``custom`` holds the stored signature. When the mode
+        changes to ``template`` before the send, the send keeps the stored
+        form (§23.9). With the flag off, the three forms are the same bytes,
+        so the send gives the signature of main."""
+        signature = self.of(kind)
+        if _in_body(signature, body_text):
+            return signature
+        for held in (self.full, self.stored):
+            if held != signature and _in_body(held, body_text):
+                return held
+        return signature
+
+
+def _fields_of(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+async def signature_forms(
+    db: Any, account_id: str, *, stored: str | None = None,
+) -> SignatureForms:
+    """Each form of the signature of one mailbox (D-EM-64, D-EM-66).
+
+    The caller has checked the mailbox and holds a session of the bound
+    tenant. ``stored`` is the value that the caller just wrote, so the PUT
+    answer reads nothing again.
+
+    * With the flag off, or no row, or the mode ``custom``, each form is the
+      stored bytes, unchanged (rule 7). With the flag off, the one query is
+      :data:`STORED_SIGNATURE_SQL`, as on main.
+    * ``template`` renders the member's layout and fields with
+      ``signature_render.render``. A row that does not render, or that has
+      no field to show, gives the stored bytes, so a send never fails or
+      loses its signature on a bad row.
+    * ``company`` is SG-4. It needs the ``email_signature_brand`` key of
+      ``org_settings``, and ``load_org_setting`` is sync, so SG-4 reads it
+      with ``asyncio.to_thread`` under ``contextvars.copy_context().run``.
+      Until then a ``company`` row gives the stored bytes.
+    """
+    if stored is None:
+        stored = await stored_signature(db, account_id)
+    custom = SignatureForms(stored=stored, full=stored)
+    if not templates_on():
+        return custom
+    row = (await db.execute(text(SETTINGS_SQL), {"aid": account_id})).fetchone()
+    if row is None:
+        return custom
+    reply_mode = getattr(row, "reply_mode", None)
+    reply_mode = reply_mode if reply_mode in REPLY_MODES else "full"
+    if getattr(row, "mode", None) != "template":
+        return replace(custom, reply_mode=reply_mode)
+    # Imported here, because signature_render imports this module.
+    from gateway.routes.email import signature_render
+
+    fields = _fields_of(getattr(row, "fields", None))
+    try:
+        full = signature_render.render(getattr(row, "layout", None), fields)[0]
+        short = signature_render.render(signature_render.SHORT_LAYOUT, fields)[0]
+    except signature_render.UnknownLayout:
+        _log.warning("email.signature_layout_unknown")
+        return replace(custom, reply_mode=reply_mode)
+    if not full:
+        # No field to show: the mailbox keeps its stored signature.
+        return replace(custom, reply_mode=reply_mode)
+    return SignatureForms(stored=stored, full=full, short=short, reply_mode=reply_mode)
+
+
+async def resolve_signature(db: Any, account_id: str, kind: str) -> str:
+    """The signature of a mail of ``kind`` from one mailbox (D-EM-66).
+
+    ``kind`` is ``new``, ``reply`` or ``forward``. Each reader of §23.3.3
+    calls this, or :func:`resolve_signature_for_send`, or
+    :func:`signature_forms`. With the flag off or no row, it gives the stored
+    bytes unchanged. The caller has checked the mailbox and holds a session
+    of the bound tenant."""
+    _check_kind(kind)
+    return (await signature_forms(db, account_id)).of(kind)
+
+
+async def resolve_signature_for_send(
+    db: Any, account_id: str, kind: str, body_text: str | None,
+) -> str:
+    """The signature that a send of ``kind`` adds to ``body_text``.
+
+    :meth:`SignatureForms.for_body` holds the rule: a reply whose draft holds
+    the ``new`` form keeps it, so the mail carries one signature."""
+    _check_kind(kind)
+    return (await signature_forms(db, account_id)).for_body(kind, body_text)
 
 
 def looks_html(signature: str) -> bool:

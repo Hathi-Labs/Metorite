@@ -1,7 +1,9 @@
 """Custom Apps · files — workspace passthrough for the Workshop (edit-gated).
 
-Flat listing + text read/write over an app's workspace, containment-guarded by
-``resolve_app_file`` (traversal, dotfiles, ``.git``, symlink escapes). The
+Flat listing + text read/write over an app's workspace. ``clean_app_rel``
+refuses traversal, dotfiles and ``.git``, and every open goes through
+``acb_skills.safe_open``, which refuses a link at any depth (§7.5 rule B,
+WS-43h review P0: a sandbox container writes the app dir). The
 Workshop's code view and the preview pane's draft fetch ride these; published
 bundles are served from ``app_versions`` instead (see ``publish.py``). Reads
 resolve the workspace through ``durability.ensure_workspace`` (lazy rehydrate
@@ -19,6 +21,7 @@ from typing import Any
 from acb_auth import UserContext
 from acb_common import get_settings
 from acb_common.child_env import child_env
+from acb_skills import safe_open
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from gateway.routes.apps._common import (
@@ -27,13 +30,15 @@ from gateway.routes.apps._common import (
     WORKSPACE_SKIP_DIRS,
     _log,
     _tenant_session,
+    clean_app_rel,
     get_app_or_404,
+    iter_app_files,
     read_workspace_manifest,
     require_app_author,
     require_app_user,
-    resolve_app_file,
     router,
     t2_vendor_dir,
+    workspace_links,
 )
 from gateway.routes.apps.durability import ensure_workspace, mirror_app_file
 from pydantic import BaseModel
@@ -56,34 +61,40 @@ class AppFileWrite(BaseModel):
 
 
 def _walk_files(workspace: Path) -> list[AppFileEntry]:
-    """Flat file list — skips dot-anything, VCS/build dirs, and directories."""
+    """Flat file list — skips dot-anything, VCS/build dirs, directories and links."""
     entries: list[AppFileEntry] = []
-    if not workspace.is_dir():
+    if not workspace.is_dir() or workspace.is_symlink():
         return entries
-    for dirpath, dirnames, filenames in os.walk(workspace):
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if not d.startswith(".") and d not in WORKSPACE_SKIP_DIRS
-        )
-        rel_dir = Path(dirpath).relative_to(workspace)
-        for fname in sorted(filenames):
-            if fname.startswith("."):
-                continue
-            fpath = Path(dirpath) / fname
-            try:
-                stat = fpath.stat()
-            except OSError:
-                continue
-            entries.append(AppFileEntry(
-                path=str(rel_dir / fname).replace("\\", "/"),
-                size=stat.st_size,
-                modified_at=datetime.fromtimestamp(
-                    stat.st_mtime, tz=UTC,
-                ).isoformat(),
-            ))
-            if len(entries) >= MAX_WORKSPACE_FILES:
-                return entries
+
+    def keep_dir(_parent: tuple[str, ...], d: str) -> bool:
+        return not d.startswith(".") and d not in WORKSPACE_SKIP_DIRS
+
+    for parts in iter_app_files(workspace, keep_dir):
+        if parts[-1].startswith("."):
+            continue
+        rel = "/".join(parts)
+        try:
+            stat = safe_open.stat_file(workspace, rel)
+        except (OSError, ValueError):
+            continue
+        if stat is None:
+            continue
+        entries.append(AppFileEntry(
+            path=rel,
+            size=stat.st_size,
+            modified_at=datetime.fromtimestamp(
+                stat.st_mtime, tz=UTC,
+            ).isoformat(),
+        ))
+        if len(entries) >= MAX_WORKSPACE_FILES:
+            return entries
     return entries
+
+
+def _unsafe(exc: Exception) -> HTTPException:
+    """The answer of a path that the safe opener refused: a link, or no plain file."""
+    _log.warning("apps.file_path_refused", error=str(exc)[:160])
+    return HTTPException(status_code=400, detail="Not a plain file in the app")
 
 
 async def _edit_workspace(slug: str, user: UserContext) -> tuple[Any, Path]:
@@ -113,19 +124,28 @@ async def read_app_file(
     user: UserContext = Depends(require_app_user),
 ) -> PlainTextResponse:
     _row, workspace = await _edit_workspace(slug, user)
-    file_path = resolve_app_file(workspace, path)
-    if not file_path.is_file():
+    rel = clean_app_rel(path)
+    try:
+        stat = safe_open.stat_file(workspace, rel)
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
+    if stat is None:
         raise HTTPException(status_code=404, detail="File not found")
-    size = file_path.stat().st_size
+    size = stat.st_size
     if size > MAX_SOURCE_FILE_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"File too large ({size} bytes). "
                    f"Maximum is {MAX_SOURCE_FILE_BYTES}.",
         )
-    data = await asyncio.get_event_loop().run_in_executor(
-        None, file_path.read_bytes,
-    )
+    try:
+        data = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: safe_open.read_bytes(workspace, rel, limit=MAX_SOURCE_FILE_BYTES),
+        )
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
+    if data is None:
+        raise HTTPException(status_code=404, detail="File not found")
     try:
         content = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -149,15 +169,19 @@ async def write_app_file(
                    f"Maximum is {MAX_SOURCE_FILE_BYTES}.",
         )
     row, workspace = await _edit_workspace(slug, user)
-    file_path = resolve_app_file(workspace, body.path)
+    rel = clean_app_rel(body.path)
 
     def _write() -> os.stat_result:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_bytes(data)
-        return file_path.stat()
+        safe_open.write_bytes(workspace, rel, data)
+        written = safe_open.stat_file(workspace, rel)
+        if written is None:
+            raise FileNotFoundError(rel)
+        return written
 
-    stat = await asyncio.get_event_loop().run_in_executor(None, _write)
-    rel = str(file_path.relative_to(workspace.resolve())).replace("\\", "/")
+    try:
+        stat = await asyncio.get_event_loop().run_in_executor(None, _write)
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
     # Durability write-through: mirror just this file into app_files
     # (best-effort — a full reconcile rides POST /{slug}/sync and publish).
     await mirror_app_file(str(row.id), rel, body.content)
@@ -184,12 +208,16 @@ async def delete_app_file(
     rides the caller's follow-up ``POST /{slug}/sync``, not this endpoint.
     """
     _row, workspace = await _edit_workspace(slug, user)
-    file_path = resolve_app_file(workspace, path)
-    if not file_path.is_file():
+    rel = clean_app_rel(path)
+    if not safe_open.is_file(workspace, rel):
         raise HTTPException(status_code=404, detail="File not found")
 
-    await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
-    rel = str(file_path.relative_to(workspace.resolve())).replace("\\", "/")
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, safe_open.unlink, workspace, rel,
+        )
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
     _log.info("apps.file_deleted", slug=slug, path=rel)
     return {"path": rel, "deleted": True}
 
@@ -211,6 +239,37 @@ def _agent_app_builder_dir() -> Path | None:
     actually finds it."""
     from gateway.routes.workspace import _agent_workspace_dir
     return _agent_workspace_dir("agent-app-builder")
+
+
+def host_build_refusal(workspace: Path) -> str | None:
+    """Why the HOST may not build this app, or ``None`` (WS-43h review P0).
+
+    ``node build_t2.mjs`` follows links, so a link in the app dir could put a
+    host file in the bundle, or write ``dist/`` into another app's dir. And
+    esbuild follows a relative import out of the app dir, with no link at
+    all: ``import x from "../other-app/src/data.json"``. So a dir that a
+    sandbox container mounts now, or ever mounted, is refused for good (fix
+    round 2, option b). Its source came from a container, and only the
+    sandbox, which sees no other app, builds it. After a flip off of
+    ``app_builder`` such an app has no build path until the flip is back on.
+    Any other dir is refused while it holds a link.
+    """
+    try:
+        from orchestrator.sandbox_broker import is_sandbox_dir
+    except ImportError:
+        is_sandbox_dir = None
+    if is_sandbox_dir is not None and is_sandbox_dir(workspace):
+        return (
+            "The App Workshop builder on MAF edited this app, so it builds only "
+            "in its sandbox. Ask the builder to build it. If the builder is off "
+            "for your organization, an admin must turn it on (app_builder in "
+            "MAF_CODING_SCOPE) before this app can build again."
+        )
+    links = workspace_links(workspace)
+    if links:
+        shown = ", ".join(links[:5])
+        return f"The app holds a link ({shown}). Remove it, then build again."
+    return None
 
 
 async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
@@ -271,6 +330,11 @@ async def build_app(
     script = app_builder_dir / "build" / "build_t2.mjs"
     if not script.is_file():
         return {"built": False, "error": f"build script missing: {script}"}
+    refusal = await asyncio.get_event_loop().run_in_executor(
+        None, host_build_refusal, workspace,
+    )
+    if refusal:
+        return {"built": False, "error": refusal}
 
     ok, output = await _run_build_t2(workspace, script)
     _log.info("apps.build_triggered", slug=slug, ok=ok)

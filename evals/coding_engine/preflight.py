@@ -117,7 +117,8 @@ def is_local(url: str) -> bool:
 
 
 def router(
-    base_url: str, api_key: str, tier: str, member: str, *, client: Any = None,
+    base_url: str, api_key: str, tier: str, member: str, *,
+    internal_token: str = "", client: Any = None,
 ) -> Check:
     """Steps 5 and 6 of WS-43a "The stack that serves the Router", as far as a client sees.
 
@@ -125,6 +126,11 @@ def router(
     Console wiring), and one call on *tier* must answer 200. Step 6 also
     wants one ``usage_event`` row on the local Console. Only the Console's
     database shows it, so the README says how to read it.
+
+    Two credentials, two routes. Since WS-24b the LLM key (*api_key*) opens
+    ``/v1`` only, so ``GET /settings/llm`` sends *internal_token*, the
+    gateway's ``GATEWAY_INTERNAL_TOKEN``. With the LLM key there, every
+    stack answered 401 and the sweep was NO-GO (2026-11-09, WS43-E8).
     """
     import httpx
 
@@ -134,11 +140,17 @@ def router(
             f"{NO_GO} {base} is not on this machine. The eval runs on a local stack only. "
             "A run on the production Router is owner gate WS43-G6."
         ))
-    headers = {"Authorization": f"Bearer {api_key}", "X-User-Email": member,
-               "X-CC-Agent": AGENT, "X-CC-Source": "eval"}
+    who = {"X-User-Email": member, "X-CC-Agent": AGENT, "X-CC-Source": "eval"}
+    headers = {"Authorization": f"Bearer {api_key}", **who}
+    settings_headers = {"Authorization": f"Bearer {internal_token}", **who}
+    if not internal_token.strip():
+        return Check(False, (
+            f"{NO_GO} GATEWAY_INTERNAL_TOKEN is empty. GET {base}/settings/llm needs the "
+            "gateway's internal token, because the LLM key opens /v1 only (WS-24b)."
+        ))
     http = client or httpx.Client(timeout=60.0)
     try:
-        return _probe(http, base, headers, tier)
+        return _probe(http, base, headers, tier, settings_headers=settings_headers)
     except httpx.HTTPError as exc:
         return Check(False, f"{NO_GO} {base} does not answer: {type(exc).__name__}: {exc}.")
     finally:
@@ -146,8 +158,16 @@ def router(
             http.close()
 
 
-def _probe(http: Any, base: str, headers: dict[str, str], tier: str) -> Check:
-    resp = http.get(f"{base}/settings/llm", headers=headers)
+def _probe(
+    http: Any, base: str, headers: dict[str, str], tier: str, *,
+    settings_headers: dict[str, str],
+) -> Check:
+    resp = http.get(f"{base}/settings/llm", headers=settings_headers)
+    if resp.status_code in (401, 403):
+        return Check(False, (
+            f"{NO_GO} GET {base}/settings/llm answered {resp.status_code}. Set "
+            "GATEWAY_INTERNAL_TOKEN to the internal token of this gateway, never to the LLM key."
+        ))
     if resp.status_code != 200:
         return Check(False, f"{NO_GO} GET {base}/settings/llm answered {resp.status_code}.")
     if not (resp.json() or {}).get("router_serving"):

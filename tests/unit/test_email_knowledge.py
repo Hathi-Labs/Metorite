@@ -50,6 +50,9 @@ async def test_load_assistant_about_builds_tagged_blocks() -> None:
     lp_rows = [SimpleNamespace(pattern="Keep sign-offs to just my first name.")]
     settings_res = MagicMock()
     settings_res.fetchone.return_value = settings_row
+    # WS-17 SG-2: the signature comes from the resolver, in a query of its own.
+    sig_res = MagicMock()
+    sig_res.fetchone.return_value = SimpleNamespace(signature="— Vijay")
     kb_res = MagicMock()
     kb_res.fetchall.return_value = kb_rows
     vp_res = MagicMock()  # voice profile: none built
@@ -58,7 +61,7 @@ async def test_load_assistant_about_builds_tagged_blocks() -> None:
     lp_res.fetchall.return_value = lp_rows
 
     db = AsyncMock()
-    db.execute.side_effect = [settings_res, kb_res, vp_res, lp_res]
+    db.execute.side_effect = [settings_res, sig_res, kb_res, vp_res, lp_res]
 
     about, sig = await m._load_assistant_about(db, "a0000000-0000-4000-8000-000000000001")
     assert sig == "— Vijay"
@@ -72,6 +75,8 @@ async def test_load_assistant_about_builds_tagged_blocks() -> None:
 async def test_load_assistant_about_empty_when_unset() -> None:
     settings_res = MagicMock()
     settings_res.fetchone.return_value = None
+    sig_res = MagicMock()  # WS-17 SG-2: the resolver's read finds no row too
+    sig_res.fetchone.return_value = None
     kb_res = MagicMock()
     kb_res.fetchall.return_value = []
     vp_res = MagicMock()
@@ -79,7 +84,7 @@ async def test_load_assistant_about_empty_when_unset() -> None:
     lp_res = MagicMock()
     lp_res.fetchall.return_value = []
     db = AsyncMock()
-    db.execute.side_effect = [settings_res, kb_res, vp_res, lp_res]
+    db.execute.side_effect = [settings_res, sig_res, kb_res, vp_res, lp_res]
 
     about, sig = await m._load_assistant_about(db, "a0000000-0000-4000-8000-000000000001")
     assert about == ""
