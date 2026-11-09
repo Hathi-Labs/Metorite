@@ -19,6 +19,7 @@ import {
 } from "./connect";
 import type { ForwardBody } from "./forward";
 import { announceDraftLeft } from "@/lib/draftLeftEvent";
+import { announceRulesChanged } from "./rulesChanged";
 
 /** The answer of `POST /email/forward`. */
 export interface ForwardResult {
@@ -1542,24 +1543,29 @@ export async function listRules(accountId: string): Promise<AutomationRule[]> {
 }
 
 export async function createRule(rule: AutomationRule): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>("/email/rules", {
+  const created = await gatewayFetch<AutomationRule>("/email/rules", {
     method: "POST",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return created;
 }
 
 export async function updateRule(
   id: string,
   rule: AutomationRule
 ): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
+  const updated = await gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
     method: "PATCH",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return updated;
 }
 
 export async function deleteRule(id: string): Promise<void> {
   await gatewayFetch(`/email/rules/${id}`, { method: "DELETE" });
+  announceRulesChanged();
 }
 
 /** Everything ELSE that acts on the mailbox, for the Rules screen's
@@ -1633,19 +1639,24 @@ export async function generateRules(
   accountId: string,
   prompt: string,
 ): Promise<{ created: AutomationRule[]; error?: string }> {
-  return gatewayFetch("/email/rules/generate", {
+  const res = await gatewayFetch<{ created: AutomationRule[]; error?: string }>("/email/rules/generate", {
     method: "POST",
     body: JSON.stringify({ account_id: accountId, prompt }),
   });
+  // The route saves the rules it makes (task 2451).
+  announceRulesChanged();
+  return res;
 }
 
 export async function installPresetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number }>(
     `/email/rules/install-presets?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 /**
@@ -1668,6 +1679,7 @@ export async function copyRules(
       ...(skipNames.length > 0 ? { skip_names: skipNames.slice(0, 200) } : {}),
     }),
   });
+  announceRulesChanged();
   return mapRuleCopyResult(raw ?? {});
 }
 
@@ -1701,10 +1713,12 @@ function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
 export async function resetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number; reset: boolean }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number; reset: boolean }>(
     `/email/rules/reset?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 export async function undoExecution(
