@@ -411,15 +411,35 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
 
   const moveControl = (ids: readonly string[]) => {
     const targets = moveTargets(planned, ids.map(placeOf));
+    const first = targets.findIndex((target) => !target.here);
     return (
       <SheetButton label="Move to sprint" icon="ArrowRightLeft" phone={surface.sheet} ariaLabel="Move to sprint">
         {(close) => (
-          <div className="flex flex-col gap-0.5" role="menu" aria-label="Move to sprint" data-move-targets="">
-            {targets.map((target) => (
+          <div
+            className="flex flex-col gap-0.5"
+            role="menu"
+            aria-label="Move to sprint"
+            data-move-targets=""
+            // The keyboard path of a move (M6): the menu takes the focus when it
+            // opens, and the arrow keys walk its targets.
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              event.preventDefault();
+              const items = [
+                ...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']:not([disabled])"),
+              ];
+              if (items.length === 0) return;
+              const at = items.indexOf(document.activeElement as HTMLButtonElement);
+              const step = event.key === "ArrowDown" ? 1 : -1;
+              items[(at + step + items.length) % items.length]?.focus();
+            }}
+          >
+            {targets.map((target, index) => (
               <button
                 key={placeKey(target.place)}
                 type="button"
                 role="menuitem"
+                autoFocus={index === first}
                 disabled={target.here}
                 data-move-target={placeKey(target.place)}
                 onClick={() => {
@@ -491,7 +511,8 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
       ) : null}
 
       <section aria-label="Planned sprints" className="flex flex-col gap-2" data-backlog-cycles="">
-        <div className="flex items-center gap-2">
+        {/* pl-3: the heading lines up with the sprint names and the Backlog heading. */}
+        <div className="flex items-center gap-2 pl-3">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Planned sprints
           </h3>
