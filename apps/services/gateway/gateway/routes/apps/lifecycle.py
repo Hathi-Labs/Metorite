@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -258,10 +259,23 @@ _RESERVE_SQL = (
        RETURNING *"""
 )
 
-#: The tries of a new slug, when another org holds it or a folder is on disk.
+#: The tries of a sequential slug (``name``, ``name-2`` …), when another org
+#: holds it or a folder is on disk.
 SLUG_TRIES = 10
+#: Then the tries of a slug with a random suffix, so a common name never runs
+#: out (the ``packages_store.SLUG_HEX`` pattern).
+HEX_TRIES = 3
+#: The hex digits of the random suffix.
+SLUG_HEX = 8
 
-_NO_SLUG = "Could not allocate a slug"
+_NO_SLUG = (
+    "Could not pick a free short name for this app. "
+    "Try a slightly different name."
+)
+
+#: Gives back the slug of a row whose folder another writer took. The row is
+#: this request's own, and it is not committed.
+_UNRESERVE_SQL = "DELETE FROM apps WHERE id = :id"
 
 
 def _folder_free(folder: Path) -> bool:
@@ -270,6 +284,22 @@ def _folder_free(folder: Path) -> bool:
     A folder with no row (a failed write, a failed delete) is never written.
     The new app takes the next slug instead."""
     return not (folder.exists() or folder.is_symlink())
+
+
+def _random_hex() -> str:
+    return secrets.token_hex(SLUG_HEX // 2)
+
+
+def _slug_candidates(name: str, taken: set[str]) -> Iterator[str]:
+    """The slugs to try for *name*: first ``name``, ``name-2`` … up to
+    :data:`SLUG_TRIES`, then :data:`HEX_TRIES` slugs with a random suffix."""
+    for _ in range(SLUG_TRIES):
+        slug = generate_slug(name, taken)
+        taken.add(slug)
+        yield slug
+    stem = generate_slug(name)[:48 - 1 - SLUG_HEX].rstrip("-")
+    for _ in range(HEX_TRIES):
+        yield f"{stem}-{_random_hex()}"
 
 
 async def _reserve_app(
@@ -281,13 +311,14 @@ async def _reserve_app(
     description: str,
     manifest_for: Callable[[str], dict[str, Any]],
 ) -> tuple[Any, Path, dict[str, Any]]:
-    """Insert the row of a new app, and answer the row, its folder and its
-    manifest. Call it BEFORE any file write.
+    """Insert the row of a new app, then make its folder. Answer the row, the
+    folder and the manifest. Write no file in the folder before this returns.
 
     The slug is unique over all orgs, but FORCE RLS shows only the slugs of
     the caller's org. So the read below cannot see the slug of another org,
     and the INSERT is the real check. A concurrent INSERT of the same slug
-    waits on the unique key until this session ends.
+    waits on the unique key until this session ends. When another writer
+    made the folder after the check, the row goes, and the next slug is tried.
     """
     root = apps_root()
     taken = {
@@ -295,9 +326,8 @@ async def _reserve_app(
             text("SELECT slug FROM apps"),
         )).fetchall()
     }
-    for _ in range(SLUG_TRIES):
-        slug = generate_slug(name, taken)
-        taken.add(slug)
+    loop = asyncio.get_event_loop()
+    for slug in _slug_candidates(name, taken):
         workspace = root / slug
         if not _folder_free(workspace):
             continue
@@ -311,21 +341,25 @@ async def _reserve_app(
             "manifest": json.dumps(manifest),
             "workspace_path": str(workspace),
         })).fetchone()
-        if row is not None:
+        if row is None:
+            continue
+        if await loop.run_in_executor(None, _claim_folder, workspace):
             return row, workspace, manifest
+        await db.execute(text(_UNRESERVE_SQL), {"id": str(row.id)})
     raise HTTPException(status_code=409, detail=_NO_SLUG)
 
 
-def _claim_folder(workspace: Path) -> None:
-    """Make the folder of a new app. Refuse a folder that is there already.
+def _claim_folder(workspace: Path) -> bool:
+    """Make the folder of a new app. Answer False for a folder that is there
+    already, and never write into it.
 
     Only the request that made the folder writes it, or removes it after a
-    failure. A folder that another writer made after the check of
-    :func:`_reserve_app` answers 409, and the session rolls the row back."""
+    failure."""
     try:
         workspace.mkdir()
     except FileExistsError:
-        raise HTTPException(status_code=409, detail=_NO_SLUG) from None
+        return False
+    return True
 
 
 async def _discard_new_folder(workspace: Path) -> None:
@@ -468,7 +502,6 @@ async def create_app(
                 manifest_for=lambda s: default_manifest(
                     s, name, icon, description),
             )
-            await loop.run_in_executor(None, _claim_folder, workspace)
             made = workspace
             await loop.run_in_executor(
                 None, _scaffold_workspace, workspace, manifest, name,
@@ -529,7 +562,6 @@ async def fork_app(
                 description=source_row.description or "",
                 manifest_for=manifest_for,
             )
-            await loop.run_in_executor(None, _claim_folder, new_workspace)
             made = new_workspace
             await loop.run_in_executor(
                 None, _fork_workspace, new_workspace, files, manifest,

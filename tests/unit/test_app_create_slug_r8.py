@@ -31,11 +31,18 @@ b. The same for a fork: org B forks its own app to a name whose slug org A
 c. A folder on disk with no row is never written. The new app takes the next
    slug.
 d. A failed file write removes the folder that the request made, and writes
-   no row.
-e. A failed claim never removes a folder that the request did not make.
+   no row. Every other folder stays the same, byte for byte.
+e. A folder that another writer made after the check is never written or
+   removed. The request gives its row back and takes the next slug, with no
+   409.
+f. After 10 sequential slugs, the create takes a slug with a random suffix.
+   When those are taken too, it answers 409 with a next step.
+g. A broken link at the slug path counts as taken, and is never claimed.
 
 **The mutations (R7).** Commit before each, and restore with git after.
-Each result below was run on 2026-11-09. Before the fix, all 9 tests were red.
+Before the fix, 8 of the first 9 tests were red on the old code. The ninth
+checks the CI lists. M1 to M7 were run on 2026-11-09 against the first
+version of the fix.
 
 * M1. ``create_app``: write the folder BEFORE the reserve (the old order).
   7 go red, both cases of ``test_r8_create_never_writes_the_folder_of_another_org``
@@ -49,7 +56,8 @@ Each result below was run on 2026-11-09. Before the fix, all 9 tests were red.
 * M4. ``_claim_folder``: ``mkdir(exist_ok=True)``.
   ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
 * M5. ``create_app``: set ``made`` before the claim succeeds.
-  ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
+  ``test_r8_a_late_folder_is_never_written_or_removed`` goes red. The fix
+  round moved the claim into ``_reserve_app``, so this mutant has no place now.
 * M6. ``_RESERVE_SQL``: drop ``ON CONFLICT (slug) DO NOTHING``. The
   ``off_disk`` case of the create test and of the fork test go red.
 * M7. ``_folder_free``: answer True. ``test_r8_create_skips_a_folder_with_no_row``
@@ -60,6 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import uuid
 from pathlib import Path
@@ -251,12 +260,25 @@ def _failing_write(*args: Any) -> None:
     raise OSError("No space left on device")
 
 
+def _tree(root: Path) -> dict[str, bytes]:
+    """Every file under *root*, by its path under *root*, with its bytes."""
+    return {
+        f.relative_to(root).as_posix(): f.read_bytes()
+        for f in sorted(root.rglob("*")) if f.is_file()
+    }
+
+
 @pytest.mark.parametrize("route", ["create", "fork"])
 def test_r8_a_failed_write_removes_the_new_folder_and_the_row(
         world, monkeypatch: pytest.MonkeyPatch, route: str) -> None:
-    b = world.p.org_b
+    a, b = world.p.org_a, world.p.org_b
+    other = _create(world, a, f"Other {TAG}", ANA)
+    assert isinstance(other, lifecycle.AppDetail), other
+    (world.root / other.slug / "index.html").write_text(SECRET, encoding="utf-8")
     source = _create(world, b, f"Source {TAG}", BEN)
     assert isinstance(source, lifecycle.AppDetail), source
+    before = _tree(world.root)
+    assert f"{other.slug}/index.html" in before and f"{source.slug}/app.json" in before
     if route == "create":
         monkeypatch.setattr(lifecycle, "_scaffold_workspace", _failing_write)
         out = _create(world, b, f"Broken {TAG}", BEN)
@@ -268,7 +290,10 @@ def test_r8_a_failed_write_removes_the_new_folder_and_the_row(
 
     assert isinstance(out, OSError), out
     assert not new.exists(), "the failed write left its folder"
-    assert [s for s, _, _ in _rows(world)] == [source.slug], "the failed write left its row"
+    assert _tree(world.root) == before, (
+        "the failed write changed or removed a folder that it did not make")
+    assert [s for s, _, _ in _rows(world)] == [other.slug, source.slug], (
+        "the failed write left its row")
 
 
 # ── e. A folder that appears after the check ──────────────────────────────
@@ -276,8 +301,11 @@ def test_r8_a_failed_write_removes_the_new_folder_and_the_row(
 
 def test_r8_a_late_folder_is_never_written_or_removed(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Another writer makes the folder between the check and the claim. The
-    claim refuses it with 409, the folder stays as it was, and no row stays."""
+    """The forced order: the check says the slug path is free, the INSERT
+    succeeds, and the folder is there all the same. That is the case when
+    another request failed after its claim, rolled its row back, and has not
+    yet removed its folder. The request never writes or removes that folder.
+    It deletes its own row, and takes the next slug with no 409."""
     a = world.p.org_a
     late = world.root / f"late-{TAG}"
     late.mkdir(parents=True)
@@ -289,8 +317,89 @@ def test_r8_a_late_folder_is_never_written_or_removed(
     assert late.is_dir(), "the create removed a folder that it did not make"
     assert sorted(p.name for p in late.iterdir()) == ["keep.txt"], (
         "the create wrote into a folder that it did not make")
+    assert isinstance(out, lifecycle.AppDetail), out
+    assert out.slug == f"late-{TAG}-2"
+    assert _rows(world) == [(out.slug, a, str(world.root / out.slug))], (
+        "the row of the taken folder stayed")
+
+
+# ── f. A common name never runs out ───────────────────────────────────────
+
+
+def _busy_folders(world: Any, extra: tuple[str, ...] = ()) -> list[Path]:
+    """Empty folders at ``busy-<tag>``, ``busy-<tag>-2`` … ``busy-<tag>-10``,
+    and at ``busy-<tag>-<x>`` for each *x* in *extra*."""
+    names = [f"busy-{TAG}"] + [f"busy-{TAG}-{i}" for i in range(2, 11)]
+    names += [f"busy-{TAG}-{x}" for x in extra]
+    folders = [world.root / n for n in names]
+    for f in folders:
+        f.mkdir(parents=True)
+    return folders
+
+
+def test_r8_after_ten_slugs_the_create_takes_a_random_suffix(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    busy = _busy_folders(world, ("aaaaaaaa",))
+    hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
+    monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
+
+    out = _create(world, a, f"Busy {TAG}", ANA)
+
+    assert isinstance(out, lifecycle.AppDetail), out
+    assert out.slug == f"busy-{TAG}-bbbbbbbb"
+    assert all(not any(f.iterdir()) for f in busy), "the create wrote a busy folder"
+    assert [s for s, _, _ in _rows(world)] == [out.slug]
+
+
+def test_r8_an_unfree_name_answers_409_with_a_next_step(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    _busy_folders(world, ("aaaaaaaa", "bbbbbbbb", "cccccccc"))
+    hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
+    monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
+
+    out = _create(world, a, f"Busy {TAG}", ANA)
+
     assert isinstance(out, HTTPException) and out.status_code == 409, out
+    assert out.detail == (
+        "Could not pick a free short name for this app. "
+        "Try a slightly different name.")
     assert _rows(world) == []
+
+
+# ── g. A broken link ──────────────────────────────────────────────────────
+
+
+def test_r8_a_broken_link_at_the_slug_path_counts_as_taken(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    world.root.mkdir(parents=True, exist_ok=True)
+    link = world.root / f"link-{TAG}"
+    target = world.tmp / f"nowhere-{TAG}"
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"this host cannot make a symlink: {exc}")
+    claimed: list[Path] = []
+    real_claim = lifecycle._claim_folder
+
+    def spy(workspace: Path) -> bool:
+        claimed.append(workspace)
+        return real_claim(workspace)
+
+    monkeypatch.setattr(lifecycle, "_claim_folder", spy)
+
+    out = _create(world, a, f"Link {TAG}", ANA)
+
+    assert link not in claimed, "the create tried to claim a broken link"
+    # Windows answers the target with a "\\?\" prefix.
+    points_to = Path(os.readlink(link)).as_posix().removeprefix("//?/")
+    assert link.is_symlink() and points_to == target.as_posix()
+    assert not target.exists(), "the create made the target of the link"
+    assert isinstance(out, lifecycle.AppDetail), out
+    assert out.slug == f"link-{TAG}-2"
+    assert [s for s, _, _ in _rows(world)] == [out.slug]
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
