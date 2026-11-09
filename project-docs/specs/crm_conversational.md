@@ -865,9 +865,9 @@ Each slice follows the D145 loop and ships dark behind `CRM_SIGNALS_ORGS`, off b
 | **CRM-SIG-1** | 2435 | One customer card | HIGH | AGENT-SAFE. May need a migration (R1) | CRM-M2a. Tickets and tasks wait on the task-to-CRM link (§14.3) and E21 (task 2202). Shared mail after task 733 | `tests/unit/test_crm_customer_card.py` (planned) |
 | **CRM-SIG-2** | 2436 | The pre-call brief | STANDARD | AGENT-SAFE. CE-10 has owner gates | CRM-SIG-1, CE-4 on for the org, CE-10 for Google and Outlook | `tests/unit/test_crm_precall_brief.py` (planned) |
 | **CRM-SIG-3** | 2437 | Deal risk: no sponsor, silent contact, stalled | STANDARD | AGENT-SAFE | CRM-M7 (task 1435), CRM-SIG-1 | `tests/unit/test_crm_deal_risk.py` (planned) |
-| **CRM-SIG-4** | 2438 | Renewal and churn watch | STANDARD | AGENT-SAFE. **Blocked on Q-SIG-1.** May need a migration (R1) | CRM-SIG-3, CRM-M3, Q-SIG-1. The ticket reason waits on the task-to-CRM link and E21. Usage waits on Q-SIG-2 | `tests/unit/test_crm_churn_watch.py` (planned) |
-| **CRM-SIG-5** | 2439 | Competitor mentions and battle cards | HIGH | AGENT-SAFE. **Blocked on Q-SIG-4** | CRM-SIG-1, KB-5a, the entity registry, Q-SIG-4 | `tests/unit/test_crm_battle_cards.py` (planned) |
-| **CRM-SIG-6** | 2440 | Customer requests linked to the roadmap | HIGH | AGENT-SAFE. **Blocked on Q-SIG-3.** May need a migration (R1) | CRM-SIG-1, the task-to-CRM link (§14.3), E21 (task 2202), Goals (D199), Q-SIG-3 | `tests/unit/test_crm_feedback_requests.py` (planned) |
+| **CRM-SIG-4** | 2438 | Renewal and churn watch | STANDARD | AGENT-SAFE. Unblocked by the answer to Q-SIG-1 (2026-11-08). May need a migration (R1) | CRM-SIG-3, CRM-M3, Q-SIG-1. The ticket reason waits on the task-to-CRM link and E21. Usage waits on Q-SIG-2 | `tests/unit/test_crm_churn_watch.py` (planned) |
+| **CRM-SIG-5** | 2439 | Competitor mentions and battle cards | HIGH | AGENT-SAFE. Unblocked by the answer to Q-SIG-4 (2026-11-08) | CRM-SIG-1, KB-5a, the entity registry, Q-SIG-4 | `tests/unit/test_crm_battle_cards.py` (planned) |
+| **CRM-SIG-6** | 2440 | Customer requests linked to the roadmap | HIGH | AGENT-SAFE. Unblocked by the answer to Q-SIG-3 (2026-11-08). May need a migration (R1) | CRM-SIG-1, the task-to-CRM link (§14.3), E21 (task 2202), Goals (D199), Q-SIG-3 | `tests/unit/test_crm_feedback_requests.py` (planned) |
 | **CRM-SIG-7** | 2441 | Repeated questions to an article or a fix task | STANDARD | AGENT-SAFE | CRM-SIG-6, KB-5a, task 733. Tickets wait on E21 (task 2202) | `tests/unit/test_support_question_clusters.py` (planned) |
 
 #### CRM-SIG-1. One customer card (task 2435)
@@ -968,7 +968,7 @@ Each slice follows the D145 loop and ships dark behind `CRM_SIGNALS_ORGS`, off b
 
 #### CRM-SIG-4. Renewal and churn watch (task 2438)
 
-**Gate.** AGENT-SAFE. **Tier** STANDARD. **Blocked on Q-SIG-1**, where a renewal date lives. Its ticket reason needs the task-to-CRM link of §14.3, which may need a migration (R1: the number is taken at build time).
+**Gate.** AGENT-SAFE. **Tier** STANDARD. The owner's answer to Q-SIG-1 **unblocks** it: where a renewal date lives (2026-11-08). Its ticket reason needs the task-to-CRM link of §14.3, which may need a migration (R1: the number is taken at build time).
 
 **Build.**
 
@@ -995,7 +995,7 @@ Each slice follows the D145 loop and ships dark behind `CRM_SIGNALS_ORGS`, off b
 
 #### CRM-SIG-5. Competitor mentions and battle cards (task 2439)
 
-**Gate.** AGENT-SAFE. **HIGH tier**, because a Knowledge page can quote mail, and mail is private (D-EM-4). **Blocked on Q-SIG-4**, who reads a battle card.
+**Gate.** AGENT-SAFE. **HIGH tier**, because a Knowledge page can quote mail, and mail is private (D-EM-4). **Unblocked** by the answer to Q-SIG-4, who reads a battle card (owner, 2026-11-08).
 
 **Build.**
 
@@ -1017,7 +1017,7 @@ Each slice follows the D145 loop and ships dark behind `CRM_SIGNALS_ORGS`, off b
 
 #### CRM-SIG-6. Customer requests linked to the roadmap (task 2440)
 
-**Gate.** AGENT-SAFE. **HIGH tier.** It may need a migration for a new ref kind and for the task-to-CRM link of §14.3 (R1: the number is taken at build time). It quotes customers across apps. **Blocked on Q-SIG-3**, what a request is.
+**Gate.** AGENT-SAFE. **HIGH tier.** It may need a migration for a new ref kind and for the task-to-CRM link of §14.3 (R1: the number is taken at build time). It quotes customers across apps. The owner's answer to Q-SIG-3 **unblocks** it: what a request is (2026-11-08).
 
 **Build.**
 
@@ -1067,14 +1067,16 @@ Each slice follows the D145 loop and ships dark behind `CRM_SIGNALS_ORGS`, off b
 
 CRM-SIG-1 comes first. Then CRM-SIG-2 and CRM-SIG-3 can go in parallel. CRM-SIG-4 follows CRM-SIG-3 and the answer to Q-SIG-1. CRM-SIG-5 follows CRM-SIG-1. CRM-SIG-6 and CRM-SIG-7 wait on E21 (task 2202). CRM-SIG-6 comes before CRM-SIG-7, because it builds the classify step.
 
-### 14.6 Open questions for the owner
+### 14.6 Questions for the owner
+
+The owner answered all four on 2026-11-08 and accepted each recommendation. The Recommendation column now holds the chosen answer.
 
 | ID | Question | Recommendation | Blocks |
 |---|---|---|---|
-| **Q-SIG-1** | Where does a renewal date live? | A deal in a renewal pipeline, with the close date as the renewal date (CRM-M3, D166). It needs no new column. The other option is a date field on the company | CRM-SIG-4 |
-| **Q-SIG-2** | Where does customer usage come from? The CRM holds no usage data today | Ship v1 with no usage. Later, read one number for each company each month from a connection (`ai_studio.md` O12, O13) or a Studio aggregate (C2b) | The usage reason of CRM-SIG-4 |
-| **Q-SIG-3** | Is a customer request a task in a "Customer requests" project? | Yes. It keeps the one task store, the E21 queue shape, and the words Goal, Epic and Task (D199). The other option is a fact on a product entity in Knowledge | CRM-SIG-6 |
-| **Q-SIG-4** | Who reads a battle card? | A "Sales" space that the sales group can read. Quotes come only from sources that every reader can open | CRM-SIG-5 |
+| **Q-SIG-1** | Where does a renewal date live? | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). A deal in a renewal pipeline, with the close date as the renewal date (CRM-M3, D166). It needs no new column | CRM-SIG-4 |
+| **Q-SIG-2** | Where does customer usage come from? The CRM holds no usage data today | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Ship v1 with no usage. Later, read one number for each company each month from a connection (`ai_studio.md` O12, O13) or a Studio aggregate (C2b) | The usage reason of CRM-SIG-4 |
+| **Q-SIG-3** | Is a customer request a task in a "Customer requests" project? | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Yes. A request is a task in "Customer requests". It keeps the one task store, the E21 queue shape, and the words Goal, Epic and Task (D199) | CRM-SIG-6 |
+| **Q-SIG-4** | Who reads a battle card? | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). A "Sales" space that the sales group can read. Quotes come only from sources that every reader can open | CRM-SIG-5 |
 
 **Working defaults.** These are not owner decisions. The slice audit may change them.
 

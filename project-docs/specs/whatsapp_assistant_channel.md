@@ -2177,7 +2177,7 @@ with no text does not park.
 
 **The scope grows here.** This section widens this spec from one WhatsApp chat to team channels: a WhatsApp group, an email address and, later, Slack. The rest of the spec does not change.
 
-⚠️ **D115 still binds.** The WhatsApp work stays frozen, except brief task 8 (D122.3). Only the owner lifts D115 for these slices (Q-CHT-2). CH-TEAM-1, CH-TEAM-2 with the email adapter, CH-TEAM-3 and CH-TEAM-5 need no WhatsApp change.
+⚠️ **D115 still binds.** The WhatsApp work stays frozen, except brief task 8 (D122.3). The owner lifted D115 for the build of CH-TEAM-4, dark (Q-CHT-2, 2026-11-08). CH-TEAM-1, CH-TEAM-2 with the email adapter, CH-TEAM-3 and CH-TEAM-5 need no WhatsApp change.
 
 ### 19.1 The answer
 
@@ -2233,10 +2233,10 @@ Each slice ships dark behind `TEAM_CHANNELS_ORGS`, off by default. The name of t
 |---|---|---|---|---|---|---|
 | **CH-TEAM-1** | 2442 | The team channel and the audience check | HIGH | AGENT-SAFE. No overlap with `wa_chats`, the member links or the O6 point `channels` (see the row) | Nothing | `tests/unit/test_team_channel_audience.py` (planned) |
 | **CH-TEAM-2** | 2443 | Post to a team channel: the step `channel.post` | HIGH | AGENT-SAFE build. **OWNER-GATE** for the first live send of each adapter to real people (CLAUDE.md §3a rule 3) | CH-TEAM-1. The email adapter needs a sending mailbox (task 733 for a shared one) | `tests/unit/test_workflow_channel_post.py` (planned) |
-| **CH-TEAM-3** | 2444 | The daily standup and other group digests | STANDARD | AGENT-SAFE. **Blocked on Q-CHT-5** | CH-TEAM-2, the team pulse T1 (built), Q-CHT-5 | `tests/unit/test_team_digest.py` (planned) |
-| **CH-TEAM-4** | 2445 | Mira in a WhatsApp group | HIGH | **Blocked on Q-CHT-2** (both halves) **and Q-CHT-1** (half B). Then AGENT-SAFE to build. **OWNER-GATE** for the OBA, the live number (WAC-0) and a live group | CH-TEAM-1, WAC-8. Half B: CH-TEAM-2 | `tests/unit/test_wac_group_tag.py` (planned) |
-| **CH-TEAM-5** | 2446 | Metorite's own number and Mira's email address | HIGH | **Blocked on Q-CHT-4.** AGENT-SAFE build. **Do not dispatch before PR 1999 merges.** **OWNER-GATE** for the OBA and a live address | CH-TEAM-1, task 733 (SM-3 to SM-9), `ai_studio.md` O17 (task 2421), Q-CHT-4 | `tests/unit/test_mira_inbound_address.py` (planned) |
-| **CH-TEAM-6** | 2447 | Slack, later | HIGH | **Blocked on Q-CHT-6.** AGENT-SAFE build. **OWNER-GATE** for the Slack app and its secrets | CH-TEAM-1, CH-TEAM-2, Q-CHT-6 | `tests/unit/test_slack_connector.py` (planned) |
+| **CH-TEAM-3** | 2444 | The daily standup and other group digests | STANDARD | AGENT-SAFE. Unblocked by the answer to Q-CHT-5 (2026-11-08) | CH-TEAM-2, the team pulse T1 (built), Q-CHT-5 | `tests/unit/test_team_digest.py` (planned) |
+| **CH-TEAM-4** | 2445 | Mira in a WhatsApp group | HIGH | Unblocked by the answers to Q-CHT-2 (both halves) and Q-CHT-1 (half B), 2026-11-08. AGENT-SAFE to build. **OWNER-GATE** for the OBA, the live number (WAC-0) and a live group | CH-TEAM-1, WAC-8. Half B: CH-TEAM-2 | `tests/unit/test_wac_group_tag.py` (planned) |
+| **CH-TEAM-5** | 2446 | Metorite's own number and Mira's email address | HIGH | Unblocked by the answer to Q-CHT-4 (2026-11-08). AGENT-SAFE build. **Do not dispatch before PR 1999 merges.** **OWNER-GATE** for the OBA and a live address | CH-TEAM-1, task 733 (SM-3 to SM-9), `ai_studio.md` O17 (task 2421), Q-CHT-4 | `tests/unit/test_mira_inbound_address.py` (planned) |
+| **CH-TEAM-6** | 2447 | Slack, later | HIGH | Unblocked by the answer to Q-CHT-6 (2026-11-08). AGENT-SAFE build. **OWNER-GATE** for the Slack app and its secrets | CH-TEAM-1, CH-TEAM-2, Q-CHT-6 | `tests/unit/test_slack_connector.py` (planned) |
 
 #### CH-TEAM-1. The team channel and the audience check (task 2442)
 
@@ -2327,7 +2327,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-3. The daily standup and other group digests (task 2444)
 
-**Gate.** AGENT-SAFE. **Tier** STANDARD. **Blocked on Q-CHT-5**: what a standup may show about a person.
+**Gate.** AGENT-SAFE. **Tier** STANDARD. **Unblocked** by the answer to Q-CHT-5, what a standup may show about a person (owner, 2026-11-08).
 
 **Build.**
 
@@ -2354,7 +2354,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-4. Mira in a WhatsApp group (task 2445)
 
-**Gate.** **HIGH tier.** **Blocked on Q-CHT-2** for both halves, and **on Q-CHT-1** for half B. After the answers, each half is AGENT-SAFE to build. **OWNER-GATE:** the OBA application, the live number (WAC-0, H-251) and any live group with real people.
+**Gate.** **HIGH tier.** **Unblocked** by the answers to Q-CHT-2 (both halves) and Q-CHT-1 (half B), owner, 2026-11-08. Each half is AGENT-SAFE to build. **OWNER-GATE:** the OBA application, the live number (WAC-0, H-251) and any live group with real people.
 
 **Half A: the forward path.** It needs no group API.
 
@@ -2393,7 +2393,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-5. Metorite's own number and Mira's email address (task 2446)
 
-**Gate.** **Blocked on Q-CHT-4**, where Mira's address lives. AGENT-SAFE build. **HIGH tier**, because an email address is easy to forge. **Do not dispatch before PR 1999 merges**, because O17 and O20 live there. **OWNER-GATE** for the OBA and a live address.
+**Gate.** **Unblocked** by the answer to Q-CHT-4, where Mira's address lives (owner, 2026-11-08). AGENT-SAFE build. **HIGH tier**, because an email address is easy to forge. **Do not dispatch before PR 1999 merges**, because O17 and O20 live there. **OWNER-GATE** for the OBA and a live address.
 
 **The number.** Metorite's own WhatsApp number is the bot number of this spec (§5.1, D-WAC-1). This slice adds no number. An org that wants its own number uses O6 (`ai_studio.md` §20), and that number answers people outside the org. A group needs the OBA (§19.2), and the owner applies for it.
 
@@ -2419,7 +2419,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-6. Slack, later (task 2447)
 
-**Gate.** **Blocked on Q-CHT-6**, when Slack comes. AGENT-SAFE build. **HIGH tier**: a new connection, OAuth and identity. **OWNER-GATE** for the registration of the Slack app and its secrets. It comes after CH-TEAM-3.
+**Gate.** **Unblocked** by the answer to Q-CHT-6, when Slack comes (owner, 2026-11-08). AGENT-SAFE build. **HIGH tier**: a new connection, OAuth and identity. **OWNER-GATE** for the registration of the Slack app and its secrets. It comes after CH-TEAM-3.
 
 **Build.**
 
@@ -2444,16 +2444,18 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 CH-TEAM-1 comes first. Then CH-TEAM-2 with the email adapter, then CH-TEAM-3. Half A of CH-TEAM-4 follows the answer to Q-CHT-2. CH-TEAM-5 follows task 733 and O17. Half B of CH-TEAM-4 follows Q-CHT-1 and the OBA. CH-TEAM-6 comes last.
 
-### 19.5 Open questions for the owner
+### 19.5 Questions for the owner
+
+The owner answered all six on 2026-11-08 and accepted each recommendation. The Recommendation column now holds the chosen answer.
 
 | ID | Question | Evidence | Recommendation | Blocks |
 |---|---|---|---|---|
-| **Q-CHT-1** | Which path puts Mira in a WhatsApp team chat? | §19.2. Only an OBA can use the Groups API. The business makes the group, a person joins by link, and a group holds 8 people at most. Interactive messages do not work in a group. D122.2 rules out a linked-device reader | Build half A, the forward path, first. It works on the 1:1 bot of today. Build half B after the OBA. Use Slack (CH-TEAM-6) for a team larger than 8 | Half B of CH-TEAM-4 |
-| **Q-CHT-2** | Does the owner lift D115 for the WhatsApp parts of CH-TEAM? | D115 freezes new WhatsApp work. D122.3 lifts it for brief task 8 only | Lift it for the build of CH-TEAM-4, dark. A live switch-on stays an owner gate | CH-TEAM-4 |
-| **Q-CHT-3** | Which number makes the groups: the shared bot number, or an org's own O6 number? | The shared number already holds the member links (D-WAC-2). An O6 number answers outside people, and needs an OBA for each org | The shared bot number. One OBA covers every org. The risk is one quality rating for all orgs | Half B of CH-TEAM-4 |
-| **Q-CHT-4** | Is Mira's address a shared mailbox that the org connects, or an address on a Metorite domain? | The owner accepted the spec of the shared mailbox (task 733), and O17 makes it a channel. A Metorite domain needs new mail infrastructure | A shared mailbox first. A Metorite address can come later | CH-TEAM-5 |
-| **Q-CHT-5** | What does a standup show about a person, and can a member leave their line out? | Story 1761 asks for yesterday, today and blockers. The team pulse also holds "Needs help" and "Behind" | Show done, focus and blocked work, with no label. Each member can leave their own line out | CH-TEAM-3 |
-| **Q-CHT-6** | When does Slack come, and does Microsoft Teams come too? | Story 1749 says "Slack later". No pilot asked for Teams | Slack after CH-TEAM-3. No Teams until a pilot asks for it | CH-TEAM-6 |
+| **Q-CHT-1** | Which path puts Mira in a WhatsApp team chat? | §19.2. Only an OBA can use the Groups API. The business makes the group, a person joins by link, and a group holds 8 people at most. Interactive messages do not work in a group. D122.2 rules out a linked-device reader | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Build half A, the forward path, first. It works on the 1:1 bot of today. Build half B after the OBA. Use Slack (CH-TEAM-6) for a team larger than 8 | Half B of CH-TEAM-4 |
+| **Q-CHT-2** | Does the owner lift D115 for the WhatsApp parts of CH-TEAM? | D115 freezes new WhatsApp work. D122.3 lifts it for brief task 8 only | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Lift D115 for the build of CH-TEAM-4, dark. A live switch-on stays an owner gate | CH-TEAM-4 |
+| **Q-CHT-3** | Which number makes the groups: the shared bot number, or an org's own O6 number? | The shared number already holds the member links (D-WAC-2). An O6 number answers outside people, and needs an OBA for each org | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). The shared bot number. One OBA covers every org. The risk is one quality rating for all orgs | Half B of CH-TEAM-4 |
+| **Q-CHT-4** | Is Mira's address a shared mailbox that the org connects, or an address on a Metorite domain? | The owner accepted the spec of the shared mailbox (task 733), and O17 makes it a channel. A Metorite domain needs new mail infrastructure | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). A shared mailbox first. A Metorite address can come later | CH-TEAM-5 |
+| **Q-CHT-5** | What does a standup show about a person, and can a member leave their line out? | Story 1761 asks for yesterday, today and blockers. The team pulse also holds "Needs help" and "Behind" | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Show done, focus and blocked work, with no label. Each member can leave their own line out | CH-TEAM-3 |
+| **Q-CHT-6** | When does Slack come, and does Microsoft Teams come too? | Story 1749 says "Slack later". No pilot asked for Teams | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Slack after CH-TEAM-3. No Teams until a pilot asks for it | CH-TEAM-6 |
 
 **Working defaults.** These are not owner decisions. The slice audit may change them.
 
