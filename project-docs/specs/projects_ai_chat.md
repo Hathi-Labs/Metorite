@@ -7042,6 +7042,10 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 **Status.** VOX-1 to VOX-5 BUILT 2026-11-08, dark (§31.9). VOX-5 waits for its
 first live run (task 2265).
+
+**VOX-7 status.** BUILT 2026-11-09 on branch `mt-ae7b5305-wave`. It waits for
+its pull request.
+
 Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
 2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
@@ -7463,6 +7467,53 @@ the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-
   writes one `transcribe` row with the measured minutes.
 - **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
   `test_operator_console_invocations.py` and `providerGuides.test.ts`.
+
+**VOX-7 (task 2501). The layered wave.** STANDARD. A front-end slice with no
+migration, no flag and no new route. BUILT 2026-11-09 on branch
+`mt-ae7b5305-wave`, and it waits for the pull request.
+
+- **Why:** the owner asked for a better recording state than a bar, on
+  2026-11-09: "can you think of a better animation for the voice input mode
+  instead of just a bar? Maybe like a sound wave … do something a little bit
+  more tasteful with fun UI/UX for sound input. Since the main way to stop
+  talking is just by clicking on the mic button again, ensure that the UI/UX is
+  clean and clear to indicate that the mic button has to be pressed to stop the
+  voice input." The owner then chose variant B: "i prefer the layered wave as
+  the audio input animation." The owner also set one rule for the box: "ensure
+  that I'm able to append to previously transcribed sections. For example, I
+  might turn on audio transcription, say something, and then turn it off. Then
+  type something manually … and then do auto transcription again. The system
+  should allow me to do that."
+- **Files:** `components/VoiceInputButton.tsx`, a new `components/VoiceWave.tsx`,
+  a new `lib/voiceWave.ts`, and `hooks/useVoiceDictation.ts`.
+- **Do:**
+  - Draw three sine lines in a band of the bar row, between the timer and the
+    pickers. The lines stroke `currentColor` in a `text-primary` box, with
+    three opacities and three weights. No status token and no hex literal.
+  - Keep the level in a ref (`levelRef`). A `requestAnimationFrame` loop reads it
+    and writes the `d` of each path. No React state changes on an audio block.
+    The loop stops when the recording ends or the chat unmounts.
+  - While it records, the mic is a filled round Stop button in the accent
+    colour, named "Stop recording". A ring follows the voice and takes no click. The first
+    recording of a browser shows "Tap ■ to finish" for 4.5 s. The mark is in
+    `localStorage`.
+  - Show a mono timer. In the last 15 s it turns to the warning token and shows
+    "N s left". A cross, "Discard recording", calls the cancel. Enter finishes,
+    and Esc discards.
+  - Keep the box mounted and visible. The wave never covers the draft, and the
+    composer keeps its height in every phase. The words go in at the caret, as
+    in VOX-1.
+  - With `prefers-reduced-motion`, the lines do not move. A static meter of 10
+    segments shows the level.
+- **Done when:** a draft of text stays in view while the mic records, and a
+  second dictation lands at the caret after a typed edit.
+- **Fence (R7):** `src/lib/voiceWave.test.ts` and
+  `src/lib/voiceDictation.test.ts`.
+  - `voiceWave.test.ts` tests the lines, the timer rule and the hint.
+  - It tests reduced motion, the colour fence and the box kept mounted.
+  - It tests the order of "hello", "world" and "again" at the caret.
+  - `voiceDictation.test.ts` tests the label of the Stop button.
+  - `src/lib/theme/conformance.test.ts` holds the colour rules.
 
 ### 31.6 Owner calls
 
