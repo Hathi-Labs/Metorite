@@ -158,9 +158,13 @@ export default function SandboxedReact({
         </div>
         <div className="flex items-center justify-between gap-3 p-3">
           <p className="text-xs text-muted-foreground">{state.error}</p>
-          <Button variant="secondary" size="sm" onClick={tryAgain}>
-            Try again
-          </Button>
+          {/* No button when limited: a press only gets the 429 again, and each
+              one adds a unit to the limit. The sentence says when to return. */}
+          {state.status === "unavailable" && (
+            <Button variant="secondary" size="sm" onClick={tryAgain}>
+              Try again
+            </Button>
+          )}
         </div>
       </div>
     );

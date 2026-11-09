@@ -185,8 +185,9 @@ def test_no_person_or_no_org_gets_403_and_no_count(redis, user) -> None:
 def test_an_outside_agent_gets_403(redis) -> None:
     from acb_auth.roles import AgentScope
 
-    res = _post(_client(_user(agent=AgentScope(connection_id="conn-1"))))
-    assert res.status_code == 403
+    client = _client(_user(agent=AgentScope(connection_id="conn-1")))
+    for res in (_post(client), _charge(client)):
+        assert res.status_code == 403
     assert redis.counts == {}
 
 

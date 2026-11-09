@@ -9,6 +9,8 @@
 //   - send the burst without the queue -> "a burst of 16 new cards …".
 import { describe, expect, it, vi } from "vitest";
 
+import { COMPILE_LIMITS } from "./compileArtifact";
+
 import {
   classifyCompileAnswer,
   compileWithRetry,
@@ -17,6 +19,7 @@ import {
   JITTER_MS,
   MAX_RETRIES,
   MAX_RETRY_AFTER_MS,
+  WAIT_BUDGET_MS,
   requestCompile,
   retryAfterMs,
   serialQueue,
@@ -127,8 +130,19 @@ describe("compileWithRetry", () => {
     const s = scripted([BUSY]);
     const out = await compileWithRetry("x", s.deps);
     expect(out.kind).toBe("unavailable");
-    expect(s.posts()).toBe(MAX_RETRIES + 1);
-    expect(s.sleeps).toHaveLength(MAX_RETRIES);
+    // The wait budget ends it, and the count never gets there.
+    expect(s.sleeps.length).toBeLessThanOrEqual(MAX_RETRIES);
+    expect(s.posts()).toBe(s.sleeps.length + 1);
+    expect(s.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(WAIT_BUDGET_MS);
+  });
+
+  it("a second tab waits longer than one killed build before it gives up", async () => {
+    expect(WAIT_BUDGET_MS).toBeGreaterThan(COMPILE_LIMITS.timeoutMs);
+    // member_busy answers Retry-After 2 for as long as the first tab builds.
+    const s = scripted([MEMBER_BUSY]);
+    const out = await compileWithRetry("x", s.deps);
+    expect(out.kind).toBe("unavailable");
+    expect(s.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThan(COMPILE_LIMITS.timeoutMs);
   });
 
   it("retries a 503 and a request that got no answer", async () => {

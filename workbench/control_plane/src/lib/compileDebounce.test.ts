@@ -3,6 +3,7 @@
 // compile for each pause in the typing, not one for each key press.
 //
 // Mutations, each turns a named case red:
+//   - draw Try again in the limited state -> "draws Try again for the busy state only …".
 //   - a debounce of 0 -> "waits for a pause".
 //   - a first source that waits -> "compiles the first source at once".
 //   - SandboxedReact calls setTimeout itself, or compiles with no schedule
@@ -70,5 +71,13 @@ describe("SandboxedReact schedules every compile through scheduleCompile", () =>
   it("sends a compile from nowhere else, and sets no timer of its own", () => {
     expect(src.match(/requestCompile\(/g)?.length).toBe(1);
     expect(src).not.toMatch(/setTimeout\(/);
+  });
+
+  it("draws Try again for the busy state only, never for the limited state", () => {
+    // Every "Try again" button sits inside the `unavailable` guard. A press in
+    // the limited state only gets the 429 again, and adds a unit to the limit.
+    const buttons = src.match(/<Button[^>]*onClick=\{tryAgain\}/g) ?? [];
+    expect(buttons).toHaveLength(1);
+    expect(src).toMatch(/state\.status === "unavailable" && \(\s*<Button[^>]*onClick=\{tryAgain\}/);
   });
 });

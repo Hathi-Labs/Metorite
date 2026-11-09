@@ -16,7 +16,7 @@
  *      chat with 16 new cards sends 16 compiles one after the other, and the
  *      server never sees two from this tab at once;
  *   2. retries a passing refusal after its `Retry-After`, with jitter, up to
- *      {@link MAX_RETRIES} times. The card keeps "Building…" meanwhile;
+ *      {@link MAX_RETRIES} times or {@link WAIT_BUDGET_MS} of waiting. The card keeps "Building…" meanwhile;
  *   3. stops after that with `unavailable`, which the card shows as "not
  *      built yet" with a "Try again" control, never as "failed to build";
  *   4. never retries 429 `rate_limited` by itself. The card shows the
@@ -24,7 +24,16 @@
  */
 
 /** Retries of a passing refusal before the card stops and offers "Try again". */
-export const MAX_RETRIES = 3;
+export const MAX_RETRIES = 8;
+
+/**
+ * The card keeps retrying until it has waited this long in total. It must
+ * exceed one killed build (`COMPILE_LIMITS.timeoutMs` in compileArtifact.ts,
+ * which a browser module cannot import: it pulls in esbuild). Then a second
+ * tab of the same member outlasts the slow build of the first tab. A test
+ * holds this above `timeoutMs`.
+ */
+export const WAIT_BUDGET_MS = 14_000;
 
 /** The longest wait the client takes from a `Retry-After`. */
 export const MAX_RETRY_AFTER_MS = 30_000;
@@ -97,6 +106,7 @@ export interface CompileDeps {
 
 /** One compile, with the retries of a passing refusal. */
 export async function compileWithRetry(code: string, deps: CompileDeps): Promise<CompileOutcome> {
+  let waited = 0;
   for (let attempt = 0; ; attempt += 1) {
     let answer: CompileAnswer;
     try {
@@ -108,8 +118,12 @@ export async function compileWithRetry(code: string, deps: CompileDeps): Promise
       answer = { kind: "retry", error: COULD_NOT_REACH, retryAfterMs: DEFAULT_RETRY_AFTER_MS };
     }
     if (answer.kind !== "retry") return answer;
-    if (attempt >= MAX_RETRIES) return { kind: "unavailable", error: answer.error };
-    await deps.sleep(answer.retryAfterMs + Math.floor(deps.random() * JITTER_MS));
+    if (attempt >= MAX_RETRIES || waited >= WAIT_BUDGET_MS) {
+      return { kind: "unavailable", error: answer.error };
+    }
+    const wait = answer.retryAfterMs + Math.floor(deps.random() * JITTER_MS);
+    waited += wait;
+    await deps.sleep(wait);
   }
 }
 
