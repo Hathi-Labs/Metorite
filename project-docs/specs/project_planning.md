@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-04 · **Owner:** vjvarada
 
-> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) and PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`4bbe7c5b4`, `19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next release slot (D194). PJP-2 (no hand-off to `projects-assistant`) merged on 2026-11-05 (`3d1c33983`). PJP-6a (the pure engine `acb_common/planning.py` and the read `GET /projects/plan/analysis`) is built. PJP-6b (the chat tool `analyze_plan`) is open. It needs no flag change: `projects-reports` and `projects-authority` follow their parent packs (§3.3, "The flag line").
+> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) and PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`4bbe7c5b4`, `19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next release slot (D194). PJP-2 (no hand-off to `projects-assistant`) merged on 2026-11-05 (`3d1c33983`). PJP-6a (the pure engine `acb_common/planning.py` and the read `GET /projects/plan/analysis`) is built. SP-12 (task 2295) is built and not merged: ONE tool `get_plan(root_task_id)` serves the MCP and the chat, over that read. It replaces the planned `analyze_plan` chat tool of PJP-6b. The gaps and readiness checks of PJP-6b are still open. It needs no flag change: `projects-reports` and `projects-authority` follow their parent packs (§3.3, "The flag line"). SW-68a (2026-11-08) makes `my_work` a reader of the engine.
 
 > **D173** (2026-11-03) changed the stack of cards that wait together to ONE card with tabs. `cardTabs.test.ts` is its fence.
 
@@ -188,7 +188,7 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
    An example: the reminders pack (turn 13) and the plan pack (turn 19) are sticky. In turn 20 the member says "remind me" on the Projects page. With the switch on, the cap moves the plan pack out, and the reminders and core packs stay (99 tools). With the switch off, the cap moves the reminders pack out. No pack is spare, so the order of fix round 3 applies. The plan pack ran in the last turn, so it stays, and the core pack steps aside (81 tools).
 
-   **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
+   **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. WS-39 LP-1a adds the two tools of a project update to it, so it holds 5 (`project_management_app.md` §14.2a). It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
 
 These tests changed because their premise changed:
 
@@ -224,7 +224,7 @@ Production's list names `projects-plan` and `projects`, so both following packs 
 
 ### 3.4 The planning engine (PJP-6 to PJP-10)
 
-**One pure module.** `packages/acb_common/acb_common/planning.py` holds the arithmetic (PJP-6a). It does no I/O and imports no I/O library. It takes plain data (tasks, links, people, history) and returns plain data. The home is `acb_common` because the gateway and `skill_projects` both depend on it, and the gateway must not import a chat skill (as `priority.py` and `paging.py`). The gateway read `GET /projects/plan/analysis?root_task_id=` (`routes/projects/plan_analysis.py`) fetches the visible tasks and links and calls the module. The tools in `reads.py` call that read (PJP-6b). A test feeds the module fixed graphs and checks each number.
+**One pure module.** `packages/acb_common/acb_common/planning.py` holds the arithmetic (PJP-6a). It does no I/O and imports no I/O library. It takes plain data (tasks, links, people, history) and returns plain data. The home is `acb_common` because the gateway and `skill_projects` both depend on it, and the gateway must not import a chat skill (as `priority.py` and `paging.py`). The gateway read `GET /projects/plan/analysis?root_task_id=` (`routes/projects/plan_analysis.py`) fetches the visible tasks and links and calls the module. The chat tool `get_plan` in `reads.py` and the MCP tool `get_plan` call that read (SP-12). A test feeds the module fixed graphs and checks each number.
 
 **Units.** A working day is 6 focus hours (360 min), a named constant. Saturday and Sunday are not working days. `estimate_mins` is the likely (P50) estimate.
 
@@ -254,14 +254,14 @@ Production's list names `projects-plan` and `projects`, so both following packs 
 - `next_slice` is the ready slice with the least slack, then the best priority rank (`acb_common/priority.py`, 1 first), then the least id. It prefers a ready slice with zero slack.
 - Below 2 linked open slices the result says `not_enough: "need 2 linked tasks"`. It still lists `ready`, `waves` and `missing`.
 - The route computes on each read. It keeps no cache and has no trigger. A slice that the caller cannot see is counted in `hidden.slices` and never named, and so is each link that touches it. The result holds ids and numbers, and no text that another person wrote.
-- The MCP edge allowlist (`MCP_ROUTES`) has no row yet. PJP-6b adds the row with the tool. The manifest row is class X with a reason that names PJP-6b, because a route with no tool takes no other class.
+- SP-12 (built, not merged) added `("GET", "/projects/plan/analysis")` to `MCP_ROUTES`, and the manifest row is class A with the chat tool `get_plan`. The answer also carries `labels`: the number and the title of each visible task that the answer names. A hidden task has no label. There is no 50% or 85% forecast in the answer (PJP-10 adds it).
 
 **PJP-6 is the one engine (D195 Q8, SP-11, task 2294).** This module is the only place that computes the order of work. SW-90 (task 1936) and WM-3 (task 982) read it and keep no maths of their own. The model never computes a path. Code computes, and the model judges.
 
 - **Inputs.** The slices of a goal, an epic or a project, and their `blocks` links. A link between two epics expands to links between their slices. The duration of a slice is its agent estimate plus the expected wait for its review. The wait comes from the measured answer time of the reviewer (SW-93). Until SW-93 lands, the wait is a named constant.
 - **Outputs.** The ready set is the open slices whose blockers are all done. The waves are the ready set in layers: wave 1 is ready now, and wave 2 is ready when wave 1 is done. The critical path is the longest chain to the goal, with the slack of every other slice. The forecast finish gives a 50% and an 85% date, from the path length plus a buffer (PJP-7 and PJP-10). The next slice is the ready slice on the critical path with the least slack, then by value.
 - **Trigger.** The engine runs again on each status change and each link change. A read returns the last result with its time.
-- **Readers.** `my_work` orders the ready slices of the active cycle by it (SW-68). The epic page and the cycle board draw it (`project_management_app.md` §13). SW-90 draws the Timeline overlay. WM-3 adds the baseline. The MCP tool `get_plan` (SP-12, task 2295) returns it to an outside planner.
+- **Readers.** `my_work` orders the ready slices of the active cycle by it (SW-68). **Built (SW-68a, 2026-11-08):** `my_work` ranks each task that sits under an epic by this engine, over the epic's visible slices (`GET /projects/plan/order`). The active-cycle filter waits for SP-1. The epic page and the cycle board draw it (`project_management_app.md` §13). SW-90 draws the Timeline overlay. WM-3 adds the baseline. The MCP tool `get_plan` (SP-12, task 2295) returns it to an outside planner.
 - **Fence.** The module tests of §10 bind the maths. The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own.
 
 **PJP-7 the critical chain.**
@@ -301,7 +301,7 @@ A move of work to another person changes the owner. `update_task` has no owner f
 
 | Pack | After PJP-2 | Added | Final | Cap (§3.3) |
 |---|---|---|---|---|
-| `projects-plan` | 24 | `analyze_plan`, `plan_chain`, `set_chain`, `buffer_status`, `find_constraint`, `premortem` | 30 | 31 |
+| `projects-plan` | 24 | `get_plan` (SP-12, built, replaces `analyze_plan`), then `plan_chain`, `set_chain`, `buffer_status`, `find_constraint`, `premortem` | 30 | 31 |
 | `projects-structure` | 24 | `change_statuses`, `suggest_stages` | 26 | 31 |
 | `projects-bulk` | 21 | `update_tasks` | 22 | 31 |
 
@@ -377,7 +377,7 @@ The buffer and the finish are ordinary tasks with the tags `Buffer` and `Milesto
 | PJP-3 | 1480 | §3.1: `change_statuses`, the row keys `hue` and `category`, and the rule text | One call with 8 rows draws ONE card with 8 tick boxes, each with its swatch and chip. Ticking 6 writes 6. Two writes in one step show as one card with 2 tabs (D173) | MEDIUM | AGENT-SAFE | PJP-1 |
 | PJP-4 | 1481 | §3.1: step 1 extracts `_plan_task_edit` from `update_task` (`writes.py:1430`). Step 2 adds `update_tasks` | `update_task` and each row call `_plan_task_edit`, and the existing `update_task` tests pass unchanged. One call with 12 rows draws ONE card. Each row shows before and after. Each ticked row writes through the same route as `update_task`. A failed row does not stop the next one, and the receipt names it | MEDIUM | AGENT-SAFE | — |
 | PJP-5 | 1482 | §3.6: `stage_sets.py` and `suggest_stages` | Each set passes the limits of §3.6 in a test. "Set up stages for a hardware project" in a live turn gives one `change_statuses` card | LOW | AGENT-SAFE | PJP-2, PJP-3 |
-| PJP-6 | 1483 | **PJP-6a is built** (the module and the read route). **PJP-6b is open** (the chat tool `analyze_plan`, the gaps and readiness checks, `get_plan`). §3.4: `planning.py` passes, `analyze_plan` and the one engine (ready set, waves, forecast, D195 SP-11) | The module tests of §10 pass for a chain, a diamond, a cycle, a task with no estimate and a graph with no links. SW-90 and WM-3 read the module | LOW | AGENT-SAFE | PJP-2 |
+| PJP-6 | 1483 | **PJP-6a is built** (the module and the read route). **PJP-6b is served in part by SP-12** (the tool `get_plan` is the one read tool for the chat and the MCP, and no `analyze_plan` chat tool is built). The gaps and readiness checks are open. §3.4: `planning.py` passes, `analyze_plan` and the one engine (ready set, waves, forecast, D195 SP-11) | The module tests of §10 pass for a chain, a diamond, a cycle, a task with no estimate and a graph with no links. SW-90 and WM-3 read the module | LOW | AGENT-SAFE | PJP-2 |
 | PJP-7 | 1484 | §3.4: `plan_chain`, `set_chain`, `buffer_status` | A fixed project with two people and 9 tasks gives the chain, the buffer and the target date in a test. `set_chain` makes the buffer and finish tasks on one card. A second call finds them and proposes no copy | MEDIUM | AGENT-SAFE | PJP-4, PJP-6 |
 | PJP-8 | 1485 | §3.4: `find_constraint` | A fixed team where one person owns 6 of 9 chain tasks names that person, with the evidence | LOW | AGENT-SAFE | PJP-6 |
 | PJP-9 | 1486 | §3.4: flow health in the existing analytics reads | Each extended read returns the new lines, and its old lines do not change | LOW | AGENT-SAFE | — |

@@ -2,6 +2,7 @@ import {
   Email, EmailAccount,
   AnalyticsOverview, SenderStat, NewsletterStatus, UnsubscribeResult,
   AutomationRule, RuleTestResult, ExecutedRule, AssistantSettings,
+  AssistantSettingsSave,
   RecentTestResult, ColdSender, KnowledgeEntry,
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
@@ -2121,13 +2122,53 @@ export async function getAssistantSettings(
   );
 }
 
+/** The settings PUT. Only the member's own Auto-run act sends the marker
+ *  `auto_run_choice` (task 2305, `autoRunChoiceBody`). */
 export async function saveAssistantSettings(
-  settings: AssistantSettings
+  settings: AssistantSettingsSave
 ): Promise<AssistantSettings> {
   return gatewayFetch<AssistantSettings>("/email/assistant/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+/** The answer of `POST /email/signature/images` (WS-17 SG-1). `url` is the
+ *  public https address of the hosted image, and it never changes. */
+export interface SignatureImage {
+  id: string;
+  url: string;
+  kind: "logo" | "photo";
+  content_type: string;
+  width: number;
+  height: number;
+  dark_share: number;
+  clear_share: number;
+}
+
+/** Upload one signature image for a mailbox. The server re-encodes it and
+ *  hosts it, so the signature carries an https address and never a `data:`
+ *  URI (D-EM-67). A refusal throws the server's sentence. The body is
+ *  multipart, so this sets no Content-Type: `fetch` adds the boundary. */
+export async function uploadSignatureImage(
+  accountId: string,
+  file: File,
+  kind: "logo" | "photo" = "logo",
+): Promise<SignatureImage> {
+  const form = new FormData();
+  form.append("account_id", accountId);
+  form.append("kind", kind);
+  form.append("file", file);
+  const res = await fetch("/api/email/signature/images", {
+    method: "POST",
+    body: form,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof body.detail === "string" ? body.detail : "";
+    throw new Error(detail || body.error || `The upload failed (${res.status}).`);
+  }
+  return body as SignatureImage;
 }
 
 /** One "always copy" rule of a mailbox (§21.16): a domain or an address,

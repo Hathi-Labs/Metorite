@@ -175,6 +175,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
     "CHAT_CONTINUE_ORGS",
+    # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
+    # clip draws AI credits, so only the operator writes it.
+    "CHAT_VOICE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
@@ -218,6 +221,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
+    # changes which task an agent takes first, so only the operator writes it.
+    "MY_WORK_PLAN_ORDER_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
@@ -226,6 +232,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-39 LP-1a: PROJECTS_UPDATES_ORGS opens the project updates for an org.
+    # An update reaches each member who sees the project, so a tenant must not
+    # open it for another org.
+    "PROJECTS_UPDATES_ORGS",
     # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
     # edges into kb_links for an org. A tenant must not open it for another
     # org, so only the operator writes it.
@@ -234,6 +244,14 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # org. A rule reaches each agent and each check of the project, so a
     # tenant must not open it for another org.
     "PROJECT_RULES_ORGS",
+    # WS-39 SP-1: PROJECTS_SPRINTS_ORGS opens the cycle store of Projects for
+    # an org. A tenant must not open it for another org, so only the owner
+    # writes it.
+    "PROJECTS_SPRINTS_ORGS",
+    # WS-39 TPL-1a: PROJECTS_TEMPLATES_ORGS opens the templates of Projects
+    # for an org. A tenant must not open it for another org, so only the
+    # owner writes it.
+    "PROJECTS_TEMPLATES_ORGS",
     # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
@@ -242,6 +260,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-55 MCP-G20: the write cap of each agent connection on the box. A
+    # tenant that raised it would lift the cap of every org, so only the
+    # owner writes it. The AGENT_ prefix covers both too, and the exact
+    # names keep the fence if that prefix ever narrows.
+    "AGENT_WRITE_CAP", "AGENT_WRITE_WINDOW_S",
     # WS-MCP SW-53: GITHUB_APP_ORGS turns the GitHub App on for an org. On,
     # deliveries write the org's pull requests and a merge can move its tasks,
     # so only the owner writes it. The GITHUB_APP_ prefix covers it too.
@@ -420,6 +443,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # WS-VOX VOX-3: IMAGE_ANALYSIS_ORGS lets the chat send an image to a model
+    # for an org, and each call draws credits. A tenant that set it could
+    # open it for every org on the box.
+    "IMAGE_ANALYSIS_",
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",

@@ -2389,6 +2389,40 @@ class TestTheRouterImageRule:
         assert row.tier == "tier-vision"
         assert row.task == "vision"
 
+    def test_one_analyze_image_call_writes_ONE_vision_usage_row(
+            self, client, org_key, db, calls, vision_bound):
+        """WS-VOX VOX-3 (``projects_ai_chat.md`` §31.5): the shape that
+        ``acb_skills.attachment_tools.analyze_image`` sends. A system text,
+        then one text part and one ``image_url`` part as a data URL, on
+        ``tier-vision`` with ``task: vision``. One call is one bill row of the
+        pair (``tier-vision``, ``vision``), and never two."""
+        slug, key = org_key
+
+        def _rows() -> int:
+            with db.begin() as c:
+                return c.execute(text(
+                    "SELECT count(*) FROM usage_event u JOIN organization o "
+                    "ON o.id = u.organization_id WHERE o.slug = :s"),
+                    {"s": slug}).scalar_one()
+
+        before = _rows()
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-vision", "task": "vision", "max_tokens": 1024,
+            "messages": [
+                {"role": "system", "content": "Describe only what the image shows."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "What does the error say?"},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}},
+                ]},
+            ]})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+        assert _rows() == before + 1
+        row = _last_row(db, slug)
+        assert (row.tier, row.task, row.model) == ("tier-vision", "vision", vision_bound)
+
     def test_a_SECOND_vision_tier_serves_ITSELF_too(
             self, client, org_key, db, calls, bound_tier):
         """The rule reads the declared TASK, never a list of slugs.
@@ -3008,3 +3042,57 @@ class TestTheAgentFrameworkShape:
                 "AND u.refusal_reason IS NULL "
                 "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
         assert tuple(row) == (0, 0, "usage_unreadable")
+
+
+# ── Sampling values per step (task 2450) ────────────────────────────────────
+
+
+class TestSamplingPerStep:
+    """A Claude 5.5 step refuses `temperature`. A Gemini step behind it keeps
+    it. The door builds each step's body on its own."""
+
+    CLAUDE = "anthropic/claude-haiku-5-5"
+    GEMINI = "gemini/gemini-3.1-flash-lite"
+
+    @pytest.fixture
+    def creds(self, db):
+        made: list[str] = []
+        with db.begin() as c:
+            for vendor in ("anthropic", "gemini"):
+                row = c.execute(
+                    text("INSERT INTO provider_credential (provider, secret_enc, "
+                         "label) VALUES (:p, :s, 'platform') "
+                         "ON CONFLICT DO NOTHING RETURNING id"),
+                    {"p": vendor, "s": router_mod.encrypt_secret("sk-x")},
+                ).scalar()
+                if row is not None:
+                    made.append(str(row))
+        yield
+        with db.begin() as c:
+            for cid in made:
+                c.execute(text("DELETE FROM provider_credential WHERE id = :i"),
+                          {"i": cid})
+
+    def test_each_step_builds_its_own_body(
+            self, client, org_key, bound_tier, creds):
+        _, key = org_key
+        tier = bound_tier([self.CLAUDE, self.GEMINI], reads_images=None)
+        seen: list[dict] = []
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        async def _provider(**kwargs):
+            seen.append(kwargs)
+            if kwargs["model"] == self.CLAUDE:
+                raise _Overloaded("busy")
+            return dict(PROVIDER_RESPONSE)
+
+        router_mod.set_provider_call(_provider)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "temperature": 0.2,
+            "messages": [{"role": "user", "content": "x"}]})
+        assert r.status_code == 200, r.text
+        assert [k["model"] for k in seen] == [self.CLAUDE, self.GEMINI]
+        assert "temperature" not in seen[0]
+        assert seen[1]["temperature"] == 0.2

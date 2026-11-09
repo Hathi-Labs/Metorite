@@ -14,7 +14,9 @@ keeps no cache and no trigger.
 So a project pin narrows a signed agent here as it does elsewhere. A slice that
 the caller cannot see is COUNTED in ``hidden`` and never named. It is left out
 of the plan, and so is each link that touches it. The result carries ids and
-numbers only. It carries no text that another person wrote.
+numbers, plus ``labels``: the number and title of the visible slices that the
+answer names (SP-12). A hidden task has no label, because its text is read as
+NULL in SQL.
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ from sqlalchemy import text
 #: The most tasks one read plans. A bigger tree is a goal for a person to split.
 MAX_PLAN_TASKS = 2000
 
+#: The most labels one answer carries (SP-12). The ids come in the order of use.
+MAX_LABELS = 100
+
 #: Every non-archived task under the root, the root included. ``vis`` says if
 #: the caller may see it. A task that the caller cannot see is read only to
 #: count it, and its text never leaves this module.
@@ -54,6 +59,8 @@ WITH RECURSIVE tree AS (
      WHERE c.archived_at IS NULL AND tree.depth < :max_depth
 )
 SELECT t.id, t.parent_task_id, s.category, t.estimate_mins,
+       CASE WHEN ({visible}) THEN t.task_number END AS task_number,
+       CASE WHEN ({visible}) THEN t.title END AS title,
        t.importance, t.leveraged, t.due_at,
        ty.name AS type_name,
        (SELECT min(a.assignee) FROM pm_task_assignees a
@@ -93,43 +100,38 @@ def _today() -> date:
     return datetime.now(tz=ZoneInfo(DEFAULT_ZONE)).date()
 
 
-@router.get("/plan/analysis")
-async def plan_analysis(
-    root_task_id: str = Query(..., description="The goal, epic or project task to plan."),
-    start: date | None = Query(None, description="The first working day. Default: today."),
-    user: UserContext = Depends(get_current_user),
-) -> dict:
-    """The ready set, waves, critical path, slack and finish of one tree."""
-    try:
-        root = str(UUID(root_task_id))
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Task not found") from None
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, root)
-        rows = (await db.execute(
-            text(_TREE_SQL.format(visible=task_visibility_clause(vis))),
-            {"root": root, "max_depth": MAX_DEPTH, "cap": MAX_PLAN_TASKS + 1,
-             **vis.params},
-        )).fetchall()
-        if len(rows) > MAX_PLAN_TASKS:
-            raise HTTPException(
-                status_code=422,
-                detail=f"This tree has more than {MAX_PLAN_TASKS} tasks. Plan a smaller epic.",
-            )
-        ids = [str(r.id) for r in rows]
-        link_rows = (await db.execute(
-            text(_LINKS_SQL), {"ids": ids},
-        )).fetchall()
-        inside = set(ids)
-        far = sorted({
-            str(end) for r in link_rows
-            for end in (r.source_task_id, r.target_task_id) if str(end) not in inside
-        })
-        outside_rows = (await db.execute(
-            text(_OUTSIDE_SQL.format(visible=task_visibility_clause(vis))),
-            {"ids": far, **vis.params},
-        )).fetchall() if far else []
+async def compute_plan(db: Any, vis: Any, root: str, start: date | None = None) -> dict:
+    """The plan of the tree under *root*, for the caller *vis*.
+
+    The caller has loaded *root* with ``load_visible_task`` already. This is
+    the one place that fetches the tree and calls the engine. The route below
+    and ``plan_order`` (SW-68a, the order of ``my_work``) both call it, so
+    neither keeps a second copy of the fetch or the visibility rule. It
+    raises a 422 for a tree over :data:`MAX_PLAN_TASKS`.
+    """
+    rows = (await db.execute(
+        text(_TREE_SQL.format(visible=task_visibility_clause(vis))),
+        {"root": root, "max_depth": MAX_DEPTH, "cap": MAX_PLAN_TASKS + 1,
+         **vis.params},
+    )).fetchall()
+    if len(rows) > MAX_PLAN_TASKS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"This tree has more than {MAX_PLAN_TASKS} tasks. Plan a smaller epic.",
+        )
+    ids = [str(r.id) for r in rows]
+    link_rows = (await db.execute(
+        text(_LINKS_SQL), {"ids": ids},
+    )).fetchall()
+    inside = set(ids)
+    far = sorted({
+        str(end) for r in link_rows
+        for end in (r.source_task_id, r.target_task_id) if str(end) not in inside
+    })
+    outside_rows = (await db.execute(
+        text(_OUTSIDE_SQL.format(visible=task_visibility_clause(vis))),
+        {"ids": far, **vis.params},
+    )).fetchall() if far else []
 
     parents = {str(r.parent_task_id) for r in rows if r.parent_task_id}
     visible_parents = {
@@ -159,8 +161,38 @@ async def plan_analysis(
     hidden_outside = sum(1 for r in outside_rows if not r.vis)
     links = [(str(r.source_task_id), str(r.target_task_id)) for r in link_rows]
     result = analyze_plan(tasks, links, start=start or _today(), outside=outside)
+    answer = result.to_dict()
+    # SP-12: a number and a title for each visible task that the answer names,
+    # so a reader can say it in words. Never a hidden task: its title is NULL.
+    named = [answer["next_slice"], *answer["critical_path"], *answer["ready"],
+             *answer["held"], *(o["task_id"] for o in answer["outside_blockers"])]
+    seen: set[str] = set()
+    labels: dict[str, dict[str, Any]] = {}
+    by_id = {str(r.id): r for r in rows if r.vis}
+    for tid in named:
+        if tid and tid not in seen and tid in by_id and len(labels) < MAX_LABELS:
+            seen.add(tid)
+            labels[tid] = {"number": by_id[tid].task_number, "title": by_id[tid].title}
     return {
         "root_task_id": root,
-        **result.to_dict(),
+        **answer,
+        "labels": labels,
         "hidden": {"slices": hidden, "outside_blockers": hidden_outside},
     }
+
+
+@router.get("/plan/analysis")
+async def plan_analysis(
+    root_task_id: str = Query(..., description="The goal, epic or project task to plan."),
+    start: date | None = Query(None, description="The first working day. Default: today."),
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The ready set, waves, critical path, slack and finish of one tree."""
+    try:
+        root = str(UUID(root_task_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, root)
+        return await compute_plan(db, vis, root, start)

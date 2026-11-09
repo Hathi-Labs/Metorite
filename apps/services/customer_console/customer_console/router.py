@@ -635,6 +635,10 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: It is the first NATIVE value. ``POST /v1/decide`` serves it, and
 #: :func:`_default_provider_call` sends it to ``handlers.NATIVE_HANDLERS``
 #: and never to litellm.
+#:
+#: 🔴 **``native_sarvam`` joined on 2026-11-08** (VOX-2,
+#: ``projects_ai_chat.md`` §31). ``POST /v1/audio/transcriptions`` serves it,
+#: and it is the first native verb for ``transcribe``.
 SERVING_INVOCATIONS = frozenset(
     {
         "acompletion",
@@ -646,6 +650,10 @@ SERVING_INVOCATIONS = frozenset(
         # CP-13h (2026-09-24): Jev through the AI/ML API reseller. The same
         # door and the same wire class, with a second instance.
         "native_aimlapi",
+        # VOX-2 (2026-11-08): Sarvam speech to text, on the transcribe door.
+        "native_sarvam",
+        # VOX-6 (2026-11-08): AssemblyAI Sync speech to text, same door.
+        "native_assemblyai",
     }
 )
 
@@ -705,7 +713,9 @@ async def _default_provider_call(**kwargs: Any) -> Any:
     real vendor.
 
     A ``native_*`` verb goes to its handler in ``handlers.NATIVE_HANDLERS``.
-    Every other verb goes to :func:`_litellm_call`, exactly as before.
+    Every other verb goes to :func:`_litellm_call`, exactly as before. The
+    transcribe door sends ``native_sarvam`` here too (VOX-2), with a
+    ``TranscribePayload`` in place of the litellm kwargs.
     """
     invocation = kwargs.get("invocation", DEFAULT_INVOCATION)
     if isinstance(invocation, str) and invocation.startswith(NATIVE_PREFIX):

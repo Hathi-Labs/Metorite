@@ -686,3 +686,30 @@ UPDATE crm_change_log SET organization_id = (SELECT id FROM organization WHERE s
 
 UPDATE package_field_value SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE pm_cycles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycle_tasks SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycle_committed SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycle_capacity SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE email_signature_images SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_project_updates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_templates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_template_applies SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_lead_pipeline_stages SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

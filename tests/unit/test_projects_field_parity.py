@@ -282,6 +282,7 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-57 TR-3: a URL on the task.
     "add_task_ref": {"task_id": UUID, "url": "https://github.com/acme/widgets/pull/12"},
     "analytics_finished": {},
+    "get_plan": {"root_task_id": UUID},
     "analytics_load": {},
     "analytics_outlook": {},
     "analytics_stuck": {},
@@ -299,6 +300,11 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-ALN ALN-4: a pin is of one project. The page id is the witness.
     "project_authorities": {"project_id": UUID},
     "pin_authority": {"project_id": UUID},
+    # WS-39 LP-1a: the updates of one project. The page and the cursor are the
+    # witnesses of the read. The post sends the health and the text.
+    "list_project_updates": {"project_id": UUID},
+    "post_project_update": {"project_id": UUID, "health": "at_risk",
+                            "body": "The vendor slipped a week."},
     # WS-ALN ALN-2a: a decision of the member. The answer key is the witness.
     "answer_decision": {"decision_id": tw.DECISION_ID},
     # WS-64 OP-6d: the report is the one of the write fence.
@@ -365,9 +371,14 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
     "resolve_reminder": {"reminder_id": tw.REMINDER},
     "reschedule_reminder": {"reminder_id": tw.REMINDER, "at": "2099-11-02 08:00"},
+    # WS-39 TPL-1a: the fake org holds one template, `UUID`.
+    "save_as_template": {"project_id": UUID, "name": "Office move"},
+    "create_project_from_template": {"template_id": UUID, "parent_id": UUID},
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    # WS-39 LP-1a: the cursor of the updates is the id of an update.
+    "before": OTHER,
     "page_id": UUID,
     "include_removed": True,
     "answer_key": "yes",
@@ -483,6 +494,8 @@ _SAMPLE: dict[str, Any] = {
     "estimate_minutes": 30,
     "answer": "drop",
     "state": "done",
+    # WS-39 TPL-1a: the day that a template's offsets count from.
+    "start_date": "2026-12-01",
 }
 #: A row key's sample, where the argument of the same name takes another form.
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
@@ -774,8 +787,8 @@ def test_the_spec_tables_parse() -> None:
     """A spec edit that breaks the parse would pass every check below."""
     # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
     # since WS-66 RM-1 added G24, the reminder routes. 25 since WS-AP AP-8a
-    # added G25, the person ask.
-    assert len(_spec_gaps()) == 25
+    # added G25, the person ask. 26 since WS-39 SP-1 added G26, the cycles.
+    assert len(_spec_gaps()) == 26
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

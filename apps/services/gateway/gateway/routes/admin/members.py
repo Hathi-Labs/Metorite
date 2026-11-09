@@ -943,6 +943,13 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # whole, so the table is on one side only.
     _PersonRows("agent_run_strands", "pm_agent_run_strands",
                 "lower(member_email) = :email"),
+    # WS-39 SP-1 (project_management_app.md §13.2a): the member's review
+    # minutes in the capacity snapshot of a started cycle. Kept and counted,
+    # not deleted: a cycle's capacity snapshot is part of the record of the
+    # cycle, no UPDATE may change it, and a purge deletes no `pm_` row (D63).
+    # Kept whole, so the table is on one side only.
+    _PersonRows("cycle_capacity", "pm_cycle_capacity",
+                "lower(member_email) = :email"),
     # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the group and org
     # installs that the member made. Other people use them, so they stay, as
     # a shared room does. `scope_kind <> 'private'` is load-bearing: it is the

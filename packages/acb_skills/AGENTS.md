@@ -40,6 +40,7 @@ not write a second copy of that seam. A bare test file name is under
    - WEB-7: `web_render_client.py` is the ONE client of the web worker (`POST /render`, bearer `WEB_WORKER_TOKEN`). The walk runs first, and the org comes from `_run_org` only. Fence: `test_web_render.py`.
 4a. child_confine.py -- the ONE confinement of a child process that parses hostile input (WS-WEB WEB-2b). Landlock, the seccomp filter, `close_inherited_fds` and `close_limits`. It is stdlib only.
    - A worker loads it BY PATH with `importlib`, never with `import acb_skills`, because the package `__init__` loads the whole tool set. It writes no bytecode on that load. Do not write a second copy of Landlock or of the filter. WEB-3 and each later parser use this module.
+   - A worker outside this dir gets the path from its parent. The gateway's signature image child (`gateway/signature_image_worker.py`, WS-17 SG-1) is the first: `gateway/signature_image.py` puts the file of `acb_skills.child_confine` in the spec. A move or a rename of this file breaks that child too.
    - `confine(min_abi)` fails closed on Linux with `Refused("unavailable")`. The OCR child asks ABI 4, and the web child asks ABI 1 (the file system), because seccomp already refuses `socket`.
    - `SECCOMP_DENIED` holds `truncate` and the `chmod`, `chown`, `utime` and `xattr` calls, so a file of the gateway user is safe at every ABI. Both workers call `close_inherited_fds()` first.
    - Fences: `test_attachment_ocr.py` (`TestTheConfinement`) and `test_web_reader_confine.py`.
@@ -99,6 +100,9 @@ not write a second copy of that seam. A bare test file name is under
    - `attachment_tools` takes the workspace and the thread from `artifact_context()`, and only a file name from the model. `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands.
    - Do not add a second reader of an attachment. `attachment_tools.parse_bounded` is the ONE bounded parse of the process. `read_attachment` is a core floor tool in `_FLOOR_KEEP`.
    - Fences: `test_read_attachment.py`, `test_chat_upload_every_agent.py`, `test_email_attachment_text.py`, `test_attachment_xlsx.py`.
+   - WS-VOX VOX-3: `analyze_image(file_name, question)` reads the bytes through `read_attachment_bytes` and sends one `image_url` part to `tier-vision` with `task="vision"` through `acb_llm.context.acompletion_with_fallback`. It is a core tool, NOT in `_FLOOR_KEEP`. The email assistant and the worker opt out of it.
+   - ⚠️ It decodes no pixel in the process. `acb_common.image_probe.sniff_image_mime` is the ONE sniff, by the first bytes only. It refuses a file over `MAX_IMAGE_BYTES` (4 MB). A downscale needs a confined child, as OCR has.
+   - It answers one sentence and calls no model in three cases. `routing_is_on()` is false, `assistant_profile.image_analysis_for` is false for the bound tenant, or the member passed `IMAGE_CAP` calls in an hour (tenant Redis, `image-analysis`). The answer comes back in one `IMAGE` block of `UntrustedFrame`. `addendum.IMAGE_CALL_RULE` is the "when to call" text of the docstring and of both addendum sections. Fence: `test_attachment_analyze_image.py`.
 5f-1. attachment_ocr.py + attachment_ocr_worker.py -- OCR of a scanned file (D116, spec `one_assistant_context.md` §4.1), dark behind `ATTACHMENT_OCR` (reader `ocr_enabled()`).
    - Only a caller that can wait gets OCR. `TestTheCallers` fails on a new caller.
    - The child starts as `python -I <path>`, never with `-m`. It imports nothing from `acb_` packages, and at most one child lives in the process.

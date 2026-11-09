@@ -8882,6 +8882,123 @@ uv run pytest tests/unit/test_customer_console_tasks.py \
   tests/unit/test_customer_console_catalog.py -q
 ```
 
+#### VOX-2 · Sarvam, and the minutes of a WAV clip — BUILT 2026-11-08
+
+✅ **Built on branch `mt-4d2d1c72-vox2`** (task 2262). `projects_ai_chat.md`
+§31 VOX-2 owns the slice. This block records how the build changes the ten
+clauses above. Each other clause holds as written.
+
+1. **Clause 3, the quantity.** The door measures a WAV clip before any
+   provider call. It bills that length for every provider, a litellm step too.
+   - `customer_console/wav.py` walks the RIFF chunks with `struct`. It ignores
+     the declared `data` size, because that field can lie.
+   - It counts `(bytes after the data header) // block_align` frames. A size
+     of 0, `0xFFFFFFFF`, or a small or large number all bill the bytes present.
+   - A chunk after `data`, such as a trailing `LIST`, counts as audio by a few
+     bytes. The door bills the bytes it sends.
+   - A `fmt ` chunk with a zero block align, or a sample rate outside
+     1 000 to 384 000 Hz, is not a measurable WAV.
+   - The vendor figure never sets the quantity of a measurable WAV clip. A
+     litellm step bills the measured length too, whatever `verbose_json`
+     reports.
+   - A clip that is not a measurable WAV keeps the old rule: the
+     `verbose_json` duration, else zero with the log line
+     `router.unmeasured_quantity`.
+2. **Clause 6, the dispatch.** `native_sarvam` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_sarvam.py` holds the handler.
+   - A native step gets a `TranscribePayload`: the clip, its name and the
+     key. A litellm step gets the same kwargs as before.
+3. **The prefix ties the verb.** A `sarvam/` model on `transcribe` takes
+   `native_sarvam` only, because litellm has no Sarvam transcription.
+   - The declare route refuses another verb with a 400.
+   - The mode is the last part of the id, as in `sarvam/saaras:v3/translit`.
+     The route refuses a mode that is not `translit`, `codemix`,
+     `transcribe` or `translate`. An id with no mode gets `translit`.
+4. **A new refusal, 415.** The Sarvam handler takes PCM WAV only.
+   - For any other clip, the door drops each Sarvam step from the chain.
+   - When no step is left, the door answers 415 before any provider call.
+   - The 415 writes no usage row, as the 413 writes none. Clause 10's three
+     walls do not change.
+5. **The 30-second limit.** Sarvam's REST call takes 30 seconds of audio at
+   most, and it answers 422 above that. A 422 does not fail over. So the
+   handler cuts a longer clip into parts of 29 seconds and joins the text.
+6. **The 600-second wall.** A measured WAV clip above 600 seconds answers 413
+   "audio above 600 seconds is refused", for every provider. The 413 comes
+   before any provider call and writes no usage row. One request makes at
+   most 21 Sarvam calls.
+7. **Failover.** A Sarvam 5xx, 429 or 403 falls to the next step, as a
+   litellm step does. A 200 with no transcript is terminal, because the
+   vendor has charged for it.
+8. **The accepted leak.** A failure on part N of M fails over the whole step.
+   Sarvam has charged for parts 1 to N-1, and the door never bills them. The
+   next step transcribes the whole clip and bills it once. The loss is bounded
+   at 20 parts for each request, by the 600-second wall. The handler logs
+   `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
+
+#### VOX-6 · AssemblyAI, beside Sarvam — BUILT 2026-11-08
+
+`native_assemblyai` is the second native verb for `transcribe`. It copies the
+`native_sarvam` pattern, and the clauses above apply to it with these changes.
+
+1. **The dispatch.** `native_assemblyai` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_assemblyai.py` holds the handler.
+   - The credential provider is `assemblyai`.
+2. **The prefix ties the verb.** An `assemblyai/` model on `transcribe` takes
+   `native_assemblyai` only, because litellm cannot call the Sync API.
+3. **The id carries the languages.** The id is `assemblyai/universal-3-5-pro`
+   or `assemblyai/universal-3-5-pro/hi,en`.
+   - The declare route refuses an unknown model, an unknown code, a repeated
+     code and an empty part with a 400.
+   - The vendor takes 32 codes, listed in `stt_assemblyai.LANGUAGES`.
+   - An id with no codes sends no `config` part.
+4. **One request for each clip.** The Sync API takes 20 minutes, and the door
+   caps a WAV clip at 600 seconds. So the handler never cuts a clip.
+5. **The bill.** The door bills the seconds it measures from the WAV bytes.
+   The vendor field `audio_duration_ms` never sets a quantity.
+6. **The 415.** The handler takes PCM WAV only, so the door answers 415 for
+   any other clip when no step is left. The vendor takes more formats, but the
+   bill needs the measure.
+7. **Failover.** The handler passes the vendor status to the chain.
+   - A 5xx, a 504, a 429 and a network error fall to the next step.
+   - A 400 and a 413 stop the walk.
+   - A 401 says the key is bad. The walk strikes the vendor and takes the
+     next step (`router.CREDENTIAL_STATUSES`), as it does for a Sarvam 403.
+   - A 200 with no `text` is terminal.
+8. **The key stays private.** The handler sends the key in `Authorization`.
+   It logs the status only, and never the key, the audio or an error body.
+
+**The vendor facts for VOX-6.** We read them on 2026-11-08 at
+`https://www.assemblyai.com/docs/api-reference/sync-api/transcribe.md`.
+The endpoint is `POST https://sync.assemblyai.com/v1/transcribe`. The
+headers are `Authorization` and `X-AAI-Model: universal-3-5-pro`. The
+multipart parts are `audio` and `config`. The 200 body holds `text`, `words`, `confidence`,
+`audio_duration_ms`, `session_id` and `request_time_ms`. The handler uses the
+global host only.
+
+| Rule | Fence |
+|---|---|
+| The request carries the URL, both headers, the `audio` part, and a `config` part only when the id names languages | `test_customer_console_stt_assemblyai.py::TestTheRequestShape` |
+| The declare route refuses an unknown language | `test_customer_console_stt_assemblyai.py::TestTheIdSplit` |
+| A WAV clip bills the measured minutes, and the door writes one `transcribe` row | `test_customer_console_stt_assemblyai.py::TestAssemblyAIOnTheTranscribeDoor` (R8) |
+| A 5xx or 504 fails over, and a 400 does not | `test_customer_console_stt_assemblyai.py::TestTheFailures` |
+| The key never reaches a log line or an error | `test_customer_console_stt_assemblyai.py::TestTheKeyStaysOutOfEveryRecord` |
+
+**The vendor facts**, read on 2026-11-08 at
+`https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
+`POST https://api.sarvam.ai/speech-to-text`, the header
+`api-subscription-key`, and the multipart fields `file`, `model` and `mode`.
+The 200 body holds `transcript` and no duration.
+
+| Rule | Fence |
+|---|---|
+| A WAV clip bills the measured minutes, on a Sarvam step and on a litellm step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor`, `::TestALitellmStepBillsTheMeasuredWav` (R8) |
+| The Sarvam request carries the header, the vendor model and the mode | `test_customer_console_stt_sarvam.py::TestTheRequestShape`, and the R8 class above |
+| A clip that is not WAV on a Sarvam-only chain answers 415 and writes no row | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8) |
+| A Sarvam 5xx fails over to the next step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8), `test_customer_console_stt_sarvam.py::TestTheFailures` |
+| A `sarvam/` transcribe model takes `native_sarvam` only | `test_customer_console_stt_sarvam.py::TestTheNativeVerbForSpeech` |
+
 ### 6A.10b The handler seam (H-47) — BUILT 2026-09-23 by CP-13a
 
 ✅ **CP-13a built this seam on 2026-09-23**, with `native_typesafe` as its
@@ -10177,6 +10294,10 @@ facts the table did not state:
   `native_*`. `POST /catalog/capabilities` answers 400 and names the rule.
   Without it, `(model, decide, acompletion)` would answer 502 on the first
   customer call.
+  📌 **VOX-2 changed the first half on 2026-11-08.** From that date, each
+  `native_*` verb serves the ONE task of its handler. `native_sarvam` and `native_assemblyai` serve `transcribe`, and a
+  System One verb still serves `decide` only. `decide` still takes a native
+  verb only (`catalog.NATIVE_ONLY_TASKS`). §6A.10a holds the transcribe half.
 - **A 200 that the handler cannot read STOPS the chain.** The vendor has
   already charged for it, so a second step would pay a second vendor for the
   same request. The handler raises `NativeProviderError` with
@@ -10319,12 +10440,47 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - **The verb list on the page is a mirror.** `src/lib/invocation.ts` copies
   three constants from `catalog.py`. `test_operator_console_invocations.py`
   fails when the copies differ.
+  📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
+  `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
+  `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
+  📌 VOX-6 (2026-11-08) added `native_assemblyai` to the three mirrors and
+  to the `assemblyai` card. `test_operator_console_vendor_slugs.py` lets that
+  slug stay native while litellm lists it, because litellm cannot call it.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.
 - **The TypeSafe guide sits in a new "Decisions" section on `/providers`.**
 - `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
   route reaches no credit write, and a deployment key meets 401 on it.
+
+**VOX-4 (2026-11-08): two more tries, by the same rule.** Spec:
+`projects_ai_chat.md` §31.5.
+
+- **The routes are `POST /catalog/transcribe/try` and `POST /catalog/vision/try`.**
+  Both take a multipart `file`. The vision route also takes a `question` of up
+  to 500 characters. Neither takes a tier. They try `tier-stt` on task
+  `transcribe` and `tier-vision` on task `vision`.
+- **The metering rule is the one above.** The platform key only, a call
+  through `router.call_chain`, and no `usage_event` row. One `control_audit`
+  row for each call that reached the vendor, with the action
+  `catalog.transcribe_try` or `catalog.vision_try`. The outcome is `served`,
+  `upstream_failed` or `unreadable`. `_audit_try` writes it, and it never raises.
+- **The speech route uses the door's helpers.** `_transcribe_attempts` picks the
+  steps. `_transcribe_kwargs` builds the call. `wav.py` measures a WAV clip
+  from its bytes, so a WAV clip answers the length that the Console measured.
+  A try takes 10 MB and 60 seconds. A try takes WAV only, and a clip that is
+  not WAV gets a 415 before the chain resolves.
+- **The vision route sends one chat call with one image part.** The door serves
+  `vision` with the chat verb. The route reads the format from the first
+  bytes (`image_sniff.py`) and decodes no pixel. It takes 4 MB. The system text
+  is the text of `analyze_image` in VOX-3.
+- **A vendor failure shows the vendor's words.** The door never echoes them.
+  A try does, because the operator needs them to fix a key. The Console removes
+  every credential it read and any text shaped like a key, and it cuts the text
+  to 300 characters. The status still goes through `_upstream_refusal`.
+- **The `MATRIX` rows are `admin`, with no elevation window.** `_PROBES` in
+  `test_operator_roles.py` and `NOT_COMMERCIAL` in `test_customer_console_catalog.py`
+  gained both routes. The suite is `test_customer_console_try_voice.py`.
 
 #### CP-13c · The tenant client
 
@@ -11134,6 +11290,23 @@ door too, and its index degrades. The owner accepts this. A zero-credit org
 gets no embeddings, and the premium features of a zero-credit org are decided
 later. The door keeps the shared prelude. A page saved during the refusal
 keeps NULL vectors until its next edit.
+
+### 6A.17 Sampling values per step — BUILT (task 2450)
+
+The Router runs litellm with no `drop_params`. A step whose model refuses a sampling value would answer 400 for the whole request.
+
+- Measured on 2026-11-08, litellm 1.103.0: `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-opus-4-8` refuse `temperature=0.2`. The error reads "Only temperature=1 is supported."
+- `claude-sonnet-4-6` and `claude-haiku-4-5` take the value.
+- Metorite sends `temperature=0.2` by default, so Claude 5.5 failed on every chat tier and on `tier-vision`.
+- `reasoning.sampling_params_for(kwargs, model)` drops `temperature`, `top_p` and `top_k` for a refusing step. It keeps `temperature` when the value is 1.
+- For an Anthropic model, it asks litellm's own rule, `AnthropicModelInfo._supports_sampling_params`. For any provider, it also honours `supports_sampling_params: false` in `litellm.model_cost`.
+- A model that litellm cannot place keeps its values. The function never sets `drop_params`.
+- The last wall is a version rule. A Claude id at version 5 or later, or a Fable or Mythos id, takes no sampling value. It covers a Claude id that is newer than the litellm map, for example `claude-sonnet-5-6`. Claude 5 and later accept only `temperature=1`, so the drop is always safe for them.
+- The chat `_kwargs_for` calls it for each step, beside `reasoning_params_for` (task 1128). A chain with Claude 5.5 first and Gemini second gives each step its own body. The stream path and the image path use the same `_kwargs_for`.
+- A drop writes one INFO line, `router.sampling_params_dropped`, with the model and the dropped names. It never logs message content.
+- The line fires once per pair of model and dropped names in each process, so a busy chat writes no line per call. A set of at most 256 pairs holds the memory.
+- A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
+- Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 

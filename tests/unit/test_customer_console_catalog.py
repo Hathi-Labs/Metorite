@@ -192,6 +192,10 @@ class TestTheWriteContractIsInsertOnly:
         # all: it calls the vendor and writes one audit row. No commercial
         # term moves, so it is filed here, not under INSERT_ONLY.
         "/catalog/decide/try",
+        # VOX-4 (2026-11-08). The two voice tries write no catalog row
+        # either: they call the vendor and write one audit row.
+        "/catalog/transcribe/try",
+        "/catalog/vision/try",
     )
 
     def _catalog_routes(self) -> list[tuple[str, str]]:

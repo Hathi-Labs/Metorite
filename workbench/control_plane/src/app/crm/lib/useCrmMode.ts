@@ -361,6 +361,20 @@ export function usePipelines(enabled: boolean): PipelinesState {
 }
 
 /**
+ * The lead pipelines (WS-CRM CRM-M4a). Every failure reads as "no lead
+ * pipelines": the Lead statuses card then shows the one default list, as
+ * before. A create (`api.createPipeline`) wakes this read through
+ * `invalidate("crm:")`.
+ */
+export function useLeadPipelines(enabled: boolean): PipelinesState {
+  const res = useCachedResource<DealPipeline[] | null>(
+    enabled ? `${KEY_PIPELINES}:lead` : null,
+    () => api.listLeadPipelines().catch(() => null),
+  );
+  return { pipelines: res.data ?? null, loading: enabled && res.loading };
+}
+
+/**
  * The owners the owner filter offers (CRM-X1). A failure reads as "no list":
  * the filter then offers Anyone and Me, and the list still loads.
  */

@@ -56,6 +56,7 @@ from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import candidates as _candidates  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
+from gateway.routes.projects import cycles as _cycles  # noqa: F401
 from gateway.routes.projects import decisions as _decisions  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
@@ -69,6 +70,7 @@ from gateway.routes.projects import needs_attention as _needs_attention  # noqa:
 from gateway.routes.projects import notifications as _notifications  # noqa: F401
 from gateway.routes.projects import personal as _personal  # noqa: F401
 from gateway.routes.projects import plan_analysis as _plan_analysis  # noqa: F401
+from gateway.routes.projects import plan_order as _plan_order  # noqa: F401
 from gateway.routes.projects import plan_preview as _plan_preview  # noqa: F401
 from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
@@ -79,7 +81,9 @@ from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401
 from gateway.routes.projects import tags as _tags  # noqa: F401
 from gateway.routes.projects import tasks as _tasks  # noqa: F401
+from gateway.routes.projects import templates as _templates  # noqa: F401
 from gateway.routes.projects import tree as _tree  # noqa: F401
+from gateway.routes.projects import updates as _updates  # noqa: F401
 from gateway.routes.projects import views as _views  # noqa: F401
 from gateway.routes.projects import vocabulary as _vocabulary  # noqa: F401
 from gateway.routes.projects import watchers as _watchers  # noqa: F401

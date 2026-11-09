@@ -169,7 +169,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140, D183, D186) · `specs/orchestration_playbook.md` (D186) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a · P9 planned 2026-11-06 (D183, SW-44 to SW-63, task 1874) |
-| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
+| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146, D193, D202 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-6, PKG-9 and PKG-13 are built (PKG-4 to PKG-6, PKG-9 and PKG-13 dark). PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · PKG-6 is built dark, and PKG-6b (bell setup row, All apps listing, access report) is built dark. Stars for an install pane wait on a gateway change to `SHELL_PANES` in `routes/admin/me.py` · PKG-17a (the org default per role, `GET` and `PUT /shell/layout`) is built dark, and PKG-17b is the client read · PKG-18a (the Today band, client only) is built dark behind `NEXT_PUBLIC_TODAY_BAND` · next PKG-14 (the host door that reads and writes the PKG-13 values) |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). 2026-11-05: WEB-4 built dark (the search provider list). WEB-6 built (the web worker container). 2026-11-06: WEB-7 built dark (`fetch_page` render through the worker, task 1265). Docling and the scanned PDF split to WEB-7b (task 1837). Next WEB-7b, WEB-8, or WEB-5 (waits on WEB-Q1) |
 | WS-CIV | **CI velocity**: each PR runs the tests its diff can affect, and `main` runs the full suite in batches after the merge. No merge queue (D-2026-10-16 stays) | 🟢 active · started 2026-11-04 (D176) | `specs/ci_velocity.md` | Metorite: project "Developer Workflow", epic 1628, slices CIV-1 to CIV-9 = tasks 1629 to 1637 · CIV-1 (outside contributors need approval) done 2026-11-04 · CIV-4 is HIGH (deploy path) · CIV-13 (task 1721, D178, HIGH): the home box starts the 21:30 release, built 2026-11-05 · CIV-21 (task 2210, D194, HIGH): production releases three times a day, at 05:30, 13:30 and 21:30 UTC, built 2026-11-07 |
@@ -4937,6 +4937,8 @@ Owner directive, 2026-10-31, in chat. Metorite: task 1215. It supersedes the sta
 
 ### D145 — Preview, owner approval, local staging gate, merge, daily release (2026-10-31)
 
+**Amended by D200 (2026-11-08):** a small, low-risk change on an existing screen merges before the owner's approval, and the owner reviews it afterwards.
+
 Owner directive, 2026-10-31, in chat. Metorite: task 1224 (LD-7), under epic 1100. It supersedes D144 point 2. D144 points 1, 3, 5, 6 and 7 stand.
 
 ```text
@@ -5751,6 +5753,23 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
 
+
+### D196 — Setup health: each live app lists its setup items, the chat nudges one at a time, and a score follows (ACCEPTED 2026-11-08)
+
+**ACCEPTED.** Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945). Q8 decided: owner, 2026-11-08 15:07 UTC, on task 945 ("Keep it in the Get started settings (my_day_prefs), no new table"). Owner asks of 2026-10-29 (epic 940) and 2026-11-08, in chat. Metorite: tasks 940 and 945.
+
+1. **Two phases.** Phase A gives each live app setup items (done, missing, stale) and one chat nudge. Phase B adds measures, weights, a nightly score and a Setup health page.
+2. **One seam.** The items ride `setup_status` (OB-1a) and the `setup` field of the shell manifest (PZ-18). The nudge rides the personalization interview. No second registry and no second budget.
+3. **One budget.** All unprompted setup questions share the limits of D-PZ-13 with the interview. The limits are one a day across all apps and 14 days after a dismiss. "Do not ask again" stops an item for good.
+4. **A check reads counts and settings, never content.** A member sees the member checks. An admin also sees the org checks and the adoption counts.
+5. **A check with no data waits.** No column is invented. A check that cannot run is out of the score.
+6. **"Not for us"** takes a check out of the nudges and the score. A member marks member checks, and an admin marks org checks.
+7. **The nudge state lives in the `setup` key of `user_settings.my_day_prefs`** (`specs/onboarding.md` §7.2), beside the item state. No new table. The profile does not hold it, so the `learning` switch does not stop a nudge (Q8).
+
+**Re-check this number at merge.** The first merge wins a D-number. A scan of `origin/*` and the worktrees on 2026-11-08 found D195 as the highest, so D196 was free.
+
+Fence: the planned tests of `specs/personalization.md` §18.11. Each rule is advisory (R7) until its slice builds.
+
 ### D197 — Approvals have one named approver, the intake form is for members only, and Projects has no timer: the three answers of LP-0 (2026-11-08)
 
 Owner decision, 2026-11-08 at 15:02 UTC, on Metorite task 987 (LP-0). The owner chose "Accept all three recommendations". The options are in `specs/project_management_app.md` §14.5 (two questions) and §14.6 (the timer note). It changes no other rule.
@@ -5779,6 +5798,134 @@ The owner accepted the recommendation of the plan audit session on 2026-11-08, i
 **Re-check this number at merge.** The first merge wins a D-number. On 2026-11-08, branch `mt-e634d840-sh0-setup-health` held D196, and the box worktree `wt-civ23-box-runners` held D198.
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The rules stay advisory until WM-5, SW-21 and WM-2 build their tests (R7).
+
+### D200 — A small, low-risk screen change merges after the captures, and the owner reviews it afterwards (2026-11-08)
+
+Owner directive, 2026-11-08, in chat. Metorite: task 2310. It amends D145 for one class of slice. D145 stays the default.
+
+```text
+"let small, low-risk screen changes merge with only the screenshots, and review them afterwards."
+```
+
+1. **A slice qualifies when all of these hold.** The slice is tier LOW or STANDARD. It is a small change on an existing screen, such as one new field or control, one line of text or a count, or a layout fix. A larger change also qualifies when the whole visible change sits behind a flag that is off by default.
+2. **A slice does not qualify in these cases.** A HIGH slice. A new page, screen, tab, navigation entry or flow. A change to what every member sees by default, with no flag. Any change that touches money or identity, or that sends to a person. When in doubt, preview first (D145).
+3. **Everything else stays.** The slice still needs the four captures and the `Visual review:` line, the independent verifier, and the full gates. The only skipped step is the wait for the owner's approval before the merge.
+4. **After the merge,** the agent posts the captures on the task and calls `ask_on_task` with two options, "Looks right" and "Change it". A "Change it" becomes a follow-up task under the same epic. The task closes when the pull request merges. The question stays open on the run until the owner answers.
+5. **Who judges "small".** The coordinator and the verifier judge it. The pull request body states why the slice qualifies.
+
+Fence: `tests/unit/test_loop_local_first.py` pins D200 in `CLAUDE.md`, `next-ticket.md` and `engineering_practice.md` §1.3. The judgement of "small" is advisory (R7).
+
+### D201 — GitHub Actions light jobs run on the box's own runners, with a safety design (2026-11-08)
+
+Owner decision, 2026-11-08, in chat. Metorite: task 2304 (CIV-23). It reverses the non-goal "no GitHub self-hosted runner" of `specs/ci_velocity.md` §2. It changes no other rule.
+
+1. **What runs on the box.** The light jobs of `pr-check.yml`: lint, migrations, frontend, caddy and the secret scan. The unit shard job (`test`) stays on `ubuntu-24.04`, because it ran over 40 minutes on the box against 14 on GitHub (measured 2026-11-08, quiet box, tmpfs database). `e2e` and `backup-restore` stay there too.
+2. **The label.** The runners carry only the label `metorite-box`. They carry no default label, and no job uses `self-hosted`.
+3. **The switch.** The variable `USE_BOX_RUNNERS` set to `1` turns it on. Any other value sends the job to `ubuntu-24.04`.
+4. **No fork code on the box.** The `runs-on` test routes a fork PR to `ubuntu-24.04`, but it is not the control: a fork PR carries its own workflow file. The control is the repository setting `fork-pr-contributor-approval = all_external_contributors`. A maintainer must not approve a fork run that touches `.github/`. No test pins the setting, so this rule is advisory (R7).
+5. **The runner user.** User `ghrunner` has no sudo, is not in the docker group, and has a home with mode 750. Its Docker is rootless. Runners `metorite-box-1` to `-4` (more may register) run as capped systemd user services (6 GB and 4 CPUs each).
+6. **No sudo in a job.** A step that needs `sudo` or `apt-get` runs only when `runner.environment == 'github-hosted'`. The owner of the box installs each tool that a job needs.
+7. **Service containers.** The box runners share one Docker daemon. The Postgres containers publish to a host port that Docker picks. A step writes the database URLs from that port.
+
+Fence: `tests/unit/test_box_runner_routing.py`. **Re-check this number at merge.** The first merge wins a D-number. Branches held D198 to D200 when task 2304 wrote this record.
+
+### D202 — AI Studio is a full web IDE inside Metorite: blocks first, code files first-class, one UI kit, a sandbox per organization and per person, and the new blocks (2026-11-08)
+
+Owner directives of 2026-11-08, in chat, and the owner's answers in Metorite on tasks 2326 and 2327. Owner spec: `specs/ai_studio.md` §0, §2.2, §5.1, §5.4, §6.3, §6.5, §11.2, §14, §15, §19.10 and §20.1, and the row PKG-14c of `specs/package_host.md`. Board: **WS-STU**. Metorite: task 2326, task 2327 and epic 491.
+
+**It keeps D193, and refines it. It amends one line of D146.1, by the owner's choice 4 on task 2326 (the end of this record says how). It reopens no other decision.** All dates are UTC.
+
+```text
+"The app studio should function like a full blown web IDE, with guardrails and
+connectors that fit it within the Metorite ecosystem. I should be able to reuse
+elements that are already used across Metorite like the kanban boards, list
+views, tabbed views etc so that we don't need to rebuild these elements from
+scratch. Similar the UI/UX feel, rules etc. We should be able to extend
+functionality for installing custom modules, libraries, packages etc as and
+when needed. Need to be careful about how the sandbox for all this works taking
+into account the organisation and people within the organisation."
+                                                          (chat, 2026-11-08)
+
+"the main usecase is that when a company needs to build custom apps to extend
+the functionality of metorite to adapt it with their own organisation"
+                                                          (chat, 2026-11-08)
+
+"Overall goal is to have standard apps like CRM, projects, finance module,
+etc., that are common for all organizations, but be able to extend Metorite by
+making custom applications and also customizing the core apps to completely
+fit hand in glove with existing organizations. Ensure that the app creator is
+able to do something like that."                          (chat, 2026-11-08)
+
+"Accept all four"   (Metorite, task 2326, 2026-11-08 18:25 UTC: choices 1 to 4)
+"looks good"        (chat, 2026-11-08: the use-case brainstorm)
+"Accept all four"   (Metorite, task 2326, 2026-11-08 19:04 UTC: questions A to D)
+"Finance and HR we will build later."                     (chat, 2026-11-08)
+"Accept all six"    (Metorite, task 2327, 2026-11-08 19:04 UTC)
+"go ahead with your recommendations"  (chat, 2026-11-08: questions 7 to 9 of task 2327)
+"would also be good to have git."                         (chat, 2026-11-08)
+"I like your ideas for Git, we should do that. If we are developing a Studio
+app in VS Code, then we need to ensure that there is a proper
+scaffolding/connection/harness to ensure that it properly is compatible with
+AI Studio."                                               (chat, 2026-11-08)
+```
+
+1. **One IDE: blocks first, code files first-class (choice 1).** The IDE of D193 gets a Files branch beside Data, Views and Rules. Each file is TypeScript or TSX, with type hints for the UI kit and the door. The IDE adds a preview that reloads on save, a console, a test panel, a package panel and version history. Mira uses blocks first, and writes code only where no block fits. The four layers of D146.1 stay.
+2. **A Metorite UI kit inside the code frame (choice 2).** The code frame gets the same Board, Table, List, Tabs, Form, Detail and chart components as the app. They come from the same source, use the same tokens and carry TypeScript types. Data moves only through the door.
+3. **A sandbox per organization and per person (choice 3).**
+   - No org shares a run with another org. Metorite stores a package layer once only when its hash is the same. The layer counts against the cap of each org that uses it.
+   - Each org owns its secrets, connectors, credits and caps. An admin stops all code of the org with one switch.
+   - Writing code is off by default. An admin turns it on for a group (a `group:<slug>` grant, D12). Every Studio member still builds with blocks.
+   - A holder of `studio:publish` approves each version and each package list.
+   - Code reads and writes with the rights of the viewer, never of the author.
+   - A restricted field never enters a sandbox, unless a reviewer approves it.
+   - A run with no viewer runs as one named member (B6).
+4. **Custom screens first, before SBX-9 (choice 4).** Screen code runs in the viewer's browser, in a locked frame with no network. The screen path comes first, with the standard set: React, the UI kit, the icons and three.js. Packages and server code come after SBX-9. **The condition:** a spike (L3) must first prove that the TS and TSX compile runs in the browser. The reason: member code stays off the production box (D127.2). If it cannot, all code waits for SBX-9.
+5. **The answers to the brainstorm (2026-11-08).**
+   - People outside the org stay in Group O (§20). No portal accounts.
+   - Offline capture comes in wave 2, for forms and guided steps only.
+   - Record history and the version lock come in wave 1, and formal e-signatures in wave 2.
+   - The first three templates are an assembly guide (Fracktal, customer zero), a shipment tracker and a field site survey.
+6. **More asks of 2026-11-08.** The owner also asked for four more things. They are three.js components, generated images once the image tier exists (task 1406), and Mira inside each app. The fourth is photos or video that turn into a process. Each one is a block or an action of §14. Generated images wait on task 1406.
+7. **Core apps, fitted and extended (questions A to D of task 2326).** Core apps serve every org. Packages fit them to one org through `package_host.md` §8, and custom apps are Studio packages. All three layers share one door, one look and one channel layer.
+   - **A.** When Metorite builds Finance and HR, they are first-party Studio packages. The owner put Finance and HR later, so no slice exists for them now. The HR rows B18, I7 and K10 stay in Backlog, marked later.
+   - **B.** An org may rename record kinds and stages, as display labels in an overlay. The data and the APIs keep one name (STU-H4).
+   - **C.** An org uses its own domain and its own WhatsApp number first. Metorite gives a sender subdomain for notices only, as a fallback, and no shared WhatsApp number (O21).
+   - **D.** A package may add save rules to a core app, through one save-rule seam in each core app. The rules use the closed Studio grammar, only refuse a save, and ship dark (C26).
+8. **The clinic answers (task 2327: the six choices, and questions 7 to 9).**
+   - The clinic app is a template of group K (K9). It runs on sample data until WS-37 and a lawyer clear real patients (D174.6).
+   - The AI scribe, summaries and code suggestions run only with the consent of the patient, an admin opening (D174.6) and the acceptance of a clinician. No AI diagnosis from images.
+   - The ABDM registration comes later, when the first clinic asks. Each clinical field maps to FHIR from now.
+   - Code lists: ICD-10 after a check of the WHO terms, and LOINC, first. SNOMED CT after the NRCeS affiliate licence. No CPT.
+   - Metorite hosts health data in India, with a residency flag for each org (J10).
+   - Each clinic keeps its own drug list, with no interaction check.
+   - Automatic replies to people outside the org follow the four rules of O18.
+   - Booking by email runs on the shared mailbox (task 733, O17).
+   - Payments use Razorpay on the account of each clinic (O10), and prepay is a setting for each service. The owner approves the first live payment link.
+9. **Git in the IDE (2026-11-08).** The IDE gets a full save history with revisions (G17), and named drafts as branches (G18). An optional two-way sync joins a folder in the GitHub repository of the org (G19). A push never publishes by itself, and the token never reaches a sandbox.
+10. **Building outside Metorite (2026-11-08).** An app that a member builds in VS Code is the same package as one built in Studio. It has one manifest format, one validator, one build and one review. A scaffold, an SDK, a CLI and an AI harness keep it compatible, and add no second seam. The CLI calls the server for each check, and has no publish. Metorite accepts source only, and never a bundle that a laptop built. `ai_studio.md` §6.5 and G20 to G27 hold the design.
+
+**How D202 reads earlier decisions.**
+
+- **The layers of D146.1** stay. **D202 amends one line of D146.1, by the owner's choice 4 on task 2326.** D146.1 said that "a member-authored logic module and the code block run only on the off-box sandbox (D127.2)". Now member code runs only in the off-box sandbox (server code) or in the viewer's browser (screens). D127.2 means off the production box. A member logic module still waits for SBX-9.
+- **The IDE of D193** keeps its route, its layout and the one dock. The Explorer gains Files, and the centre gains the code tools of item 1 and the git parts of item 9.
+- **The access model of D180** holds. A group carries no permission (D180.4), and Studio adds no new permission (D180.5). So the code right of item 3 is a Studio setting, not a permission. It is a list of D12 grants that J7 stores and the Studio routes read.
+- **The health rule of D174.6** holds. Each clinical field stays restricted, and the AI reads one only after an admin opened it.
+
+The owner confirmed both wordings on task 2326, 2026-11-08 19:54 UTC.
+
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-08, main held D200, and the branch `civ23-box-runners` held D201.
+
+Fence: each rule of `ai_studio.md` §19.10 names its fence, and each rule stays advisory until its slice builds that fence (R7). The four rules of O18 name theirs. `tests/unit/test_decision_ids.py` fails when two D202 entries merge.
+
+### D203 — The browser suite runs on a PR only when it changes the frontend, and every night on main (2026-11-08)
+
+Owner decision, 2026-11-08, in chat: "i approve". Metorite: task 2316 (CIV-24). It narrows D-PM-21 for pull requests. No test is deleted.
+
+1. **A PR.** The suite `e2e` runs only when the diff touches `workbench/control_plane/`. A change to CI alone (`.github/`) no longer forces it. Known gap, advisory (R7): a PR that edits only the steps of the `e2e` job in `pr-check.yml` skips the suite. The next frontend PR shows the break. The job still runs when `changes` fails.
+2. **The night.** `e2e-nightly.yml` runs every spec of the `ci` project at 00:30 UTC on main, in three shards. It also takes `workflow_dispatch`. It uses the box runners only from main and only when `USE_BOX_RUNNERS` is `1`, one shard at a time, because each shard binds port 3101. This amends D201 item 1: the nightly `e2e` is the one heavy job on the box. A red night is a red-on-main finding for lane-ci.
+3. **The register.** The nightly uses the same `ci` project and the same quarantine as the PR gate.
+
+Fence: `workbench/control_plane/src/lib/e2eGate.test.ts` and `tests/unit/test_box_runner_routing.py`. **Re-check this number at merge.**
 
 ## 4. Single-owner registry (who owns duplicated work)
 
