@@ -388,9 +388,10 @@ class _Outcome:
     #: True when the call wrote its own audit row, in the session of the write,
     #: or wrote none because it held no connection.
     audited: bool = False
-    #: The ids of the lines that a write saved with its record (C13), in the
-    #: order of the body. The audit row holds their count only.
-    lines: list[str] | None = None
+    #: The ids of the lines that a write saved with its record (C13), by the key
+    #: of their lines field, each list in the order of the body. The audit row
+    #: holds their count only.
+    lines: dict[str, list[str]] | None = None
 
 
 def _app_id(raw: str) -> str:
@@ -762,6 +763,16 @@ async def _line_writes(db: Any, package: packages_store.Package,
     return writes
 
 
+def _saved_lines(lines: list[_Line], answers: list[Any]) -> dict[str, list[str]]:
+    """The ids of the saved lines, by the key of their lines field, each list
+    in the order of the body (C13)."""
+    out: dict[str, list[str]] = {}
+    for line, saved in zip(lines, answers, strict=True):
+        if isinstance(saved, objects_store.Record):
+            out.setdefault(line.key, []).append(saved.id)
+    return out
+
+
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
                            ref: UsesRef, raw: bytes, out: _Outcome) -> None:
     """Run one create, update or delete as *member*, through ONE
@@ -815,7 +826,7 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
         out.record = done
         out.record_id = done.id
         if lines:
-            out.lines = [a.id for a in answers[1:] if isinstance(a, objects_store.Record)]
+            out.lines = _saved_lines(lines, answers[1:])
             # A roll-up over the lines (C7b) changed the record after its own
             # write, in the same batch. The answer reads it once, so it shows
             # the sum that the batch committed.
@@ -1131,7 +1142,7 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
     if out.request_id is not None:
         detail["request_id"] = out.request_id
     if out.lines:
-        detail["lines"] = len(out.lines)
+        detail["lines"] = sum(len(ids) for ids in out.lines.values())
     return detail
 
 

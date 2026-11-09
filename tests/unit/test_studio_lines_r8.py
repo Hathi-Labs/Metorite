@@ -271,7 +271,14 @@ async def _order_with(w: Any, org: str, pid: str, lines: list[dict[str, Any]],
                       title: str = "Bike") -> dict[str, Any]:
     status, got = await _direct(org, pid, "add", {"data": {"title": title, "lines": lines}})
     assert status == 200, got
-    return got
+    return _flat(got)
+
+
+def _flat(got: dict[str, Any]) -> dict[str, Any]:
+    """The answer of a save, with the ids of the field `lines`. The answer gives
+    the ids of each lines field under its key (fix round 1, P3)."""
+    assert set(got["lines"]) == {"lines"}, got["lines"]
+    return {**got, "lines": got["lines"]["lines"]}
 
 
 # -- a. all or none --------------------------------------------------------------------
@@ -395,6 +402,7 @@ def test_r8_an_update_adds_and_changes_lines_and_the_rollup_follows(world) -> No
 
     made, (status, got) = _run(w, go)
     assert status == 200, got
+    got = _flat(got)
     rid = made["record"]["id"]
     assert got["record"]["data"] == {"title": "Bike 2", "total": 20}
     assert got["lines"][1] == made["lines"][0] and got["lines"][0] not in made["lines"]
@@ -527,6 +535,120 @@ def test_r8_a_parent_id_that_is_not_a_uuid_is_refused(world) -> None:
         "data": {"order": {"id": "not-a-record"}, "qty": 1}}))
     assert status == 422 and got["code"] == "field_invalid", got
     assert len(_records(w, w.line.id)) == 0
+
+
+# -- fix round 1 -------------------------------------------------------------------------
+
+
+def _state(w: Any) -> list[tuple[str, Any, Any]]:
+    """Each record of the order and line objects of both packages of org A, with
+    its data and its time, so a test sees that a refused batch wrote nothing."""
+    return [(r.id, r.data, r.updated_at)
+            for oid in (w.order.id, w.line.id, w.order2.id, w.line2.id)
+            for r in _records(w, oid)]
+
+
+async def _batch(w: Any, writes: list[Write]) -> BatchError | list[Any]:
+    """One batch of the store in org A, package 1. A refusal is the answer."""
+    async with tenant_session(w.a) as db:
+        try:
+            return await store.apply_writes(db, ANA, package_id=w.pkg, writes=writes)
+        except BatchError as exc:
+            return exc
+
+
+@pytest.mark.parametrize("form", ["urn", "uuid", "braces", "capitals", "hex32"])
+def test_r8_an_id_of_another_form_is_422_and_writes_nothing(world, form) -> None:
+    """Fix round 1, P2. Python reads `urn:uuid:`, `uuid:`, braces, capitals and 32
+    digits with no dash as a UUID, and Postgres refuses some of them. A parent id
+    takes the one form only, so each other form is a 422 and never a 500."""
+    w = world
+    made = _run(w, lambda: _order_with(w, w.a, w.pkg, [{"data": {"qty": 1}}]))
+    rid, line = made["record"]["id"], made["lines"][0]
+    sent = {"urn": f"urn:uuid:{rid}", "uuid": f"uuid:{rid}", "braces": "{" + rid + "}",
+            "capitals": rid.upper(), "hex32": rid.replace("-", "")}[form]
+    before = _state(w)
+
+    async def go() -> tuple[tuple[int, Any], tuple[int, Any]]:
+        create = await _direct(w.a, w.pkg, "add_line", {"data": {"order": {"id": sent}, "qty": 2}})
+        move = await _direct(w.a, w.pkg, "change_line", {"id": line, "data": {"order": {"id": sent}}})
+        return create, move
+
+    for status, got in _run(w, go):
+        assert status == 422 and got["code"] == "field_invalid", (form, status, got)
+        assert got["fieldErrors"][0]["field"] == "order"
+        # A brace is no character of a relation id, so the value check of C1
+        # refuses it first. Each other form reaches the check of one form.
+        assert ("one form" in got["message"]) is (form != "braces"), got["message"]
+    assert _state(w) == before, "a refused id wrote nothing"
+    rows = [r for r in _audits(w, w.pkg) if r["action"] in ("add_line", "change_line")]
+    assert [(r["outcome"], r["reason"]) for r in rows[-2:]] == [("refused", "field_invalid")] * 2
+
+
+def test_r8_a_line_saved_with_its_parent_cannot_then_move_to_another_package(world) -> None:
+    """Fix round 1, P3-1. A linked update of the line, then an unlinked update
+    that moves it to an order of package 2, in one batch. The move is checked,
+    so the batch is refused and writes nothing."""
+    w = world
+    made = _run(w, lambda: _order_with(w, w.a, w.pkg, [{"data": {"qty": 1}}]))
+    theirs = _run(w, lambda: _order_with(w, w.a, w.pkg2, [{"data": {"qty": 1}}]))
+    parent, line, other = made["record"]["id"], made["lines"][0], theirs["record"]["id"]
+    before = _state(w)
+    got = _run(w, lambda: _batch(w, [
+        Write("update", w.order.id, parent, {"title": "P"}),
+        Write("update", w.line.id, line, {"qty": 5}, parent=0),
+        Write("update", w.line.id, line, {"order": {"id": other}})]))
+    assert isinstance(got, BatchError), got
+    assert isinstance(got.cause, FieldError) and got.cause.field == "order"
+    assert _state(w) == before
+    assert _record(w, line).data["order"] == {"id": parent}
+
+
+def test_r8_the_refusal_of_a_move_names_the_write_that_moved_the_line(world) -> None:
+    """Fix round 1, P3-2. The line is locked at write 1, and write 2 moves it."""
+    w = world
+    made = _run(w, lambda: _order_with(w, w.a, w.pkg, [{"data": {"qty": 1}}]))
+    theirs = _run(w, lambda: _order_with(w, w.a, w.pkg2, [{"data": {"qty": 1}}]))
+    got = _run(w, lambda: _batch(w, [
+        Write("update", w.order.id, made["record"]["id"], {"title": "P"}),
+        Write("update", w.line.id, made["lines"][0], {"qty": 5}, parent=0),
+        Write("update", w.line.id, made["lines"][0], {"order": {"id": theirs["record"]["id"]}})]))
+    assert isinstance(got, BatchError) and got.index == 2, got
+
+
+def test_r8_a_line_saved_with_its_parent_may_then_move_inside_the_package(world) -> None:
+    """The twin of the refused batch: the move goes to an order of this
+    package, so the batch runs and both roll-ups follow."""
+    w = world
+    made = _run(w, lambda: _order_with(w, w.a, w.pkg, [{"data": {"qty": 4}}]))
+    other = _run(w, lambda: _order_with(w, w.a, w.pkg, [{"data": {"qty": 1}}], "Other"))
+    parent, line = made["record"]["id"], made["lines"][0]
+    got = _run(w, lambda: _batch(w, [
+        Write("update", w.order.id, parent, {"title": "P"}),
+        Write("update", w.line.id, line, {"qty": 5}, parent=0),
+        Write("update", w.line.id, line, {"order": {"id": other["record"]["id"]}})]))
+    assert not isinstance(got, BatchError), got
+    assert _record(w, line).data["order"] == {"id": other["record"]["id"]}
+    assert _record(w, parent).data["total"] == 0
+    assert _record(w, other["record"]["id"]).data["total"] == 6
+
+
+def test_r8_a_linked_line_of_a_parent_that_the_batch_deletes_is_refused(world) -> None:
+    """Fix round 1, P3-3. The batch updates the parent, adds a linked line, and
+    then deletes the parent. The new line would name a record that is gone, so
+    the batch is refused and writes nothing."""
+    w = world
+    made = _run(w, lambda: _order_with(w, w.a, w.pkg, [{"data": {"qty": 1}}]))
+    parent = made["record"]["id"]
+    before = _state(w)
+    got = _run(w, lambda: _batch(w, [
+        Write("update", w.order.id, parent, {"title": "P"}),
+        Write("create", w.line.id, data={"qty": 2}, parent=0),
+        Write("delete", w.order.id, parent)]))
+    assert isinstance(got, BatchError), got
+    assert isinstance(got.cause, FieldError) and got.cause.field == "order"
+    assert got.index == 1
+    assert _state(w) == before
 
 
 def test_r8_a_lines_relation_that_no_longer_fits_refuses_each_line_write(world) -> None:

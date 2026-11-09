@@ -2366,6 +2366,9 @@ class _Batch:
         self.lines: dict[str, _Lines] = {}
         #: The id of the record that each create of the batch made, by its place.
         self.made: dict[int, str] = {}
+        #: The last write that gave each line a new parent (C13), for the place
+        #: of a refusal.
+        self.moved: dict[tuple[str, str], int] = {}
 
 
 @dataclass(frozen=True)
@@ -2562,27 +2565,69 @@ def _check_lines_fit(batch: _Batch) -> None:
             raise RecordError(f"The lines of `{link.parent}` do not fit now. {problem}")
 
 
+def _plain_id(value: str) -> bool:
+    """True for a record id in its one form: 36 lower-case characters with 4
+    dashes. Python also reads `urn:uuid:`, `uuid:`, braces, capitals and 32 digits
+    as a UUID, and Postgres refuses some of them, so the store takes none of them
+    for a parent."""
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def _bad_parent(link: _Lines) -> FieldError:
+    return FieldError(link.via, f"Field `{link.via}` takes a record id of `{link.parent}` in "
+                      "one form: 36 lower-case characters with 4 dashes. Send the id as the "
+                      "app gave it.")
+
+
+def _line_moves(batch: _Batch, oid: str, before: Mapping[str, Any] | None,
+                after: Mapping[str, Any]) -> bool:
+    """True when a write gives a line a new parent (C13). It runs before the
+    statement of the write. A write that sets the parent field must send the
+    one form of the id, also for the same parent, so a refusal comes before
+    any statement reads it. A write that leaves the value as it is checks
+    nothing, so an old value never blocks another change of the line."""
+    link = batch.lines.get(oid)
+    raw = None if link is None else after.get(link.via)
+    rid = raw.get("id") if isinstance(raw, Mapping) else None
+    if link is None or not isinstance(rid, str):
+        return False
+    old = None if before is None else before.get(link.via)
+    if isinstance(old, Mapping) and old.get("id") == rid:
+        return False
+    if not _plain_id(rid):
+        raise _bad_parent(link)
+    return before is None or relation_key(rid) != _parent_of(link.via, before)
+
+
 def _new_parents(batch: _Batch) -> dict[str, dict[str, tuple[int, _Lines]]]:
     """The parent ids that the lines of the batch name by themselves, by
-    parent object, each with its first write. A linked create took its parent
-    from the batch, and a write that keeps the parent of the line names none.
-    An id that is not a UUID names no record, so it is refused here."""
+    parent object, each with the last write that moved the line. A write that
+    keeps the parent of the line names none.
+
+    A linked create took its parent from the batch, so it needs no read. Its
+    parent must still be there at the end of the batch: a later delete of the
+    parent refuses the line. An id of another form is refused again here, so
+    no such id reaches the statement."""
     out: dict[str, dict[str, tuple[int, _Lines]]] = {}
-    for mark in sorted(batch.marks.values(), key=lambda m: m.index):
-        link = batch.lines.get(mark.object_id)
+    for (oid, rid), mark in sorted(batch.marks.items(), key=lambda kv: kv[1].index):
+        link = batch.lines.get(oid)
         if link is None or mark.after is None:
             continue
         new = _parent_of(link.via, mark.after)
         if new is None or (mark.before is not None and new == _parent_of(link.via, mark.before)):
             continue
+        batch.index = batch.moved.get((oid, rid), mark.index)
+        if not _plain_id(new):
+            raise _bad_parent(link)
         if mark.before is None and batch.steps[mark.index].parent is not None:
+            parent = batch.marks.get((link.parent_id, new))
+            if parent is None or parent.after is None:
+                raise _no_parent(link)
             continue
-        batch.index = mark.index
-        try:
-            uuid.UUID(new)
-        except ValueError:
-            raise _no_parent(link) from None
-        out.setdefault(link.parent_id, {}).setdefault(new, (mark.index, link))
+        out.setdefault(link.parent_id, {}).setdefault(new, (batch.index, link))
     return out
 
 
@@ -2623,12 +2668,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
+        moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
         batch.made[batch.index] = made.id
+        if moves:
+            batch.moved[(oid, made.id)] = batch.index
         return made
     mark = _live_mark(batch, step)
     if linked is not None and _parent_of(linked[0].via, mark.after) != linked[1]:
@@ -2643,6 +2691,8 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
+    if _line_moves(batch, oid, mark.after, clean):
+        batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()

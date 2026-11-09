@@ -333,6 +333,33 @@ def test_the_door_saves_a_record_and_its_lines_in_one_batch() -> None:
     assert "_split_lines" in _calls(funcs["_run_ask"])
 
 
+_RID = "0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1"
+
+
+@pytest.mark.parametrize("value,ok", [
+    (_RID, True),
+    (f"urn:uuid:{_RID}", False),
+    (f"uuid:{_RID}", False),
+    ("{" + _RID + "}", False),
+    (_RID.upper(), False),
+    (_RID.replace("-", ""), False),
+    ("not-a-record", False),
+    ("", False),
+])
+def test_a_parent_id_takes_one_form_only(value: str, ok: bool) -> None:
+    """Fix round 1, P2. `uuid.UUID` reads each of these forms, and Postgres
+    refuses some of them, so the store takes the one form only."""
+    assert store._plain_id(value) is ok
+
+
+def test_the_refusal_of_a_parent_form_is_short_and_names_the_field() -> None:
+    link = store._Lines("00000000-0000-0000-0000-000000000001", "order", "lines", "order")
+    refused = store._bad_parent(link)
+    assert refused.field == "order"
+    for sentence in re.split(r"(?<=\.)\s+", refused.message):
+        assert _words(sentence) <= 25, sentence
+
+
 def test_a_published_lines_value_cannot_change() -> None:
     assert "lines" in store._FIELD_ATTRS
 
