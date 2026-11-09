@@ -2934,7 +2934,7 @@ def sync_vendor_feed(staff: Operator) -> dict[str, Any]:
 
 
 def _write_capability(
-    conn, *, model: str, task: str, invocation: str, streams: bool, actor: str
+    conn, *, model: str, task: str, invocation: str, streams: bool, staff: StaffIdentity
 ) -> dict[str, Any]:
     """Declare one ``(model, task)`` pair on the caller's connection (MS-1).
 
@@ -2943,6 +2943,9 @@ def _write_capability(
     declare passes, and the fix writes inside its tier's ONE transaction
     (§6A.18). It raises ``catalog.CatalogRefused`` for a pair the Console
     refuses. The caller maps that to a 400.
+
+    It takes the operator (``staff``), and its audit row names
+    ``staff.actor``. ``test_operator_session.py`` holds that rule.
     """
     verb = catalog.check_invocation_for_task(invocation, task)
     # CP-13h: a native verb must call the vendor the model prefix names.
@@ -2968,7 +2971,7 @@ def _write_capability(
         None,
         "catalog.capability",
         {"model": model, "task": task, "invocation": verb},
-        actor=actor,
+        actor=staff.actor,
     )
     return {"model": model, "task": task, "invocation": verb, "streams": streams}
 
@@ -2990,7 +2993,7 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
                 task=req.task,
                 invocation=req.invocation,
                 streams=req.streams,
-                actor=staff.actor,
+                staff=staff,
             )
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
@@ -3238,7 +3241,7 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
             task=req.task,
             chain=chain,
             effective_from=req.effective_from,
-            actor=staff.actor,
+            staff=staff,
         )
     return {"tier": req.tier, "task": req.task, "model": chain[0], "chain": chain}
 
@@ -3274,7 +3277,7 @@ def _write_chain(
     task: str,
     chain: list[str],
     effective_from: datetime | None,
-    actor: str,
+    staff: StaffIdentity,
     audit_extra: dict[str, Any] | None = None,
 ) -> None:
     """Write one whole chain on the caller's connection. **INSERT only** (MS-1).
@@ -3284,6 +3287,7 @@ def _write_chain(
     a fix passes the checks a bind passes, inside its tier's ONE transaction.
     The audit row is ``catalog.binding`` with ``tier``, ``task`` and
     ``chain``. A fix adds its own keys through *audit_extra*.
+    The row names the operator (``staff.actor``), never a shared actor.
     """
     if not _task_exists(conn, task):
         raise HTTPException(status_code=400, detail=f"unknown task {task!r}")
@@ -3369,7 +3373,7 @@ def _write_chain(
         None,
         "catalog.binding",
         {"tier": tier, "task": task, "chain": chain, **(audit_extra or {})},
-        actor=actor,
+        actor=staff.actor,
     )
 
 
@@ -3471,7 +3475,7 @@ def _fix_streams(model: str, task: str, caps: dict[tuple[str, str], tuple[str, b
 
 
 def _fix_one_tier(
-    *, tier: str, task: str, picked: list[str | None], actor: str
+    *, tier: str, task: str, picked: list[str | None], staff: StaffIdentity
 ) -> dict[str, Any]:
     """Repair one chain, in ONE transaction, under the chain lock.
 
@@ -3507,7 +3511,7 @@ def _fix_one_tier(
                     task=task,
                     invocation=verb,
                     streams=_fix_streams(model, task, caps),
-                    actor=actor,
+                    staff=staff,
                 )
         except catalog.CatalogRefused as exc:
             raise _catalog_refusal(exc) from exc
@@ -3518,7 +3522,7 @@ def _fix_one_tier(
             task=task,
             chain=list(plan.chain),
             effective_from=None,
-            actor=actor,
+            staff=staff,
             audit_extra={
                 "via": "health_fix",
                 "was": models,
@@ -3560,7 +3564,7 @@ def fix_catalog_health(req: HealthFixRequest, staff: Operator) -> dict[str, Any]
         done = ", ".join(f"{f['tier']} ({f['task']})" for f in fixed)
         prefix = f"{done} fixed; " if done else ""
         try:
-            fixed.append(_fix_one_tier(tier=tier, task=task, picked=picked, actor=staff.actor))
+            fixed.append(_fix_one_tier(tier=tier, task=task, picked=picked, staff=staff))
         except DBAPIError as exc:
             if _sqlstate(exc) not in _FIX_RETRY_SQLSTATES:
                 raise
