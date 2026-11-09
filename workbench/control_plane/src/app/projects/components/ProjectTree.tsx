@@ -315,6 +315,8 @@ interface Props {
   onManageFields?: (space: ProjectRow) => void;
   onManageTags?: (space: ProjectRow) => void;
   onManageLifecycle?: (space: ProjectRow) => void;
+  /** WS-39 SP-3a — "How this team works", on the row it opened from. */
+  onWorkStyle?: (node: ProjectRow) => void;
   /**
    * Project generations above a ROOT row. Absent = 0, which is right for the
    * live tree. The Archived section lists heads that sit deeper in the full
@@ -340,6 +342,7 @@ interface TreeManageValue {
   onManageFields?: (space: ProjectRow) => void;
   onManageTags?: (space: ProjectRow) => void;
   onManageLifecycle?: (space: ProjectRow) => void;
+  onWorkStyle?: (node: ProjectRow) => void;
 }
 
 const TreeManage = createContext<TreeManageValue>({});
@@ -807,6 +810,9 @@ function Node({
               onManageLifecycle: manage.onManageLifecycle
                 ? () => manage.onManageLifecycle?.(node)
                 : undefined,
+              onWorkStyle: manage.onWorkStyle
+                ? () => manage.onWorkStyle?.(node)
+                : undefined,
             },
             level
           ).map((entry) =>
@@ -884,6 +890,7 @@ export function ProjectTree({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  onWorkStyle,
   rootParentGen,
 }: Props) {
   const draftAtRoot = creating != null && creating.parentId === null;
@@ -904,8 +911,8 @@ export function ProjectTree({
 
   /** One object for the whole tree, so a re-render does not re-key every row. */
   const manageValue = useMemo<TreeManageValue>(
-    () => ({ onManageStatuses, onManageFields, onManageTags, onManageLifecycle }),
-    [onManageStatuses, onManageFields, onManageTags, onManageLifecycle]
+    () => ({ onManageStatuses, onManageFields, onManageTags, onManageLifecycle, onWorkStyle }),
+    [onManageStatuses, onManageFields, onManageTags, onManageLifecycle, onWorkStyle]
   );
 
   /**

@@ -3,7 +3,7 @@
 /**
  * Projects · the view tab row (WS-64 OP-12, `one_projects_app.md` §5.3, D-OP-17).
  *
- * The six canvases, then the project's saved views as named tabs, then
+ * The canvases of the node, then the project's saved views as named tabs, then
  * "+ View". It replaces the canvas strip and the saved-views list that the View
  * popover held. A phone keeps the View sheet and its vertical list, so this row
  * is for a desktop and a tablet.
@@ -29,6 +29,7 @@ import type { ViewRow } from "../lib/api";
 import {
   type TabSpec,
   canvasTitle,
+  canvasesFor,
   layoutTabs,
   viewTabIcon,
 } from "../lib/viewTabs";
@@ -43,6 +44,11 @@ function sentenceCase(id: string): string {
 export interface ViewTabsProps {
   /** The canvas on screen, or null while a lens (Needs attention) replaces it. */
   canvas: ViewMode | null;
+  /**
+   * WS-39 SP-3a — the canvases this node offers (`lib/viewTabs.ts::canvasesFor`).
+   * Absent: every canvas but the Backlog, which only a Sprints node offers.
+   */
+  canvases?: readonly ViewMode[];
   onCanvas: (next: ViewMode) => void;
   views: readonly ViewRow[];
   activeViewId: string | null;
@@ -114,6 +120,7 @@ function RowMenu({
 
 export function ViewTabs({
   canvas,
+  canvases,
   onCanvas,
   views,
   activeViewId,
@@ -157,16 +164,18 @@ export function ViewTabs({
     return () => window.removeEventListener("resize", measure);
   }, [measure]);
 
-  const canvasOptions = useMemo(
-    () =>
-      VIEW_MODES.map((entry) => ({
-        id: entry.id as ViewMode,
-        icon: entry.icon,
-        label: sentenceCase(entry.id),
-        key: entry.key as string,
-      })),
-    []
-  );
+  // The node's own canvases, in the order of `VIEW_MODES`. A string key, so a
+  // fresh array with the same canvases does not lay the row out again.
+  const offeredKey = (canvases ?? canvasesFor(VIEW_MODES, false).map((m) => m.id)).join("|");
+  const canvasOptions = useMemo(() => {
+    const offered = new Set(offeredKey.split("|"));
+    return VIEW_MODES.filter((entry) => offered.has(entry.id)).map((entry) => ({
+      id: entry.id as ViewMode,
+      icon: entry.icon,
+      label: sentenceCase(entry.id),
+      key: entry.key as string,
+    }));
+  }, [offeredKey]);
   const specs: TabSpec[] = useMemo(
     () => [
       ...canvasOptions.map((c) => ({ id: c.id, label: c.label, kind: "canvas" as const })),

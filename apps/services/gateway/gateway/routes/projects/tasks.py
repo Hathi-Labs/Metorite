@@ -114,7 +114,7 @@ from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
-from gateway.routes.projects.cycles import detach_moved_tasks
+from gateway.routes.projects.cycles import detach_moved_tasks, sprints_allowed
 from gateway.routes.projects.filters import (
     UPDATED_AGE_SQL,
     agent_filter_clauses,
@@ -595,6 +595,42 @@ class TaskListResponse(ListResponse):
     status_categories: dict[str, str | None] | None = None
 
 
+#: WS-39 SP-3a (`project_management_app.md` §13.6 row SP-3a). The values of
+#: ``cycle`` on ``GET /projects/tasks``. ``none`` is the backlog of the
+#: Backlog canvas: each task that sits in no open (planned or active) cycle.
+CYCLE_FILTERS: tuple[str, ...] = ("none",)
+
+#: A task that sits in no open cycle, over the task alias ``t``. The partial
+#: unique index ``uq_pm_cycle_tasks_one_open`` (task_id WHERE cycle_open)
+#: serves it. A closed cycle is history, so its rows do not count.
+NO_OPEN_CYCLE_SQL = (
+    "NOT EXISTS (SELECT 1 FROM pm_cycle_tasks ct"
+    " WHERE ct.task_id = t.id AND ct.cycle_open)"
+)
+
+
+def cycle_filter_clauses(cycle: str | None, user: UserContext) -> list[str]:
+    """The WHERE clauses of ``cycle``, or none when it is absent.
+
+    The flag comes first: while ``PROJECTS_SPRINTS_ORGS`` does not hold the
+    session's org, the filter answers 404 as each cycle route does, so a dark
+    feature shows nothing (``cycles.sprints_allowed``, the one reader). Then an
+    unknown value is a 422, never a silent fall back to every task. Like
+    ``unheld``, it is NOT in ``build_task_filters``: who sits in a cycle
+    changes by the hour, so a saved view cannot pin it.
+    """
+    if cycle is None:
+        return []
+    if not sprints_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if cycle not in CYCLE_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown cycle filter. One of: {list(CYCLE_FILTERS)}.",
+        )
+    return [NO_OPEN_CYCLE_SQL]
+
+
 async def _task_scope(
     db: Any, user: UserContext, vis: Any, *, project_id: str | None,
     include_subtree: bool, parent_task_id: str | None, include_descendants: bool,
@@ -764,6 +800,10 @@ async def list_tasks(
     # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
     # query, the stage of each status, and nothing else. The agent door reads it.
     compact: bool = False,
+    # WS-39 SP-3a. `none`: only the tasks that sit in no open cycle, the
+    # backlog of the Backlog canvas (`cycle_filter_clauses`). Dark behind
+    # `PROJECTS_SPRINTS_ORGS`, like the cycle routes.
+    cycle: str | None = None,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -806,6 +846,8 @@ async def list_tasks(
     agent_clauses, agent_params = agent_filter_clauses(
         agent_focus, agent_worked, actor(user),
     )
+    # WS-39 SP-3a. ANDed beside the visibility clause, so it only narrows.
+    agent_clauses = [*agent_clauses, *cycle_filter_clauses(cycle, user)]
 
     mine = check_scope(scope)
     if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:

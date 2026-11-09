@@ -84,6 +84,9 @@ import {
   ownState,
 } from "./tree";
 
+/** WS-39 SP-3a — the one label of the work-style picker, on every door. */
+export const WORK_STYLE_LABEL = "How this team works";
+
 /**
  * One menu entry, in terms with no React in them.
  *
@@ -202,6 +205,12 @@ export interface ProjectMenuUi {
   onManageStatuses?: () => void;
   onManageTags?: () => void;
   onManageLifecycle?: () => void;
+  /**
+   * WS-39 SP-3a — "How this team works", the work-style picker
+   * (`WorkStyleDialog`). Offered on EVERY level: the style sits on any node,
+   * set by hand, with no inheritance (`project_management_app.md` §13.1).
+   */
+  onWorkStyle?: () => void;
 }
 
 /**
@@ -383,6 +392,14 @@ export function projectMenuItems(
         label: "Lifecycle policy",
         icon: "History",
         onSelect: ui.onManageLifecycle,
+      });
+    }
+    if (ui.onWorkStyle) {
+      scoped.push({
+        kind: "item",
+        label: WORK_STYLE_LABEL,
+        icon: "Workflow",
+        onSelect: ui.onWorkStyle,
       });
     }
     if (scoped.length > 0) groups.push(scoped);

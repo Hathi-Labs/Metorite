@@ -16,8 +16,11 @@
  * layout. The widths are estimates and err wide: a tab that folds too soon is
  * one click further, and a tab that overflows is a scrollbar.
  *
- * Adding a canvas (SP-3, a Backlog) is one entry in `VIEW_MODES`. Nothing here
- * names a canvas.
+ * Adding a canvas is one entry in `VIEW_MODES`. The fold names no canvas.
+ *
+ * WS-39 SP-3a added the Backlog canvas, and the one canvas that a node may NOT
+ * offer. `canvasesFor` is the one answer of which canvases a node shows: the
+ * tab row, the toolbar switch, the phone sheet and the command palette read it.
  */
 
 /** Window width, in px, below which the canvas tabs show their icon alone. */
@@ -156,4 +159,38 @@ export function viewTabIcon(viewType: string): string {
 /** The tooltip of a canvas tab: its name and its key. */
 export function canvasTitle(label: string, key: string | undefined): string {
   return key ? `${label} (${key})` : label;
+}
+
+// ── WS-39 SP-3a: which canvases a node offers ───────────────────────────────
+
+/** The id of the Backlog canvas (`commands.VIEW_MODES`). */
+export const BACKLOG_CANVAS = "backlog";
+
+/**
+ * Does the node offer the Backlog canvas? Only a node whose style is Sprints,
+ * in an org that `PROJECTS_SPRINTS_ORGS` holds. `sprintsOn` is the answer of
+ * the probe (`backlogCanvas.probeSprints`): true after the cycle list
+ * answered, false after its 404, and null while nobody knows. An unknown
+ * answer hides the tab, so a dark org never sees it flash.
+ */
+export function backlogOffered(workStyle: string, sprintsOn: boolean | null): boolean {
+  return workStyle === "sprints" && sprintsOn === true;
+}
+
+/** The canvases a node offers, in the order of `all`. */
+export function canvasesFor<T extends { id: string }>(all: readonly T[], backlog: boolean): T[] {
+  return all.filter((canvas) => canvas.id !== BACKLOG_CANVAS || backlog);
+}
+
+/**
+ * The canvas on screen: the one the member chose, while the node offers it.
+ * Else the default. A pick of the Backlog on a Sprints project does not follow
+ * the member to a Flow project.
+ */
+export function canvasOnScreen<M extends string>(
+  chosen: M | null,
+  offered: readonly M[],
+  fallback: M,
+): M {
+  return chosen !== null && offered.includes(chosen) ? chosen : fallback;
 }

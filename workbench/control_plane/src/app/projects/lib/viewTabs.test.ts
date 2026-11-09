@@ -7,10 +7,14 @@ import { describe, expect, it } from "vitest";
 import { VIEW_MODES } from "./commands";
 import {
   ADD_WIDTH,
+  BACKLOG_CANVAS,
   ICON_ACTION,
   ICON_ONLY_BELOW,
   type TabSpec,
+  backlogOffered,
+  canvasOnScreen,
   canvasTitle,
+  canvasesFor,
   foldTabs,
   layoutTabs,
   tabWidth,
@@ -18,7 +22,12 @@ import {
 } from "./viewTabs";
 
 const label = (id: string) => id.charAt(0).toUpperCase() + id.slice(1);
-const CANVASES: TabSpec[] = VIEW_MODES.map((m) => ({ id: m.id, label: label(m.id), kind: "canvas" }));
+/** The six canvases of a Flow node: every canvas but the Backlog (SP-3a). */
+const CANVASES: TabSpec[] = canvasesFor(VIEW_MODES, false).map((m) => ({
+  id: m.id,
+  label: label(m.id),
+  kind: "canvas",
+}));
 const views = (n: number): TabSpec[] =>
   Array.from({ length: n }, (_, i) => ({ id: `v${i}`, label: `Saved view ${i}`, kind: "view" as const }));
 
@@ -130,6 +139,50 @@ describe("view tab row", () => {
     expect(canvasTitle("Board", undefined)).toBe("Board");
     expect(viewTabIcon("board")).toBe("Kanban");
     expect(viewTabIcon("list")).toBe("List");
-    expect(VIEW_MODES.map((m) => m.key)).toEqual(["o", "b", "l", "t", "c", "m"]);
+    expect(VIEW_MODES.map((m) => m.key)).toEqual(["o", "b", "l", "t", "c", "m", "k"]);
+  });
+});
+
+// ── WS-39 SP-3a: which canvases a node offers ───────────────────────────────
+
+describe("the Backlog canvas in the tab row", () => {
+  const ids = (backlog: boolean) => canvasesFor(VIEW_MODES, backlog).map((m) => m.id);
+
+  it("shows only on a Sprints node in an org that the flag holds", () => {
+    expect(backlogOffered("sprints", true)).toBe(true);
+    // The flag is off: the cycle list answered 404.
+    expect(backlogOffered("sprints", false)).toBe(false);
+    // Nobody knows yet: the tab waits, so a dark org never sees it flash.
+    expect(backlogOffered("sprints", null)).toBe(false);
+    // Any other style never shows it, whatever the flag says.
+    for (const style of ["flow", "shape_up", "plan", "personal", ""]) {
+      expect(backlogOffered(style, true), style).toBe(false);
+    }
+  });
+
+  it("is one more canvas for a Sprints node, and none for any other node", () => {
+    expect(ids(false)).toEqual(["overview", "board", "list", "table", "calendar", "timeline"]);
+    expect(ids(true)).toEqual([...ids(false), BACKLOG_CANVAS]);
+    expect(ids(false)).not.toContain(BACKLOG_CANVAS);
+  });
+
+  it("folds like any other canvas when the node offers it", () => {
+    const seven = canvasesFor(VIEW_MODES, true).map((m) => ({
+      id: m.id,
+      label: label(m.id),
+      kind: "canvas" as const,
+    }));
+    const out = layoutTabs({ tabs: [...seven, ...views(2)], active: ["backlog"], available: 10_000, viewport: 1440 });
+    expect(out.visible).toContain(BACKLOG_CANVAS);
+    const narrow = foldTabs({ tabs: seven, active: [BACKLOG_CANVAS], available: 10, iconOnly: true });
+    expect(narrow.visible).toEqual([BACKLOG_CANVAS]);
+  });
+
+  it("falls back to the default canvas when the node does not offer the pick", () => {
+    expect(canvasOnScreen("backlog", ids(true), "board")).toBe("backlog");
+    // The Backlog of a Sprints project does not follow the member to a Flow one.
+    expect(canvasOnScreen("backlog", ids(false), "board")).toBe("board");
+    expect(canvasOnScreen(null, ids(true), "list")).toBe("list");
+    expect(canvasOnScreen("table", ids(false), "board")).toBe("table");
   });
 });

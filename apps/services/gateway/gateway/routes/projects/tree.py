@@ -92,6 +92,7 @@ from gateway.routes.projects.core import (
     validate_grant_subject,
     validate_icon_slot,
     validate_lifecycle_settings,
+    validate_work_style,
 )
 from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.due_day import overdue_sql
@@ -146,6 +147,8 @@ _TRACKED_PROJECT_FIELDS: tuple[str, ...] = (
     # is the same "who did that" question, and the icon is how people find
     # the space in a long sidebar.
     "icon", "icon_slot",
+    # WS-39 SP-3a. "Who turned on sprints here" is the same question.
+    "work_style",
 )
 
 
@@ -1155,6 +1158,9 @@ def check_node_values(user: UserContext, values: dict[str, Any]) -> str:
     validate_choice(values.get("kind"), NODE_KINDS, "node kind")
     validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
+    # WS-39 SP-3a. A new node may name its style. With none, the column
+    # DEFAULT gives `flow`.
+    validate_work_style(values)
     _refuse_lifecycle_on_child(values, values.get("parent_project_id"))
     values["name"] = name
     values["created_by"] = actor(user)
@@ -1282,6 +1288,9 @@ async def create_node_in(
 
 
 @router.patch("/nodes/{project_id}")
+# WS-39 SP-3a: the style picker writes here. A deadlock or a lock timeout of
+# the UPDATE answers 409 and writes nothing, as the other tree writes do.
+@_tree_race_as_409
 async def patch_node(
     project_id: str, payload: ProjectIn,
     user: UserContext = Depends(get_current_user),
@@ -1307,6 +1316,9 @@ async def patch_node(
     validate_choice(values.get("source"), PROJECT_SOURCES, "source")
     validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
+    # WS-39 SP-3a. The work style of this node only: no inheritance, and a
+    # change deletes nothing (§13.1 rule 2). It writes the one column.
+    validate_work_style(values)
     # Re-parenting is a MOVE, with its own cycle check and root re-stamping.
     # Accepting it here as an ordinary field would skip both.
     if "parent_project_id" in values:

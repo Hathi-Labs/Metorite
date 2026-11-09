@@ -239,6 +239,11 @@ export interface ProjectRow {
   close_after_months?: number | null;
   timezone?: string | null;
   /**
+   * WS-39 SP-3a (migration 400) — how the team of this node works. One key of
+   * `lib/workStyle.ts`. Absent from an older gateway, and read as `flow`.
+   */
+  work_style?: string | null;
+  /**
    * WS-27bg — the ARCHIVE axis, which is not a run state (D-PM-25). Set means
    * filed out of the default surfaces; `archived_root_id` names which project's
    * archive filed it, so a subproject archived on its own survives its parent's
@@ -247,6 +252,42 @@ export interface ProjectRow {
   archived_at?: string | null;
   archived_root_id?: string | null;
   children?: ProjectRow[];
+}
+
+/**
+ * WS-39 SP-1 — one cycle (a sprint) of a node, as `GET /nodes/{id}/cycles`
+ * gives it. `tasks` counts the member tasks the reader sees, and `hidden` the
+ * rest (§13.7).
+ */
+export interface CycleRow {
+  id: string;
+  project_id: string;
+  name: string;
+  goal: string | null;
+  starts_on: string | null;
+  ends_on: string | null;
+  state: "planned" | "active" | "closed";
+  updated_at: string | null;
+  tasks?: number;
+  hidden?: number;
+}
+
+/** One member task of a cycle, as `GET /cycles/{id}` gives it. */
+export interface CycleTask {
+  id: string;
+  task_number: number | null;
+  title: string;
+  status_id: string | null;
+  status_name: string | null;
+  status_category: string | null;
+  estimate_mins: number | null;
+  archived: boolean;
+}
+
+export interface CycleDetail {
+  cycle: CycleRow;
+  tasks: CycleTask[];
+  hidden: number;
 }
 
 /** One direct child in a node's roll-up. */
@@ -2446,6 +2487,43 @@ export const projectsApi = {
 
   grants: (projectId: string) =>
     call<{ rows: GrantRow[]; total: number }>(`nodes/${projectId}/grants`),
+
+  /**
+   * WS-39 SP-3a — the cycles of one node, newest first (`cycles.py`, SP-1).
+   * Each carries `tasks` (the ones the reader sees) and `hidden`. A 404 means
+   * `PROJECTS_SPRINTS_ORGS` does not hold the org: the page hides the Backlog
+   * tab (`lib/backlogCanvas.ts::sprintsProbe`).
+   */
+  cycles: (projectId: string) =>
+    call<{ project_id: string; cycles: CycleRow[] }>(`nodes/${projectId}/cycles`),
+
+  /** One cycle with the member tasks the reader sees. */
+  cycle: (cycleId: string) =>
+    call<CycleDetail>(`cycles/${cycleId}`),
+
+  /** Plan a cycle: a name and two dates. It starts `planned`. */
+  createCycle: (
+    projectId: string,
+    body: { name: string; starts_on: string; ends_on: string },
+  ) =>
+    call<{ cycle: CycleRow }>(`nodes/${projectId}/cycles`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Add one task to a planned or an active cycle. A task in another open cycle is 409. */
+  addCycleTask: (cycleId: string, taskId: string) =>
+    call<{ cycle_id: string; task_id: string; added: boolean }>(`cycles/${cycleId}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ task_id: taskId }),
+    }),
+
+  /** Take one task out of a planned or an active cycle. It goes back to the backlog. */
+  removeCycleTask: (cycleId: string, taskId: string) =>
+    call<{ cycle_id: string; task_id: string; removed: boolean }>(
+      `cycles/${cycleId}/tasks/${taskId}`,
+      { method: "DELETE" },
+    ),
 
   /**
    * The lanes this node USES, plus how many tasks sit in each.

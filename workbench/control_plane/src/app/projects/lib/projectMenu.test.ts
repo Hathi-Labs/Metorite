@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PROJECT_STATE_ORDER } from "@/lib/statusAccent";
 import type { ProjectRow } from "./api";
-import { type ProjectMenuUi, projectMenuItems } from "./projectMenu";
+import { type ProjectMenuUi, WORK_STYLE_LABEL, projectMenuItems } from "./projectMenu";
 
 const project = (over: Partial<ProjectRow> = {}): ProjectRow => ({
   id: "p1",
@@ -397,6 +397,15 @@ describe("projectMenuItems · the row menu's scope", () => {
         "Custom fields"
       );
     }
+  });
+
+  it("offers How this team works on EVERY level, when the page wires it (SP-3a)", () => {
+    // The style sits on any node, set by hand, with no inheritance (§13.1).
+    for (const level of LEVELS) {
+      const items = labels(projectMenuItems(project(), handlers(), ui({ onWorkStyle: vi.fn() }), level));
+      expect(items, `the picker missing on a ${level}`).toContain(WORK_STYLE_LABEL);
+    }
+    expect(labels(projectMenuItems(project(), handlers(), ui(), "project"))).not.toContain(WORK_STYLE_LABEL);
   });
 
   it("offers Statuses on every level that can OWN a set, not just a space", () => {

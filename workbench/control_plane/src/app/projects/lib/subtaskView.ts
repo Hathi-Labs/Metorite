@@ -50,6 +50,8 @@ const OFFERED: Record<ViewMode, readonly SubtaskMode[]> = {
   table: ALL,
   calendar: FLAT,
   timeline: NONE,
+  // WS-39 SP-3a — the backlog lists top-level work only, as a cycle plans it.
+  backlog: NONE,
 };
 
 const DEFAULTS: Record<ViewMode, SubtaskMode> = {
@@ -59,6 +61,7 @@ const DEFAULTS: Record<ViewMode, SubtaskMode> = {
   table: "nested",
   calendar: "separate",
   timeline: "nested",
+  backlog: "hidden",
 };
 
 /** The modes the Subtasks control offers on this canvas. Empty = no control. */
