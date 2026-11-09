@@ -250,6 +250,88 @@ def test_parent_on_falls_back_while_cooling(monkeypatch):
     assert fake.calls == [] and old.calls == 1
 
 
+def test_parent_shadow_logs_an_old_call_failure_as_failed_not_none(monkeypatch):
+    _fake(monkeypatch, {"parent": ch("none")})
+    log = _log(monkeypatch)
+    _mode(monkeypatch, pd.PARENT_STEP, "shadow")
+    assert _run(_parent(Old(pd.CALL_FAILED))) is None
+    assert log.fields("decide.shadow") == []
+    assert log.fields("decide.shadow_failed")[0]["error_type"] == "OldCallFailed"
+
+
+@pytest.mark.parametrize("mode", ["off", "on"])
+def test_parent_maps_a_failed_old_call_to_none(monkeypatch, mode):
+    _fake(monkeypatch, raises=TimeoutError())
+    if mode == "on":
+        _mode(monkeypatch, pd.PARENT_STEP, "on")
+    assert _run(_parent(Old(pd.CALL_FAILED))) is None
+
+
+def test_llm_parent_check_tells_a_failure_from_a_no_fit(monkeypatch):
+    import json
+    import types
+
+    import acb_llm.context as ctx
+    from gateway.routes.tasks import ai
+
+    def _reply(raw):
+        async def _call(**_kw):
+            msg = types.SimpleNamespace(content=raw)
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)]), "m"
+        return _call
+
+    async def _boom(**_kw):
+        raise RuntimeError("down")
+
+    def _check():
+        return _run(ai._llm_parent_check("t", _CANDS, "m"))
+
+    monkeypatch.setattr(ctx, "acompletion_with_fallback", _reply(json.dumps({"parent_index": None})))
+    assert _check() is None
+    monkeypatch.setattr(ctx, "acompletion_with_fallback", _reply(json.dumps({"parent_index": 1})))
+    assert _check() == {"item_id": "t1", "title": "Book the Quuxville venue"}
+    for bad in (json.dumps({"parent_index": 9}), "not json"):
+        monkeypatch.setattr(ctx, "acompletion_with_fallback", _reply(bad))
+        assert _check() is pd.CALL_FAILED
+    monkeypatch.setattr(ctx, "acompletion_with_fallback", _boom)
+    assert _check() is pd.CALL_FAILED
+
+
+def test_a_step_bound_makes_a_slow_decide_fall_back_in_time(monkeypatch):
+    assert pd.STEP_BOUND_S <= 4.0
+    monkeypatch.setattr(pd, "STEP_BOUND_S", 0.3)
+    _fake(monkeypatch, {"parent": ch("c0"), **_pp()}, delay=5.0)
+    _mode(monkeypatch, pd.PARENT_STEP, "on")
+
+    async def _timed_parent():
+        started = time.perf_counter()
+        out = await _parent(Old(_PARENT))
+        return out, time.perf_counter() - started
+
+    out, took = asyncio.run(_timed_parent())
+    assert out == _PARENT and took < 2.0
+    _mode(monkeypatch, pd.PROPOSE_PICKS, "on")
+    run = Run(_DATA)
+
+    async def _timed_propose():
+        started = time.perf_counter()
+        out = await _propose(run)
+        return out, time.perf_counter() - started
+
+    out, took = asyncio.run(_timed_propose())
+    assert out == (_DATA, None) and run.users == [_USER] and took < 2.0
+
+
+def test_a_low_confidence_pick_is_no_warning_and_falls_back(monkeypatch):
+    _fake(monkeypatch, {"parent": ch("c1", 0.3)})
+    log = _log(monkeypatch)
+    _mode(monkeypatch, pd.PARENT_STEP, "on")
+    old = Old(_PARENT)
+    assert _run(_parent(old)) == _PARENT and old.calls == 1
+    assert log.fields("decide.unavailable") == []
+    assert log.fields("decide.decided")[0]["floor_miss"] is True
+
+
 # ── Step 2: the enrich picks ─────────────────────────────────────────────────
 
 _CTX = ["@computer", "@calls", "@errands"]
@@ -435,11 +517,15 @@ def test_delegate_shadow_keeps_the_old_answer_and_logs_keys_only(monkeypatch):
     assert line["decide_feature"] == pd.DELEGATE_PICK
     assert line["old"] == "p1" and line["new"] == "p1" and line["agree"] is True
     assert "Sam" not in str(line) and "Quuxville" not in str(line)
-    # A name that is not on the roster reads as none.
-    _fake(monkeypatch, {"delegate": ch("none")})
+    # A WAITING draft on a name outside the roster reads as "wait" (the sender).
+    _fake(monkeypatch, {"delegate": ch("wait")})
     assert _run(_delegate(Old(_draft("Anil")))) == _draft("Anil")
-    assert log.fields("decide.shadow")[1]["old"] == "none"
+    assert log.fields("decide.shadow")[1]["old"] == "wait"
     assert log.fields("decide.shadow")[1]["agree"] is True
+    # A draft that the owner does reads as "own".
+    _fake(monkeypatch, {"delegate": ch("own")})
+    _run(_delegate(Old({**_draft(""), "disposition": "NEXT"})))
+    assert log.fields("decide.shadow")[2]["old"] == "own"
 
 
 def test_delegate_shadow_with_no_draft_logs_no_agreement(monkeypatch):
@@ -458,14 +544,64 @@ def test_delegate_on_decide_picks_the_delegate_and_the_draft_stays_an_llm_call(
     out = _run(_delegate(old))
     assert old.calls == 1 and out["assignee_name"] == "Priya Nair"
     assert out["title"] == "Check the quote"
-    assert list(fake.calls[0]["questions"]["delegate"].criteria) == ["p0", "p1", "none"]
+    assert list(fake.calls[0]["questions"]["delegate"].criteria) == [
+        "p0", "p1", "own", "wait"]
 
 
-def test_delegate_on_none_clears_a_roster_name_and_keeps_a_sender_name(monkeypatch):
-    _fake(monkeypatch, {"delegate": ch("none")})
+def test_delegate_on_a_person_pick_never_hands_a_nonwaiting_draft_to_anyone(monkeypatch):
+    # P1a: a NEXT draft is the owner's own work. A private local task for Priya
+    # would be invisible to her, so the pick is not applied.
+    _fake(monkeypatch, {"delegate": ch("p0")})
     _mode(monkeypatch, pd.DELEGATE_PICK, "on")
-    assert _run(_delegate(Old(_draft("Sam Rao"))))["assignee_name"] == ""
-    assert _run(_delegate(Old(_draft("Anil")))) ["assignee_name"] == "Anil"
+    for disp in ("NEXT", "CALENDAR", "SOMEDAY"):
+        draft = {**_draft(""), "disposition": disp}
+        assert _run(_delegate(Old(draft))) == draft
+
+
+def test_delegate_on_waiting_on_the_sender_survives_a_roster_pick(monkeypatch):
+    _fake(monkeypatch, {"delegate": ch("p0")})
+    _mode(monkeypatch, pd.DELEGATE_PICK, "on")
+    assert _run(_delegate(Old(_draft("Anil")))) == _draft("Anil")
+
+
+def test_delegate_on_own_hands_the_owner_the_work(monkeypatch):
+    # P1b: "Priya" in a WAITING draft, decide says the owner keeps it. The
+    # disposition leaves WAITING, so the route does not wait on the client.
+    _fake(monkeypatch, {"delegate": ch("own")})
+    _mode(monkeypatch, pd.DELEGATE_PICK, "on")
+    out = _run(_delegate(Old(_draft("Priya"))))
+    assert out["disposition"] == "NEXT" and out["assignee_name"] == ""
+
+
+def test_delegate_on_wait_makes_the_sender_the_one_waited_on(monkeypatch):
+    _fake(monkeypatch, {"delegate": ch("wait")})
+    _mode(monkeypatch, pd.DELEGATE_PICK, "on")
+    out = _run(_delegate(Old(_draft("Priya"))))
+    assert out["disposition"] == "WAITING" and out["assignee_name"] == "Anil"
+    # A sender who is on the team is not named, or the route would delegate.
+    sam = {**_KW, "from_name": "Sam Rao"}
+    out = _run(pd.delegate_pick(old=Old(_draft("Priya")), resolve=_resolve, **sam))
+    assert out["disposition"] == "WAITING" and out["assignee_name"] == ""
+
+
+def test_delegate_on_cancels_decide_when_there_is_no_draft(monkeypatch):
+    _fake(monkeypatch, {"delegate": ch("p0")}, delay=5.0)
+    _mode(monkeypatch, pd.DELEGATE_PICK, "on")
+
+    async def _go():
+        started = time.perf_counter()
+        out = await _delegate(Old(None))
+        return out, time.perf_counter() - started
+
+    out, took = asyncio.run(_go())
+    assert out is None and took < 1.0
+
+
+def test_resolve_assignee_prefers_the_full_name_over_an_earlier_prefix():
+    roster = [{"name": "Sam Patel", "email": "sp@x.com"}, {"name": "Sam", "email": "s@x.com"}]
+    assert _resolve("Sam", roster)["email"] == "s@x.com"
+    assert _resolve("Sam Patel", roster)["email"] == "sp@x.com"
+    assert pd._person_key("Sam", pd._people_options(roster)) == "p1"
 
 
 @pytest.mark.parametrize("failure", FAILURES)
@@ -742,3 +878,48 @@ def test_propose_offers_only_the_active_projects_the_prompt_shows(monkeypatch):
     assert list(fake.calls[0]["questions"]["project"].criteria) == ["j0", "j1", "none"]
     assert core is not None and core["llm_project"] is projects[1]
     assert "project_match: [P0]" in seen["user"]
+
+
+def test_propose_shadow_with_an_actionable_answer_and_no_next_action_logs_no_agreement(
+        monkeypatch):
+    _fake(monkeypatch, _pp())
+    log = _log(monkeypatch)
+    _mode(monkeypatch, pd.PROPOSE_PICKS, "shadow")
+    _run(_propose(Run({**_DATA, "next_action": ""})))
+    assert log.fields("decide.shadow") == []
+    assert log.fields("decide.shadow_failed")[0]["error_type"] == "OldCallFailed"
+    # SOMEDAY needs no next action, so it compares.
+    _run(_propose(Run({**_DATA, "disposition": "SOMEDAY", "next_action": ""})))
+    assert len(log.fields("decide.shadow")) >= 1
+
+
+def test_propose_files_the_person_decide_picked_not_the_first_prefix(monkeypatch):
+    from gateway.routes.tasks import ai
+
+    roster = [{"name": "Sam Patel", "email": "sp@x.com"}, {"name": "Sam", "email": "s@x.com"}]
+
+    async def _model(model, system, user):
+        return {**_DATA, "assignee_name": "Sam", "project_match": ""}, None
+
+    monkeypatch.setattr(ai, "_ask_clarify_model", _model)
+    _fake(monkeypatch, {"disposition": ch("WAITING"), "project": ch("none"),
+                        "assignee": ch("p1")})
+    _mode(monkeypatch, pd.PROPOSE_PICKS, "on")
+    item = type("I", (), {"title": "Get the quote", "description": None, "id": "i1"})()
+    core = _run(ai._llm_propose(item, roster, list(_PROJ), {}, "m"))
+    assert core["suggested_assignee"]["email"] == "s@x.com"
+
+
+def test_propose_ignores_an_assignee_person_that_the_model_wrote(monkeypatch):
+    from gateway.routes.tasks import ai
+
+    roster = [{"name": "Sam Patel", "email": "sp@x.com"}, {"name": "Sam", "email": "s@x.com"}]
+
+    async def _model(model, system, user):
+        return {**_DATA, "assignee_name": "Sam Patel", "project_match": "",
+                "assignee_person": dict(roster[1])}, None
+
+    monkeypatch.setattr(ai, "_ask_clarify_model", _model)
+    item = type("I", (), {"title": "Get the quote", "description": None, "id": "i1"})()
+    core = _run(ai._llm_propose(item, roster, list(_PROJ), {}, "m"))
+    assert core["suggested_assignee"]["email"] == "sp@x.com"  # a copy is not a pick

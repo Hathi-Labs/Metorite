@@ -924,7 +924,12 @@ async def _llm_propose(
             return bool(ptoks) and (ptoks == who_tokens
                                     or ptoks[:len(who_tokens)] == who_tokens)
 
-        match = next(
+        # DEC-2b: a decide pick carries its person, so a roster with "Sam" and
+        # "Sam Patel" files the one that decide picked, not the first prefix.
+        # Only a person of THIS roster counts (identity), never a model field.
+        picked = data.get("assignee_person")
+        match = next((p for p in people if p is picked), None) if picked else None
+        match = match or next(
             (p for p in people if _names_match(p.get("name") or "")), None)
         if match is not None:
             core["suggested_assignee"] = {
@@ -1188,11 +1193,15 @@ async def _llm_parent_check(
     title: str, candidates: list[dict[str, str]], model: str,
 ) -> dict[str, Any] | None:
     """The LLM call of ``_find_parent_task``: the parent of ``title`` among
-    ``candidates`` ({id, title}), or None on a no-fit or any failure."""
+    ``candidates`` ({id, title}), None on a no-fit, or
+    ``projects_decide.CALL_FAILED`` on any failure (``parent_step`` maps it to
+    None, and a shadow does not count it as a "none")."""
+    from gateway.routes.tasks import projects_decide
+
     try:
         from acb_llm.context import acompletion_with_fallback
     except Exception:
-        return None
+        return projects_decide.CALL_FAILED
     numbered = "\n".join(f"{i}. {c['title']}" for i, c in enumerate(candidates))
     system = (
         "A new task is being filed into a project. Decide whether it is a "
@@ -1218,12 +1227,14 @@ async def _llm_parent_check(
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
     except TimeoutError:
         _log.warning("clarify.parent_check_timeout", seconds=PARENT_CHECK_TIMEOUT_S)
-        return None
+        return projects_decide.CALL_FAILED
     except Exception:
-        return None
+        return projects_decide.CALL_FAILED
     idx = data.get("parent_index")
-    if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
-        return None
+    if idx is None:
+        return None  # a genuine no-fit
+    if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(candidates)):
+        return projects_decide.CALL_FAILED
     return {"item_id": candidates[idx]["id"],
             "title": candidates[idx]["title"]}
 

@@ -868,6 +868,7 @@ async def _ask_all(
     attribution: Mapping[str, Any],
     *,
     on: bool = False,
+    bound_s: float | None = None,
 ) -> _Asked | None:
     """All the ``decide`` requests of one call, at the same time, inside one
     bound. Returns the merged answers, or None.
@@ -908,7 +909,7 @@ async def _ask_all(
     started = time.monotonic()
     try:
         charge, results = await asyncio.wait_for(
-            _send(), timeout=ON_BOUND_S if on else SHADOW_BOUND_S,
+            _send(), timeout=(bound_s if on and bound_s else ON_BOUND_S) if on else SHADOW_BOUND_S,
         )
     except NoFreeSlot:
         # Shadow only: the cap is full, so the shadow asks nothing (item 16).
@@ -1055,6 +1056,7 @@ async def ask[R](
     member: str | None = None,
     ids: Mapping[str, Any] | None = None,
     module_slug: str | None = None,
+    bound_s: float | None = None,
 ) -> R | None:
     """In ``on``: ask ``decide``, and return what ``read`` makes of the answer.
 
@@ -1084,6 +1086,9 @@ async def ask[R](
       ``my_day``. None takes the app of the feature prefix (:func:`module_of`,
       DEC-1: ``projects.align`` bills ``projects``). An email feature keeps
       the run context's app, and then ``email``.
+    - ``bound_s`` (DEC-2b): a bound for THIS call, in seconds, in place of
+      :data:`ON_BOUND_S`. None keeps :data:`ON_BOUND_S`. A step that sits in
+      front of a bounded old call uses it, so the two waits stay short.
 
     Returns None with no Router call while the organization is in the
     cool-down of the feature's area (:data:`REFUSAL_COOLDOWN_S` after a
@@ -1122,7 +1127,7 @@ async def ask[R](
         attribution["member_proven"] = True
     attribution["module_slug"] = attribution.get("module_slug") or "email"
 
-    asked = await _ask_all(feature, ids, requests, attribution, on=True)
+    asked = await _ask_all(feature, ids, requests, attribution, on=True, bound_s=bound_s)
     if asked is None:
         return None
     try:

@@ -348,12 +348,18 @@ def _resolve_assignee(name: str, people: list[dict]) -> dict[str, Any] | None:
     if not who:
         return None
     toks = who.split()
+    prefix = None
     for p in people:
         ptoks = (p.get("name") or "").strip().lower().split()
-        if ptoks and (ptoks == toks or ptoks[:len(toks)] == toks):
-            return {"name": p["name"], "email": p.get("email"),
-                    "provider_user_id": p.get("provider_user_id")}
-    return None
+        if ptoks == toks:  # a full-name match wins over an earlier prefix match
+            prefix = p
+            break
+        if prefix is None and ptoks and ptoks[:len(toks)] == toks:
+            prefix = p
+    if prefix is None:
+        return None
+    return {"name": prefix["name"], "email": prefix.get("email"),
+            "provider_user_id": prefix.get("provider_user_id")}
 
 
 async def _draft_capture(**kw: Any) -> dict[str, Any] | None:
