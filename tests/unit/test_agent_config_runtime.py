@@ -14,9 +14,10 @@ The four places that can name a runtime
 4. ``_AGENT_REGISTRY`` in ``apps/services/gateway/gateway/routes/agent.py``,
    key ``agent_runtime``.
 
-⚠️ The label of task-manager and app-builder is NOT in their
-``config.json``, which says ``"maf"``. It is in ``_AGENT_REGISTRY``. So a
-fence that reads only the ``config.json`` files passes today (§17.3).
+⚠️ The label of task-manager is NOT in its ``config.json``, which says
+``"maf"``. It is in ``_AGENT_REGISTRY``. So a fence that reads only the
+``config.json`` files passes today (§17.3). WS-43h set the registry label of
+app-builder to ``"maf"`` and removed its entry (§7.8).
 
 Each place is read for BOTH keys, so a label under the other key counts too.
 A value is a Copilot label when it contains ``copilot`` in any case. That
@@ -81,11 +82,6 @@ _ALLOWLIST: dict[tuple[str, str], tuple[str, str]] = {
         "Held on the Copilot path: its confirm turn needs the tool output of "
         "the turn before (H-215). Its factory still builds a Copilot agent",
         "WS-8i, after the soak of WS-43t2",
-    ),
-    (P_REGISTRY, "app-builder"): (
-        "Its factory still builds a Copilot agent, for the native file and "
-        "shell tools of the Copilot CLI",
-        "WS-43h",
     ),
     (P_ROOT_CONFIG, "metorite"): (
         "The root self-anneal agent still builds a Copilot agent "

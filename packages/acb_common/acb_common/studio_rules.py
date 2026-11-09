@@ -99,6 +99,9 @@ from acb_common.studio_query import MAX_IN_VALUES, OPS, OPS_BY_TYPE, QueryError,
 MAX_RULES_PER_OBJECT = 16
 #: The writes of one batch.
 MAX_WRITES_PER_BATCH = 50
+#: The lines of one save of a parent (C13). The parent and its lines are one
+#: batch, so the parent takes one write of it.
+MAX_LINES_PER_SAVE = MAX_WRITES_PER_BATCH - 1
 MAX_RULE_MESSAGE_CHARS = 200
 #: A ``group_sum_min`` groups by one or two fields.
 MAX_GROUP_FIELDS = 2

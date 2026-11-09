@@ -11308,6 +11308,210 @@ The Router runs litellm with no `drop_params`. A step whose model refuses a samp
 - A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
 - Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
+### 6A.18 Model setup in one step (MS) — SPEC ONLY (2026-11-09, Metorite epic task 2458)
+
+**Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
+
+**Slice tasks:** MS-1 is task 2481, MS-2 is task 2482, MS-3 is task 2483 and MS-4 is task 2484. MS-5 stays closed (owner call 4).
+
+#### The problem, with the production facts
+
+The owner said on 2026-11-08 that model setup is confusing. The owner had to learn the provider prefix, the verb and the model grammar. The console accepted every wrong value. Read through the operator API at 23:00 UTC on 2026-11-08:
+
+- The Sarvam key sits under `sarvam.ai`. The Router finds a key by the exact prefix of the model id (`router.py` `provider = :provider`, and the speech door splits the id at the first `/`). The prefix of `sarvam.ai/saaras:v4` is `sarvam.ai`, so this key matches that id. The Router never applies an alias.
+- The owner declared `sarvam.ai/saaras:v4` with `acompletion`. That is a chat verb on a speech model, and this is the fault. The id has no mode, and the Sarvam handler needs `sarvam/saaras:v4/translit`. The prefix of that id is `sarvam`, so it needs a key under `sarvam`, and none exists.
+- `assemblyai/nano` and `assemblyai/best` are async v2 models on `atranscription`. The door cannot call them. `MAX_CHAIN_ATTEMPTS` is 3, so the whole `tier-stt` chain of 3 steps cannot serve a request.
+- The only working path was set by an agent. `tier-vision` points at `anthropic/claude-haiku-4-5`.
+
+Four facts cause this. Each is a gap in the Console, not an owner error:
+
+1. Two spellings name one provider, and nothing joins them.
+2. Declare checks the shape of the verb, not whether the pair is callable for that job.
+3. Nothing lists the models a provider offers, so the owner types ids from memory.
+4. Nothing proves the setup works until a customer call fails.
+
+#### The design, in five rules
+
+1. **One registry, in the Console.** The new file is `customer_console/provider_registry.py`. It holds, for each provider, the id, the aliases, the key page URL and the key check. It also holds the curated models. The operator console reads it through `GET /catalog/providers`. No second TypeScript copy exists. `providerGuides.ts` folds into it in MS-4.
+2. **Connect is one call.** The operator gives a provider and a key. The Console does the rest.
+3. **Set up is one call.** The operator picks models, and the Console declares, tries and binds them. It binds only a model that passed its Try.
+4. **Health is a list.** Every entry that cannot work shows with a reason and a fix.
+5. **The words on screen are jobs.** The screen says "Speech to text", "Image understanding" and "Chat". It never says a verb, a prefix or a model grammar. The raw forms stay under "Advanced".
+
+⚠️ **Every key goes through the Console.** No tenant service and no script takes a provider key directly. The Console writes the credential through the existing path (`POST /providers/credentials`, Fernet at rest, insert only). The new routes call the same store function. They add no second write path (R5, one DB seam).
+
+#### The jobs
+
+| Job (on screen) | `task` | Verbs it may take |
+|---|---|---|
+| Chat | `chat` | `acompletion` |
+| Image understanding | `vision` (tier `tier-vision`) | `acompletion` |
+| Speech to text | `transcribe` | `atranscription`, `native_sarvam`, `native_assemblyai` |
+| Speech out | `speak` | `aspeech` |
+| Image creation | `image` | `aimage_generation` |
+| Embeddings | `embed` | `aembedding` |
+| Decisions | `decide` | `native_typesafe`, `native_aimlapi` |
+
+The registry stores the job and the verb for each model. The operator never chooses a verb in the new flow.
+
+⚠️ **Image understanding is the task `vision`, not `chat`.** Migration 016 maps `tier-vision` to `vision`, and the image door serves that task. A chat tier reads an image only when `model_profile.reads_images` is true. MS does not write `model_profile`.
+
+#### The registry schema
+
+```python
+@dataclass(frozen=True)
+class RegistryModel:
+    id: str            # the exact Console id, for example "sarvam/saaras:v4/translit"
+    label: str         # "Saaras v4, Roman script"
+    job: str           # a task slug, or "vision"
+    invocation: str    # a member of KNOWN_INVOCATIONS
+    streams: bool
+    languages: tuple[str, ...]
+    price_hint: str    # "about INR 0.49 per minute", from the vendor feed when it has the model
+    recommended_for: tuple[str, ...]   # jobs this model is the default for
+    retires: date | None
+    verified: bool     # False for a (K) item the build could not confirm. Never shown as a badge
+
+@dataclass(frozen=True)
+class RegistryProvider:
+    id: str                       # the litellm provider id, or a native vendor id
+    label: str
+    aliases: tuple[str, ...]
+    key_url: str
+    key_check: KeyCheck           # a list-models call, or one cheap call
+    models: tuple[RegistryModel, ...]
+```
+
+**Alias rule.** `normalise(provider)` lowercases the text, strips spaces, and looks it up in the alias table. `sarvam.ai` becomes `sarvam`. `assembly.ai` becomes `assemblyai`. `google` becomes `gemini`. `claude` becomes `anthropic`. An unknown value passes through unchanged, so the "Something else" card still works. Fence: a test checks that every registry id is a litellm provider or a native vendor, and that no alias collides.
+
+⚠️ **An alias applies only in the Console's own write paths:** the connect id, the H2 fix and H6. The Router never applies an alias, and MS does not change that. A model id and its key must carry the same exact provider string. So an alias can never make the key of one provider serve the model of another.
+
+#### The first providers and models
+
+(K) means the item comes from model knowledge, not from a fetched document. The build must verify each (K) item with the live list, and must drop an item it cannot confirm where a list exists. For a provider with no list, the item stays and the screen says so once (see the status rules). Source: the research file of 2026-11-08 (task 2458 comments).
+
+| Provider | Job: model id (verb) | Note |
+|---|---|---|
+| `sarvam` | Speech to text: `sarvam/saaras:v4/translit` (`native_sarvam`), recommended. Also `sarvam/saaras:v4/codemix` and `sarvam/saaras:v3/translit` | About INR 0.49 per minute. No list call, so the key check is one tiny request |
+| `sarvam` | Chat: `sarvam/sarvam-105b` (`acompletion`) (K) | litellm `openai_like`, base `https://api.sarvam.ai/v1`. ⚠️ Connect stores no `api_base` for Sarvam. The speech handler adds `/speech-to-text` to the host, so a stored `/v1` base breaks speech |
+| `sarvam` | Speech out: `bulbul:v4-flash`, `bulbul:v3` | No handler. Shown as "coming" until MS-5 |
+| `assemblyai` | Speech to text: `assemblyai/universal-3-5-pro/hi,en` (`native_assemblyai`) | Key check: `GET /v2/transcript?limit=1` (K). Async models are not offered |
+| `anthropic` | Chat and Image understanding: `anthropic/claude-haiku-5-5` (cheap, recommended), `claude-sonnet-5-5`, `claude-opus-5-5` (`acompletion`) | $0.10 and $0.50, $2 and $10, $4 and $20 per million tokens. List call `GET /v1/models` (K) |
+| `gemini` | Chat and Image understanding: `gemini/gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` (K) | `gemini-2.5-*` ids retire on 2026-12-01 |
+| `gemini` | Image creation: `gemini/gemini-3.1-flash-image` (K). Embeddings: `gemini/gemini-embedding-2` (K). Speech out: `gemini/gemini-3.8-flash-tts` (K) | |
+| `openai` | Speech to text: `openai/gpt-4o-transcribe`, `openai/whisper-1` (K). Speech out: `openai/tts-1` (K). Chat ids: verify with the live list | |
+| `groq` | Speech to text: `groq/whisper-large-v3-turbo` (K), about $0.04 per hour. Chat: `groq/openai/gpt-oss-120b` (K) | The id has two slashes. The registry removes the need to type it |
+| `deepseek` | Chat: `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` (K) | No stable vision model |
+| `elevenlabs` | Speech to text: `elevenlabs/scribe_v2` (K). Speech out: `eleven_flash_v2_5` (K) | Speech out needs a voice id. Not offered until the voice setting exists |
+| `deepgram` | Speech to text: `deepgram/nova-3` (K) | Aura speech out is not offered |
+| `mistral`, `openrouter` | Chat (K) | `openrouter/<vendor>/<model>` |
+
+A Claude 5 model takes only `temperature=1`. Section 6A.17 handles it in the Router. The registry needs no note for it.
+
+#### API shapes
+
+All routes are staff-gated. The write routes need the same `admin` role and elevation as `POST /providers/credentials`.
+
+**`GET /catalog/providers`** returns the registry. Per provider, it adds `connected: bool` and the label of the live credential.
+
+**`POST /catalog/providers/{id}/connect`** takes `{ "secret": "...", "label": "...", "org_slug": null }`.
+
+1. It normalises `id`. An id that is not in the registry after `normalise` returns 400 and names the closest registry id. The "Something else" card uses the raw install path (`POST /providers/credentials`), which takes any id.
+2. It runs the key check live, with a 10 second limit. A bad key returns 400 with the vendor's words. The Console stores nothing. The vendor's words go through `_try_provider_text` first, so no part of the key comes back.
+3. It stores the credential through the existing write path.
+4. It returns `{ provider, rotated, models: [...] }`. Each model carries `job`, `label`, `price_hint`, `recommended_for` and `status`.
+
+⚠️ **Connect takes no `api_base`.** The key-check host comes from the registry only, so no operator input steers the check to another host.
+
+⚠️ **A connect with `org_slug` stores a key for that one org, and ends at the Key step.** Tier chains are platform-wide (`tier_binding` has no org column), and every Try reads platform keys only. So adopt, `connected`, the fix rule and H8 count platform rows only (`organization_id IS NULL`).
+
+`status` is `known` for a curated model, shown as "Known to Metorite". When a list exists, the live list must show the model, or the status is `gone` and the model stays hidden. A live list proves that a model exists. It does not prove that the verb can call it (AssemblyAI showed this). Only a passed Try proves that. A live model that the registry does not know comes back as `{ id, status: "unknown" }`, shown as "Not in Metorite's list yet". The operator can adopt it only through "Advanced". No status says "not checked".
+
+A provider with no list call has `no_list: true` in its registry entry. Sarvam and AssemblyAI are two. The response carries it, and the Models step says once under its title: "Sarvam publishes no model list. Metorite checks the key with one short test call."
+
+The response never holds the key. The audit row records the provider and the label only, as `provider.credential.install` does.
+
+**`POST /catalog/providers/{id}/adopt`** takes `{ "models": [{ "id": "...", "tiers": ["tier-stt"] }], "dry_run": false }`. For each picked model:
+
+1. It declares the capability with the registry's verb and `streams`. It calls `check_invocation_for_task` and `check_model_for_invocation`, so the same checks bind.
+2. **It tries the new model alone, before any bind,** with the platform key. The Try does not walk the chain. When the new model fails, no old step answers in its place, so a pass proves the new model. `/catalog/transcribe/try` uses a bundled WAV of 3 seconds of Hindi-English speech. `/catalog/vision/try` uses a bundled image. Chat uses a one-line prompt.
+3. **It binds only a model whose Try passed.** For each tier named, it writes the whole chain in one insert at one `effective_from`. The new model goes first. The old steps stay after it. A model whose Try failed stays declared and unbound, and the result says why.
+4. It returns `{ declared, bound, tries: [{ job, model, ok, said, error }] }`. `model` is the model that answered. `said` holds the first 80 characters of the answer. `error` holds the vendor's words.
+
+Why the Try comes first: a 400 or a 404 is terminal in the Router. A bad first step with one of those statuses stops the walk, so the whole tier fails for every org.
+
+**The Try helpers.** The existing tries walk the chain (`router.py` `_try_chain`). MS adds a single-model mode to them. Chat, image creation, embeddings and speech out have no Try today. MS-2 adds one for each job it offers, by the CP-13b rule: the platform key, an audit row, and no `usage_event` row. A job with no Try is not offered in the connect flow.
+
+**The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 attempts after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
+
+**One writer at a time.** Adopt, a fix and Undo each read a chain and then write it. Each one takes `pg_advisory_xact_lock` on `(tier, task)` first, so two writes to one chain cannot lose one.
+
+**Undo.** Undo writes the chain from before the adopt back as a new row (section 6A.5, insert only). It writes only when the newest chain row still carries the `effective_from` that the adopt wrote. When a later write moved the chain, Undo returns 409 and changes nothing. A declare is an upsert of the `(model, task)` row (`main.py` declare route), so Undo restores a chain, never a verb. `dry_run` returns what the call would write and runs no write.
+
+**`GET /catalog/health`** returns `{ entries: [{ kind, tier, task, model, invocation, reason, fix }] }`. `fix` is `null` or `{ model, invocation }`. **`POST /catalog/health/fix`** takes the entries to repair. It writes each fix as a new declare and a new chain row.
+
+#### Health rules
+
+Each rule maps to one reason in plain words and, where the registry knows it, one fix.
+
+| Rule | Reason shown | Fix |
+|---|---|---|
+| H1. The verb does not fit the job, by the jobs table above (`vision` included) | "This model needs a different call type for Speech to text" | The registry verb for the model |
+| H2. The provider id is neither a native vendor nor a litellm provider | "No key or handler matches 'sarvam.ai'" | The alias target, for example `sarvam` |
+| H3. `native_verb_for(prefix, task)` (`handlers.py`) names a native verb, and the declared verb differs | "This model needs Metorite's own handler" | That native verb. `sarvam/sarvam-105b` on `chat` gets no H3, because no native verb serves chat |
+| H4. A model id lacks its mode, or fails `native_model_refusal` | "Saaras needs a mode" | The registry default, for example `/translit` |
+| H5. The first 3 steps of a chain cannot serve the job, counted as the doors count them (see "The window") | "3 entries on Speech to text cannot work" | Drop the dead steps, and move the first working step to the front. A second entry with the same fix shows as "Remove: same as the fix above" |
+| H6. A credential sits under an alias | "The key is saved as 'sarvam.ai'" | When a live platform key already sits under `sarvam`, revoke the alias row only. Otherwise run the key check on the old secret, then copy the secret and its org scope to a new row under `sarvam`, write the audit row, and revoke the alias row. The fix never revokes a fresh key |
+| H7. A model has a `retires` date within 30 days, or past | "This model retires on 2026-12-01" | The registry successor |
+| H8. A bound model has no live credential | "No key for 'groq'" | Open "Connect a provider" |
+
+**A fix names a connected provider only.** The registry may offer a fix only when a live platform key (`organization_id IS NULL`) sits under the EXACT provider string of the fixed model id. The Router matches that string exactly, so an alias does not count here. In the production state of 2026-11-08 the platform keys are `anthropic`, `assemblyai`, `deepseek`, `sarvam.ai` and `aimlapi`. So `assemblyai/best` never gets a Groq fix. If no connected provider has a fix, the entry shows "Connect a provider to fix this" (H8). Two entries that map to the same fix count as one fix. The second shows "Remove: same as the fix above", and its button removes the entry.
+
+**The Sarvam case.** The fix of `sarvam.ai/saaras:v4` is `sarvam/saaras:v4/translit`. Its prefix is `sarvam`, and no key sits under `sarvam`. So the entry shows the H6 reason, "The key is saved as 'sarvam.ai'", and holds its model fix until the key sits under `sarvam`. MS-1 shows this reason. MS-2 adds the H6 fix button. Until then the operator can connect Sarvam again.
+
+**The order of fixes.** Each fix gives a model id and a verb. The fixes compose in this order: H2 (the provider), then H4 (the id and its mode), then H1 and H3 (the verb). So `sarvam.ai/saaras:v4` on `acompletion` becomes `sarvam/saaras:v4/translit` on `native_sarvam` in one fix. `assemblyai/nano` fails `native_model_refusal`, so H4 gives the registry default `assemblyai/universal-3-5-pro/hi,en`, and H3 then gives `native_assemblyai`.
+
+This section absorbs the guards of task 2457. H1 to H4 also run at declare time and bind time. The Console refuses a bad pair, and the 400 body carries the reason and the fix. Today it refuses the shape only.
+
+⚠️ **A chain write is a new row, never an update** (section 6A.5). A declare is an upsert of the `(model, task)` row. A fix writes a new model id where it can, so the old declare stays as it was. "Fix all" runs in one transaction for each tier, so a half-fixed chain never serves. Today the declare route and the bind route each open their own transaction. MS-1 moves each write into a function that takes one connection, and the routes call those functions.
+
+#### The UI flow
+
+The operator console is a staff tool and keeps its own look (D35.4). It reuses the tokens in `globals.css`.
+
+1. **Providers page.** A "Connect a provider" button opens a four-step panel. The steps are Pick, Key, Models and Set up.
+2. **Pick.** One card for each registry provider. Each card shows the label and the jobs it offers. A search box takes an alias.
+3. **Key.** One field and one link, "Get a key at the provider page". After the operator presses Check, the panel shows "Key works" or the vendor's words.
+4. **Models.** A list grouped by job. The recommended model is on. Each row shows the plain name large (for example "Sarvam Saaras v4 · Hinglish in Roman script"), the id small and grey under it, the price hint and the status chip. Each job has a switch named for its tier, for example "Use for Speech to text".
+
+   **Connecting never replaces a working model by default.** The switch is on only when that job has no working model today. It is also on when the new model is the registry default for the job and the current chain has no working step. Otherwise it is off, and a note says what serves the job now, for example "Chat already works with DeepSeek". In the demo state, Sarvam turns on Speech to text and leaves Chat off. `adopt` applies the same rule when a caller sends no `tiers` for a model.
+5. **Set up.** A summary, then the button. The result shows one line for each job, with a tick or a cross and the provider's words.
+6. **Tiers page.** A health banner shows the count, for example "3 entries on Speech to text cannot work". It lists each entry with its plain name large, the id small under it, and the plain reason. "Fix" repairs one entry. "Fix all" repairs the list.
+7. **Advanced.** The raw declare form and the raw bind form move under "Advanced". They keep working and keep their checks.
+
+The preview file is `workbench/control_plane/ux-shots/ms-connect/index.html`. It is not in git.
+
+#### Slices
+
+| Slice | Content | Tier | Done when | Fence (R7) |
+|---|---|---|---|---|
+| **MS-1** (task 2481) | `provider_registry.py`, the alias table, `GET /catalog/providers`, `GET /catalog/health`, `POST /catalog/health/fix`, rules H1 to H5 and H8, the H6 reason (no button), the fix order, the exact-key rule, the per-tier lock, and the declare and bind writes moved into functions that take one connection | HIGH | The production state of 2026-11-08 gives three Speech to text entries. `assemblyai/nano` gets the fix `assemblyai/universal-3-5-pro/hi,en` on `native_assemblyai`. `assemblyai/best` shows "Remove: same as the fix above". `sarvam.ai/saaras:v4` shows the H6 reason and no model fix. `anthropic/claude-haiku-4-5` on `tier-vision` gives no entry | `test_provider_registry.py` (ids, aliases and verbs against `KNOWN_INVOCATIONS`) and `test_catalog_health_r8.py` (R8, real database) |
+| **MS-2** (task 2482) | `connect` and `adopt`, the live key check, the single-model Try before the bind, the new Try helpers, Undo with its 409, rules H6 (the button) and H7, the declare-time and bind-time guards | HIGH | A fake key returns 400 and stores nothing. On the dev stack with a mocked vendor, adopt declares, tries and then binds. A failed Try binds nothing. Undo restores the old chain, and returns 409 after a later write. A connect with `org_slug` binds nothing | `test_catalog_connect_adopt_r8.py` (R8). A fence asserts that no response, log line or audit row holds the key |
+| **MS-3** (task 2483) | Operator console UI: the connect panel, the health banner, "Advanced" | STANDARD | The owner approved the preview on 2026-11-09. The owner runs Flow 1 on the dev stack | `vitest` for the flow state machine. A fence that no string on the page holds `acompletion`, `atranscription` or `native_` outside "Advanced" |
+| **MS-4** (task 2484) | Fold `providerGuides.ts` into the registry. The page reads `GET /catalog/providers` | LOW | `providerGuides.ts` is gone. `test_operator_console_vendor_slugs.py` reads the registry | The same slug test, pointed at the registry |
+| **MS-5** (closed, owner call 4) | A Sarvam speech-out handler, `native_sarvam_tts`, for `bulbul` | HIGH | Only if the owner wants speech out. A Try plays 2 seconds of Hindi audio | `test_handlers_sarvam_tts.py` |
+
+#### Owner calls
+
+**ANSWERED 2026-11-09 on task 2458:** the owner approved all six recommendations. So the defaults are as in call 1, adopt prepends, the Try runs with its cost shown, MS-5 stays closed, and "Fix all" needs elevation. Call 6 ran on 2026-11-09, because Opus was available again.
+
+1. **Defaults by job.** The spec proposes Speech to text `sarvam/saaras:v4/translit`, with `assemblyai/universal-3-5-pro/hi,en` second and `groq/whisper-large-v3-turbo` third. Chat and Image understanding use `anthropic/claude-haiku-5-5`. Is that the order the owner wants?
+2. **Adopt prepends or replaces.** The spec proposes prepend, with the old steps kept behind. "Replace the chain" is a checkbox. The owner may want replace as the default.
+3. **Do the Try calls cost money?** Each adopt spends a few cents. The spec proposes to run them and show the cost before the button. The owner may want an off switch.
+4. **Is Sarvam speech out wanted (MS-5)?** If not, the slice stays closed.
+5. **Does "Fix all" need an elevation window?** The spec proposes yes, as bind does today.
+6. **Opus review.** Run an Opus review of this section after 2026-11-12, before MS-1 starts.
+
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 
 **Written 2026-08-26 on owner directive:** *"The next main task is assigning AI credits and
