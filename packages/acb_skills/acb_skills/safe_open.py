@@ -54,6 +54,7 @@ __all__ = [
     "publish_stream",
     "read_bytes",
     "remove_links",
+    "remove_nested_git",
     "remove_tree",
     "replace_bytes",
     "split_rel",
@@ -742,5 +743,50 @@ def remove_links(root: Path, *, skip: Collection[str] = (".git",)) -> list[str]:
                 os.unlink(name, dir_fd=dir_fd)
                 removed.append("/".join(p for p in (rel_dir, name) if p))
             dirnames[:] = kept
+    return removed
+
+
+def remove_nested_git(root: Path) -> list[str]:
+    """Remove each ``.git`` entry below the top of *root*, and follow no link.
+
+    WS-43h (review round 2, P0). A command in an ``app_builder`` container
+    can run ``git init sub`` and put a filter in ``sub/.git/config``. Host git
+    in the app dir would then run that filter on the host. The top ``.git``
+    is the host's own repo, under a read-only cover, and stays. Returns the
+    paths removed, relative to *root*, with ``/``.
+    """
+    removed: list[str] = []
+    if not _FD_WALK:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            here = Path(dirpath)
+            if here == root:
+                dirnames[:] = [d for d in dirnames if d != ".git"]
+                filenames = [f for f in filenames if f != ".git"]
+            for name in [n for n in (*dirnames, *filenames) if n == ".git"]:
+                entry = here / name
+                if entry.is_dir() and not (entry.is_symlink() or entry.is_junction()):
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                removed.append(entry.relative_to(root).as_posix())
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+        return removed
+    with _dir_fd(root, []) as root_fd:
+        for dirpath, dirnames, filenames, dir_fd in os.fwalk(
+            ".", dir_fd=root_fd, follow_symlinks=False,
+        ):
+            top = dirpath == "."
+            rel_dir = dirpath[2:] if dirpath.startswith("./") else ""
+            names = [n for n in (*dirnames, *filenames) if n == ".git"]
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+            if top:
+                continue
+            for name in names:
+                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if _stat.S_ISDIR(st.st_mode):
+                    shutil.rmtree(name, dir_fd=dir_fd)
+                else:
+                    os.unlink(name, dir_fd=dir_fd)
+                removed.append("/".join(p for p in (rel_dir, name) if p))
     return removed
 

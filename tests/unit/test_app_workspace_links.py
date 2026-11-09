@@ -320,3 +320,157 @@ def test_the_checkpoint_git_refuses_a_linked_git(tmp_path: Path) -> None:
     ws.mkdir()
     _link(ws / ".git", real / ".git", is_dir=True)
     assert _git_repo_trusted(ws) is False
+
+
+# ── review round 2: nested repos, git files, the sweep on a raise ───────────
+
+
+def _filter_script(where: Path, name: str) -> tuple[Path, Path]:
+    marker = where / f"{name}-FILTER-RAN"
+    script = where / f"{name}-filter.sh"
+    script.write_text(f"#!/bin/sh\necho ran >> '{marker.as_posix()}'\ncat\n", encoding="utf-8")
+    script.chmod(0o755)
+    return marker, script
+
+
+def _git_plain(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-c", "user.name=x", "-c", "user.email=x@x", *args],
+                   cwd=cwd, capture_output=True, check=False)
+
+
+def _plant_nested_repo(ws: Path) -> Path:
+    """What the reviewer's container did: a repo in ``sub/`` with a filter."""
+    marker, script = _filter_script(ws.parent, ws.name)
+    sub = ws / "sub"
+    sub.mkdir()
+    _git_plain(sub, "init", "-q")
+    with (sub / ".git" / "config").open("a", encoding="utf-8") as fh:
+        fh.write(f'[filter "evil"]\n\tclean = sh {script.as_posix()}\n')
+    (sub / ".gitattributes").write_text("* filter=evil\n", encoding="utf-8")
+    (sub / "x.txt").write_text("x\n", encoding="utf-8")
+    _git_plain(sub, "add", "-A")
+    _git_plain(sub, "commit", "-qm", "planted")
+    (sub / "x.txt").write_text("changed\n", encoding="utf-8")
+    if marker.exists():
+        marker.unlink()  # the plant's own commit ran it, in the "container"
+    return marker
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_nested_repo_never_runs_its_filter_on_the_host(tmp_path: Path) -> None:
+    from gateway.routes.apps.durability import git_checkpoint, nested_git_entries
+
+    ws = tmp_path / "apps" / "nested"
+    ws.mkdir(parents=True)
+    (ws / "index.html").write_text("<h1>x</h1>\n", encoding="utf-8")
+    assert git_checkpoint(ws, "first") is not None
+    marker = _plant_nested_repo(ws)
+    assert nested_git_entries(ws) == ["sub/.git"]
+    assert git_checkpoint(ws, "second") is None, "host git took a work tree with a nested repo"
+    assert not marker.exists(), "host git ran the filter of a nested repo"
+
+    # The control: plain git on the same plant runs the nested filter.
+    control = tmp_path / "apps" / "nested-control"
+    control.mkdir()
+    (control / "index.html").write_text("<h1>x</h1>\n", encoding="utf-8")
+    _git_plain(control, "init", "-q")
+    _git_plain(control, "add", "-A")
+    _git_plain(control, "commit", "-qm", "first")
+    marker = _plant_nested_repo(control)
+    _git_plain(control, "add", "-A")
+    _git_plain(control, "status", "--porcelain")
+    if sys.platform != "win32" or marker.exists():
+        assert marker.exists(), "the plant does not trigger, so this test proves nothing"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+@pytest.mark.parametrize("planted", ["commondir", "objects/info/alternates", "info/attributes"])
+def test_a_git_file_that_init_never_writes_refuses_the_repo(tmp_path: Path, planted: str) -> None:
+    """Review round 2, P3: ``commondir`` can point git at a config with a
+    filter, ``alternates`` at foreign objects, and ``info/attributes`` sets
+    attributes. Host git refuses a repo that holds one."""
+    from gateway.routes.apps.durability import git_checkpoint
+
+    ws = tmp_path / "apps" / "gitfile"
+    ws.mkdir(parents=True)
+    (ws / "index.html").write_text("<h1>x</h1>\n", encoding="utf-8")
+    assert git_checkpoint(ws, "first") is not None
+    marker, script = _filter_script(tmp_path, "commondir")
+    evil = ws / "evilcommon"
+    evil.mkdir()
+    (evil / "config").write_text(
+        f'[core]\n\trepositoryformatversion = 0\n[filter "evil"]\n\tclean = sh {script.as_posix()}\n',
+        encoding="utf-8")
+    target = ws / ".git" / planted
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("../evilcommon\n" if planted == "commondir" else "* filter=evil\n",
+                      encoding="utf-8")
+    (ws / ".gitattributes").write_text("* filter=evil\n", encoding="utf-8")
+    (ws / "index.html").write_text("<h1>changed</h1>\n", encoding="utf-8")
+    assert git_checkpoint(ws, "second") is None
+    assert not marker.exists()
+
+
+def test_a_nested_repo_that_a_command_made_is_gone_after_it(
+    app_scope: Path, sandbox: Sandbox,  # noqa: F811
+) -> None:
+    (app_scope / ".git").mkdir()
+    (app_scope / ".git" / "keep").write_text("host\n", encoding="utf-8")
+
+    async def plant(_argv: list[str]) -> None:
+        (app_scope / "sub" / ".git").mkdir(parents=True)
+        (app_scope / "sub" / ".git" / "config").write_text('[filter "evil"]\n', encoding="utf-8")
+        (app_scope / "deep" / "er").mkdir(parents=True)
+        (app_scope / "deep" / "er" / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+
+    sandbox.docker.on_stream = plant
+    out = _command(app_scope, "git init sub")
+    assert "exit 0" in out, out
+    assert not os.path.lexists(app_scope / "sub" / ".git")
+    assert not os.path.lexists(app_scope / "deep" / "er" / ".git")
+    assert (app_scope / ".git" / "keep").read_text(encoding="utf-8") == "host\n"
+
+
+@pytest.mark.parametrize("ending", ["sandbox_error", "cancel"])
+def test_the_sweep_runs_when_the_command_raises(
+    app_scope: Path, sandbox: Sandbox, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    ending: str,
+) -> None:
+    """Review round 2, P3: a command that raises, or a stop, may have written
+    a link before it ended. The sweep runs in a ``finally``."""
+    from orchestrator import sandbox_broker as sb
+
+    secret = tmp_path / "host.env"
+    secret.write_text(SECRET, encoding="utf-8")
+    (app_scope / ".git").mkdir()
+
+    async def exec_then_raise(_handle: Any, _command: str, _timeout: float) -> Any:
+        _link(app_scope / "notes.txt", secret)
+        if ending == "cancel":
+            raise asyncio.CancelledError()
+        raise sb.SandboxUnavailable("The sandbox container died.")
+
+    monkeypatch.setattr(sandbox.broker, "exec", exec_then_raise)
+    if ending == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            _command(app_scope, "ln -s x notes.txt")
+    else:
+        out = _command(app_scope, "ln -s x notes.txt")
+        assert "failed" in out and "Nothing ran on the host" in out, out
+    assert not os.path.lexists(app_scope / "notes.txt"), "the sweep did not run"
+    assert all(h.leases == 0 for h in sandbox.broker._live.values())
+
+
+def test_a_dir_that_a_container_mounted_never_builds_on_the_host(
+    app_scope: Path, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """Review round 2, option b: the host build refuses a sandbox dir for good,
+    also after a flip off, and the text says how the app builds again."""
+    from gateway.routes.apps.files import host_build_refusal
+
+    (app_scope / ".git").mkdir()
+    assert host_build_refusal(app_scope) is None
+    assert "exit 0" in _command(app_scope, "true")
+    sandbox.set_scope(monkeypatch, "")
+    refusal = host_build_refusal(app_scope)
+    assert refusal and "builds only in its sandbox" in refusal and "MAF_CODING_SCOPE" in refusal

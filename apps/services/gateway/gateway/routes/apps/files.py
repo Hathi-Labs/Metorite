@@ -245,10 +245,14 @@ def host_build_refusal(workspace: Path) -> str | None:
     """Why the HOST may not build this app, or ``None`` (WS-43h review P0).
 
     ``node build_t2.mjs`` follows links, so a link in the app dir could put a
-    host file in the bundle, or write ``dist/`` into another app's dir. A dir
-    that a sandbox container mounts now, or mounted, is refused whole: a
-    container could plant a link after this check. Its build runs in the
-    sandbox. Any other dir is refused while it holds a link.
+    host file in the bundle, or write ``dist/`` into another app's dir. And
+    esbuild follows a relative import out of the app dir, with no link at
+    all: ``import x from "../other-app/src/data.json"``. So a dir that a
+    sandbox container mounts now, or ever mounted, is refused for good (fix
+    round 2, option b). Its source came from a container, and only the
+    sandbox, which sees no other app, builds it. After a flip off of
+    ``app_builder`` such an app has no build path until the flip is back on.
+    Any other dir is refused while it holds a link.
     """
     try:
         from orchestrator.sandbox_broker import is_sandbox_dir
@@ -256,8 +260,10 @@ def host_build_refusal(workspace: Path) -> str | None:
         is_sandbox_dir = None
     if is_sandbox_dir is not None and is_sandbox_dir(workspace):
         return (
-            "This app builds in its sandbox. Ask the App Workshop builder to "
-            "build it."
+            "The App Workshop builder on MAF edited this app, so it builds only "
+            "in its sandbox. Ask the builder to build it. If the builder is off "
+            "for your organization, an admin must turn it on (app_builder in "
+            "MAF_CODING_SCOPE) before this app can build again."
         )
     links = workspace_links(workspace)
     if links:

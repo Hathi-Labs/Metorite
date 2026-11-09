@@ -2693,10 +2693,12 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   the repo (fix round, review P1: with no repo around the copy, the build
   refused `@cc/ui`). `mount_list` refuses a source that holds `.git`.
 - **The bundle marker.** `build_t2.mjs` put the bundle in the template with
-  a STRING replace, and `String.replace` reads `$&` in it as a pattern.
-  React's own code holds `"$&/"`, so every T2 bundle held the marker text
-  in place of that code. The docker test found it, and the build now
-  replaces with a function.
+  a STRING replace, and `String.replace` reads `$$`, `$&`, `` $` `` and
+  `$'` in that string as patterns. Two effects followed. Every T2 bundle
+  held the marker text in the key escape of React (`"$&/"`), which is a
+  small effect. And app code that held one of those four sequences was
+  changed, or broke the bundle with a SyntaxError. The docker test found
+  it, and the build now replaces with a function.
 - **The `.git` cover (§7.5 rule A, review P2).** `.git` gets the empty
   read-only cover only when it exists at the start. So before a container
   starts, `sandbox_broker.ensure_app_git` has `durability.init_app_repo`
@@ -2704,23 +2706,42 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   process but `docker` (WS43-F1). It refuses a `.git` that is a link or a
   file, and it fails closed when the init fails.
 - **The checkpoints (§7.5 rule A).** `_git` of `apps/durability.py` runs
-  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`,
-  `GIT_CEILING_DIRECTORIES` at the parent of the app dir,
-  `-c core.fsmonitor=false`, `-c core.hooksPath=/dev/null`,
-  `-c core.attributesFile=/dev/null` and `-c commit.gpgSign=false`. Before
-  each command but `init`, it reads `.git/config` with
-  `git config --no-includes --list`, and it refuses the repo when a key is
-  not one that `git init` writes. A `filter.<x>.clean` that a container
-  planted then never runs on the host (review P2). `lifecycle._git_init`
+  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_ATTR_NOSYSTEM=1`, `GIT_CEILING_DIRECTORIES` at the parent of the app
+  dir, `-c core.fsmonitor=false`, `-c core.hooksPath=/dev/null`,
+  `-c core.attributesFile=/dev/null`, `-c commit.gpgSign=false` and
+  `-c submodule.recurse=false`. `status` adds `--ignore-submodules=all`.
+  Before each command but `init`, `_git_repo_trusted` refuses the repo when:
+  - a key of `.git/config`, listed with `git config --no-includes --list`,
+    is not one that `git init` writes (review P2);
+  - `.git` holds `commondir`, `objects/info/alternates` or
+    `info/attributes`, which `git init` never writes (review round 2);
+  - the work tree holds a `.git` entry below its top, a dir, a file or a
+    link, at any depth (review round 2). A container can run
+    `git init sub` and put a filter in `sub/.git/config`. Then `add -A`
+    records `sub`, and `status` runs git in it on the host.
+  These checks cover what the reviews found. They are not a proof that no
+  other file of `.git` can steer git: the read-only cover of `.git` is
+  the first line, and these checks are the second. The sync, the
+  checkpoint list and the restore run under the broker's dir lock, so no
+  container command runs between the checks and git. `lifecycle._git_init`
   uses the same `_git`.
 - **No host access through a link (§7.5 rule B, review P0).** Every reader
   and writer of `gateway/routes/apps/` opens through `acb_skills.safe_open`:
   the sync and the fork read, the rehydrate and the fork write, the file
   routes, the manifest, the publish read and the delete. The safe opener
-  refuses a link at any depth, and the file list leaves each link out. After each command, the broker
-  removes each link that the command made in the app dir
-  (`safe_open.remove_links`). The host T2 build refuses a dir that a
-  container mounted, and a dir that holds a link.
+  refuses a link at any depth, and the file list leaves each link out.
+  After each command, the broker removes each link and each nested `.git`
+  that the command made in the app dir (`safe_open.remove_links`,
+  `safe_open.remove_nested_git`). The sweep runs in a `finally`, so it runs
+  also after a command that raised, or a stop (review round 2).
+- **The host T2 build (review round 2, option b).** It refuses a dir that a
+  container mounts now, or ever mounted, for good, and a dir that holds a
+  link. The safer choice: esbuild follows a relative import out of the app
+  dir with no link at all (`import x from "../other-app/src/data.json"`),
+  and a container wrote the source. So after a flip off of `app_builder`,
+  an app that the MAF engine edited has no build path, and its error text
+  says that an admin must turn the builder back on.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).

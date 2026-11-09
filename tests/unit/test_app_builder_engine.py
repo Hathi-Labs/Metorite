@@ -695,6 +695,10 @@ def test_the_checkpoint_git_runs_with_no_hook_and_no_file_monitor(
     assert "core.attributesFile=/dev/null" in argv and "commit.gpgSign=false" in argv
     assert env.get("GIT_CONFIG_NOSYSTEM") == "1" and env.get("GIT_ATTR_NOSYSTEM") == "1"
     assert env.get("GIT_CEILING_DIRECTORIES") == str(tmp_path.parent)
+    # Review round 2: no global config either, and no submodule recursion.
+    assert check[1].get("GIT_CONFIG_GLOBAL") == "/dev/null"
+    assert env.get("GIT_CONFIG_GLOBAL") == "/dev/null"
+    assert "submodule.recurse=false" in argv
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")

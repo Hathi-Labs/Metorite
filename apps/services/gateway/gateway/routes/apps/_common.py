@@ -227,34 +227,11 @@ def generate_slug(name: str, taken: Collection[str] = ()) -> str:
 
 # ── Path containment (mirrors workspace.py's _safe_resolve + blocked paths) ──
 
-def resolve_app_file(app_workspace: Path, rel: str) -> Path:
-    """Resolve *rel* inside *app_workspace* or raise 400.
-
-    Refuses absolute paths, ``..`` traversal, and any dot-segment (which blocks
-    ``.git`` and dotfiles wholesale). The final ``resolve()`` follows symlinks,
-    so a link that points outside the workspace fails the containment check
-    even though its literal path looks safe.
-    """
-    clean = (rel or "").replace("\\", "/").strip()
-    if not clean or clean.startswith("/") or Path(clean).is_absolute():
-        raise HTTPException(status_code=400, detail="Invalid path")
-    segments = [s for s in clean.split("/") if s]
-    if not segments or any(s == ".." or s.startswith(".") for s in segments):
-        raise HTTPException(status_code=400, detail="Invalid path")
-    root = app_workspace.resolve()
-    resolved = (root / "/".join(segments)).resolve()
-    if resolved != root and not resolved.is_relative_to(root):
-        raise HTTPException(status_code=400, detail="Path escapes workspace")
-    if resolved == root:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return resolved
-
-
 def clean_app_rel(rel: str) -> str:
     """The clean relative path of an app file, or 400.
 
-    The rules of :func:`resolve_app_file`, with no ``resolve()``: no absolute
-    path, no ``..`` and no part that starts with a dot. The caller opens the
+    No absolute path, no ``..`` and no part that starts with a dot, so
+    ``.git`` and every dotfile are refused. There is no ``resolve()``. The caller opens the
     path through ``acb_skills.safe_open``, which refuses a link at any depth
     (``maf_coding_engine.md`` §7.5 rule B). A sandbox container can write an
     app dir (WS-43h), so a check that resolves and then opens is a race.

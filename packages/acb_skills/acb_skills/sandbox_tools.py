@@ -274,19 +274,51 @@ async def _exec_and_sweep(
     except sb.SandboxError as exc:
         return f"{tool_name} failed: {exc} Nothing ran on the host."
     saved: list[str] = []
+    result: Any = None
+    failure: str | None = None
     try:
         try:
             result = await broker.exec(handle, command, timeout)
         except sb.SandboxError as exc:
-            return f"{tool_name} failed: {exc} Nothing ran on the host."
-        try:
-            async with broker.host_files(handle):
-                saved = await sweep(binding, since=started)
-        except sb.SandboxError:
-            saved = []
+            failure = f"{tool_name} failed: {exc} Nothing ran on the host."
     finally:
-        await broker.release(handle)
+        # The sweep runs also when the exec raised, or the run was stopped
+        # (WS-43h review round 2): a command may have written before it ended.
+        try:
+            saved = await _sweep_after(sb, broker, handle, binding, sweep, started)
+        finally:
+            await broker.release(handle)
+    if failure is not None:
+        return failure
     return _format(label, result, saved)
+
+
+#: The longest wait for the dir lock of the sweep after a stopped command.
+_SWEEP_LOCK_WAIT_S = 30.0
+
+
+async def _sweep_after(
+    sb: Any, broker: Any, handle: Any, binding: Any, sweep: Any, started: float,
+) -> list[str]:
+    """*sweep* under the dir lock, after a command, whatever its end.
+
+    ``broker.host_files()`` needs a live container. When it is gone (a failed
+    start, a stop), no process of it runs, and the dir lock alone holds off
+    every other container on the dir. The wait is bounded, so a stop never
+    hangs. Never raises a sandbox error.
+    """
+    import asyncio
+
+    try:
+        async with asyncio.timeout(_SWEEP_LOCK_WAIT_S):
+            try:
+                async with broker.host_files(handle):
+                    return list(await sweep(binding, since=started))
+            except sb.SandboxError:
+                async with broker.host_dir_of(binding.workspace):
+                    return list(await sweep(binding, since=started))
+    except (sb.SandboxError, TimeoutError):
+        return []
 
 
 # ── the code_task session (WS-43e, §7.6) ─────────────────────────────────────
@@ -1109,22 +1141,26 @@ def _app_builder_binding(sb: Any, tool_name: str) -> tuple[Any, str | None]:
 
 
 async def _sweep_app_links(binding: Any, *, since: float) -> list[str]:
-    """Remove each link that a command made in the app dir (WS-43h review P0).
+    """Remove each link, and each nested ``.git``, that a command made (WS-43h).
 
-    The caller holds ``broker.host_files()``, so no process of the container
-    runs. A host reader that follows links (the host T2 build, git) then
-    never meets one. The app's files stay on disk only, as the Copilot CLI
-    left them, so nothing is mirrored and no card is shown.
+    The caller holds the dir lock, so no process of the container runs. A
+    host reader that follows links (the host T2 build) then never meets one
+    (review P0). A nested repo has its own config, and host git would run
+    inside it (review round 2, P0). The top ``.git`` has a read-only cover.
+    The app's files stay on disk only, as the Copilot CLI left them, so
+    nothing is mirrored and no card is shown.
     """
     import asyncio
 
     from acb_skills import safe_open
 
     del since
-    removed = await asyncio.to_thread(safe_open.remove_links, binding.workspace)
-    if removed:
+    links = await asyncio.to_thread(safe_open.remove_links, binding.workspace)
+    repos = await asyncio.to_thread(safe_open.remove_nested_git, binding.workspace)
+    if links or repos:
         _log.warning(
-            "sandbox_tools.app_links_removed", count=len(removed), paths=removed[:10],
+            "sandbox_tools.app_dir_swept", links=len(links), nested_git=len(repos),
+            first=(links or repos)[0],
         )
     return []
 
