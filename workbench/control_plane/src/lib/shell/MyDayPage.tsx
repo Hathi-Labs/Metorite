@@ -77,7 +77,7 @@ import { showTodayBand, todayBandOn, todayBandOnServer } from "./todayBandFlag";
 import { useMyDayPeek } from "./useMyDayPeek";
 import { rereadFeed } from "./feedState";
 import { needsKey } from "./needs";
-import { CARD_PAGE_ATTR } from "@/components/CardPanel";
+import { CARD_PAGE_ATTR, CARD_PAGE_COLUMN_ATTR } from "@/components/CardPanel";
 import { invalidate } from "@/lib/dataCache";
 import { MyDayPeekContext } from "./myDayGo";
 import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
@@ -231,12 +231,13 @@ export default function MyDay() {
     {/* The compact bar on a phone (AppTopBar decides), so the page keeps
         its one h1 there too. */}
     <AppTopBar title={home.label} icon={home.icon} />
-    {/* One row: the page column, `<main>`, and the card beside it while a
-        task is docked (PK-1), as the CRM's row holds its record card. The
-        card measures this row. With the flag off the row holds the column
-        alone. */}
+    {/* One row: the page column and the card beside it while a task is
+        docked (PK-1), as the CRM's row holds its record card. The card
+        measures this row. With the flag off the row holds the column alone.
+        The column is a `div` with the column mark, not a second main: the
+        shell already draws the one main landmark of the page. */}
     <div className="flex min-h-0 flex-1">
-    <main ref={peek.columnRef} className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
+    <div ref={peek.columnRef} {...{ [CARD_PAGE_COLUMN_ATTR]: "" }} className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
     <div className={`mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 ${wide("xl:max-w-6xl")}`} data-guide="home.my-day" data-testid="my-day">
       <div>
         {now ? (
@@ -369,7 +370,7 @@ export default function MyDay() {
         pathname="/"
       />
     </div>
-    </main>
+    </div>
     {peek.panel}
     </div>
     {peek.reader}

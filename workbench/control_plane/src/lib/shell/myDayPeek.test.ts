@@ -407,9 +407,14 @@ describe("the seams (source)", () => {
     expect(page).toContain('const wide = (classes: string) => (peek.docked ? "" : classes);');
     expect(page.match(/\$\{wide\("xl:grid-cols-3"\)\}/g)).toHaveLength(2);
     expect(page).toContain('wide("xl:col-span-2 xl:col-start-1 xl:row-start-1")');
-    // The page root and the page column of the card (`useSideCardFits` reads `<main>`).
+    // The page root and the page column of the card. The column carries the
+    // column mark, and the page draws no `<main>` of its own: the shell's
+    // `<main>` holds My Day, so a second one gives the page two main landmarks.
     expect(page).toContain('{...{ [CARD_PAGE_ATTR]: "" }}');
-    expect(page).toContain("<main ref={peek.columnRef}");
+    expect(page).toContain('<div ref={peek.columnRef} {...{ [CARD_PAGE_COLUMN_ATTR]: "" }}');
+    expect(page).not.toMatch(/<main\b/);
+    const card = code(read("../../components/CardPanel.tsx"));
+    expect(card).toContain("page?.querySelector(`[${CARD_PAGE_COLUMN_ATTR}]`) ?? page?.querySelector(\"main\")");
   });
 
   it("drops the My Day keys on a close after a write, so no read in flight answers", () => {

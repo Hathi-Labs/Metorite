@@ -54,6 +54,13 @@ export type CardStop = PanelMode | "phone";
 /** The page root that holds the card. A key from inside it reaches the card. */
 export const CARD_PAGE_ATTR = "data-card-page";
 
+/**
+ * The page column beside the card, for a host whose column is not `<main>`.
+ * A page inside the shell's own `<main>` uses it, so the page keeps ONE main
+ * landmark (My Day, PK-1). Without it, the card measures the first `<main>`.
+ */
+export const CARD_PAGE_COLUMN_ATTR = "data-card-page-column";
+
 /** The width of a docked card: `TASK_PANEL_WIDTH`, `max-w-sm`. */
 const SIDE_CARD_REM = 24;
 
@@ -186,7 +193,8 @@ export function usePanelMode(): [PanelMode, (next: PanelMode) => void] {
 function useSideCardFits(asideRef: RefObject<HTMLElement | null>, pageMinRem: number): boolean {
   const [fits, setFits] = useState(true);
   useLayoutEffect(() => {
-    const main = asideRef.current?.closest(`[${CARD_PAGE_ATTR}]`)?.querySelector("main");
+    const page = asideRef.current?.closest(`[${CARD_PAGE_ATTR}]`);
+    const main = page?.querySelector(`[${CARD_PAGE_COLUMN_ATTR}]`) ?? page?.querySelector("main");
     const row = main?.parentElement;
     if (!main || !row || typeof ResizeObserver === "undefined") return;
     const measure = () => {

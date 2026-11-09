@@ -84,8 +84,8 @@ function peekInAddress(): PeekTarget | null {
 }
 
 export interface MyDayPeek {
-  /** The page column (`<main>`): the rows to take a click from and to mark. */
-  columnRef: RefObject<HTMLElement | null>;
+  /** The page column (a `div` with the column mark): the rows to take a click from and to mark. */
+  columnRef: RefObject<HTMLDivElement | null>;
   /** The page column's click handler, or undefined with the flag off. */
   onClickCapture: ((event: MouseEvent<HTMLElement>) => void) | undefined;
   /** What `useMyDayGo` asks, or null with the flag off. */
@@ -110,7 +110,7 @@ export function useMyDayPeek(
   const [stop, setStop] = useState<CardStop | null>(null);
   const target = enabled ? peekFromParam(param) : null;
   const targetKey = target ? peekParamOf(target) : null;
-  const columnRef = useRef<HTMLElement | null>(null);
+  const columnRef = useRef<HTMLDivElement | null>(null);
   const changed = useRef(false);
   const settle = useRef(options.onSettled);
   useEffect(() => {
