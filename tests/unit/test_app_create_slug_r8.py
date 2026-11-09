@@ -41,11 +41,11 @@ g. A broken link at the slug path counts as taken, and is never claimed.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Before the fix, 8 of the first 9 tests were red on the old code. The ninth
-checks the CI lists. M1 to M7 were run on 2026-11-09 against the first
-version of the fix.
+checks the CI lists. Each result below is from the fix round, on 2026-11-09,
+with the 12 tests of this suite.
 
 * M1. ``create_app``: write the folder BEFORE the reserve (the old order).
-  7 go red, both cases of ``test_r8_create_never_writes_the_folder_of_another_org``
+  9 go red, both cases of ``test_r8_create_never_writes_the_folder_of_another_org``
   among them.
 * M2. ``_discard_new_folder``: remove nothing (drop the rollback).
   ``test_r8_a_failed_write_removes_the_new_folder_and_the_row`` goes red, both
@@ -55,13 +55,22 @@ version of the fix.
   the rollback test go red.
 * M4. ``_claim_folder``: ``mkdir(exist_ok=True)``.
   ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
-* M5. ``create_app``: set ``made`` before the claim succeeds.
-  ``test_r8_a_late_folder_is_never_written_or_removed`` goes red. The fix
-  round moved the claim into ``_reserve_app``, so this mutant has no place now.
 * M6. ``_RESERVE_SQL``: drop ``ON CONFLICT (slug) DO NOTHING``. The
   ``off_disk`` case of the create test and of the fork test go red.
-* M7. ``_folder_free``: answer True. ``test_r8_create_skips_a_folder_with_no_row``
-  goes red.
+* M7. ``_folder_free``: answer True.
+  ``test_r8_a_broken_link_at_the_slug_path_counts_as_taken`` goes red. A folder
+  with no row is also caught by the claim, so the orphan test stays green.
+* MV2. ``_discard_new_folder``: remove ``workspace.parent``, so every app of
+  every org goes. Both cases of the rollback test go red on the snapshot.
+* M8. ``_reserve_app``: keep the row of a folder that another writer took.
+  ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
+* M9. ``_folder_free``: drop the broken-link clause.
+  ``test_r8_a_broken_link_at_the_slug_path_counts_as_taken`` goes red.
+* M10. ``HEX_TRIES = 0``.
+  ``test_r8_after_ten_slugs_the_create_takes_a_random_suffix`` goes red.
+
+The first version's M5 (``made`` set before the claim) has no place now: the
+claim moved into ``_reserve_app``.
 """
 
 from __future__ import annotations
