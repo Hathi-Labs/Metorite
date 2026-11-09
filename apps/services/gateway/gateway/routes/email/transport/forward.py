@@ -286,13 +286,15 @@ async def forward_email(
 
         # 3. The note and the signature of the mailbox, as on a send. The
         # resolver gives the signature of a forward (WS-17 SG-2, D-EM-66).
+        # SG-5a: a rendered form counts only above a quote of the note.
         from gateway.routes.email.signature import (
             build_signed_bodies,
-            resolve_signature_for_send,
+            signature_forms,
         )
-        signature = await resolve_signature_for_send(
-            db, account_id, "forward", req.note or "")
-        note_text, note_html = build_signed_bodies(signature, req.note or "", None)
+        forms = await signature_forms(db, account_id)
+        signature = forms.for_body("forward", req.note or "")
+        note_text, note_html = build_signed_bodies(
+            signature, req.note or "", None, above_quote=forms.rendered)
         if note_text.strip() and not (note_html or "").strip():
             note_html = _html.escape(note_text).replace("\n", "<br>")
         subject = forward_subject(row.subject)

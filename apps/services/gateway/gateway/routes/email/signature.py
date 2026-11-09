@@ -80,14 +80,17 @@ def signature_text(signature: str) -> str:
     return html_to_text(sig) if _looks_html(sig) else sig
 
 
-def append_signature_text(signature: str, body_text: str) -> str:
+def append_signature_text(
+    signature: str, body_text: str, *, above_quote: bool = False,
+) -> str:
     """The plain-text half of :func:`build_signed_bodies`: the body with the
     signature's text inserted under the new text, above any quoted thread.
 
     Idempotent — a body already carrying the signature text is returned
     unchanged — so every draft-write path can call it unconditionally and a
-    reopened/re-saved draft never accumulates copies."""
-    return build_signed_bodies(signature, body_text, None)[0]
+    reopened/re-saved draft never accumulates copies. ``above_quote`` is the
+    keyword of :func:`build_signed_bodies`."""
+    return build_signed_bodies(signature, body_text, None, above_quote=above_quote)[0]
 
 
 def strip_signature_text(signature: str, body_text: str) -> str:
@@ -149,6 +152,7 @@ def sign_html(signature: str, body_html: str) -> str:
 
 def build_signed_bodies(
     signature: str, body_text: str, body_html: str | None = None,
+    *, above_quote: bool = False,
 ) -> tuple[str, str | None]:
     """Append the signature to a message in both representations.
 
@@ -166,6 +170,12 @@ def build_signed_bodies(
 
     With no signature set, returns the inputs unchanged — ``body_html`` stays
     ``None`` so a plain-text-only send is preserved exactly as before.
+
+    ``above_quote`` (WS-17 SG-5a, §23.3.6 decision 2): the dedupe and the
+    in-place HTML swap count the signature text only when its first match
+    starts above the quote (:func:`_match_above_quote`). A send passes
+    ``SignatureForms.rendered``. False keeps the search of main, which reads
+    the whole body (decision 3, rule 7).
     """
     sig = (signature or "").strip()
     if not sig:
@@ -180,9 +190,14 @@ def build_signed_bodies(
     # swap the in-body PLAIN signature for the rendered HTML block in place, so
     # a signed draft still goes out with the rich signature (links, formatting)
     # rather than its escaped plain-text rendering.
-    if sig_text and sig_text in body_text:
+    if above_quote:
+        held = _match_above_quote(sig_text, body_text) >= 0
+    else:
+        held = bool(sig_text) and sig_text in body_text
+    if held:
         if body_html and body_html.strip():
             return body_text, body_html
+        # The first match. With ``above_quote`` it starts above the quote.
         idx = body_text.find(sig_text)
         pre = body_text[:idx].rstrip("\n")
         post = body_text[idx + len(sig_text):].strip("\n")
@@ -290,6 +305,45 @@ def _in_body(signature: str, body_text: str | None) -> bool:
     return bool(sig_text) and sig_text in (body_text or "")
 
 
+def _quote_start(body: str) -> int:
+    """Where the quote of ``body`` starts: the first character of the quote
+    that :func:`split_quoted_text` cuts. With no quote, the length of the body.
+
+    The split is the one rule of a quote. ``sign_html`` uses the same rule in
+    HTML (:func:`split_quoted_html`)."""
+    main, quoted = split_quoted_text(body)
+    if not quoted:
+        return len(body)
+    # Only white space lies between the new text and the quote, and the quote
+    # starts with a character that is not white space.
+    start = body.find(quoted, len(main))
+    return start if start >= 0 else len(main)
+
+
+def _match_above_quote(sig_text: str, body: str) -> int:
+    """The index of the first match of ``sig_text`` in ``body``, or -1 when
+    that match does not start above the quote.
+
+    WS-17 SG-5a (§23.3.6 decision 2). A form in the quote is part of an
+    earlier mail, so it never counts as held. A match that starts on the first
+    line of the quote counts: then the signature itself starts with a quote
+    marker, such as a line of five underscores (done-when c). A match that
+    starts above the quote counts too, when a later line of the signature is
+    such a marker."""
+    if not sig_text:
+        return -1
+    idx = body.find(sig_text)
+    if idx < 0 or idx > _quote_start(body):
+        return -1
+    return idx
+
+
+def _above_quote(signature: str, body_text: str | None) -> bool:
+    """True when the first match of the signature text starts above the
+    quote of the body (:func:`_match_above_quote`)."""
+    return _match_above_quote(signature_text(signature), body_text or "") >= 0
+
+
 @dataclass(frozen=True)
 class SignatureForms:
     """The signature of one mailbox, in each form that a reader asks for.
@@ -297,12 +351,19 @@ class SignatureForms:
     ``stored`` is the free HTML of ``email_assistant_settings.signature``, the
     model of today's editor. ``full`` is the signature of new mail. ``short``
     is the compact form of a layout signature, or ``""`` when the mode has no
-    fields. ``reply_mode`` says what a reply and a forward carry."""
+    fields. ``reply_mode`` says what a reply and a forward carry.
+
+    ``rendered`` is True when the renderer drew ``full`` and ``short``: a
+    ``template`` row, and a ``company`` row after SG-4. Then a form counts as
+    held only above the quote (§23.3.6 decisions 2 and 3). A ``custom``
+    mailbox keeps the search of main, which reads the whole body, so its
+    bytes do not change (rule 7)."""
 
     stored: str
     full: str
     short: str = ""
     reply_mode: str = "full"
+    rendered: bool = False
 
     def of(self, kind: str) -> str:
         """The signature of a mail of ``kind`` (D-EM-66, D-EM-71)."""
@@ -326,14 +387,42 @@ class SignatureForms:
         mailbox was ``custom`` holds the stored signature. When the mode
         changes to ``template`` before the send, the send keeps the stored
         form (§23.9). With the flag off, the three forms are the same bytes,
-        so the send gives the signature of main."""
+        so the send gives the signature of main.
+
+        SG-5a (§23.3.6 decision 2): a rendered form counts only above the
+        quote, and the search checks the short, the full and the stored
+        form. The caller passes ``rendered`` to ``build_signed_bodies``
+        (``above_quote``), so the send signs the form that it found."""
         signature = self.of(kind)
-        if _in_body(signature, body_text):
+        if not self.rendered:
+            if _in_body(signature, body_text):
+                return signature
+            for held in (self.full, self.stored):
+                if held != signature and _in_body(held, body_text):
+                    return held
             return signature
-        for held in (self.full, self.stored):
-            if held != signature and _in_body(held, body_text):
-                return held
-        return signature
+        if _above_quote(signature, body_text):
+            return signature
+        return self.held(body_text) or signature
+
+    def held(self, body_text: str | None) -> str:
+        """The form that ``body_text`` holds, or ``""`` when it holds none.
+
+        Each strip removes this form, so a text loses the signature that it
+        holds (SG-5a). A rendered form counts only above the quote, and the
+        search checks the short, the full and the stored form. Else the
+        search of main checks the full and the stored form in the whole body.
+        With the flag off, each form is the stored bytes. A strip of the
+        stored form, or of ``""``, then gives the bytes of main."""
+        if self.rendered:
+            for form in (self.short, self.full, self.stored):
+                if _above_quote(form, body_text):
+                    return form
+            return ""
+        for form in (self.full, self.stored):
+            if _in_body(form, body_text):
+                return form
+        return ""
 
 
 def _fields_of(value: Any) -> dict[str, Any]:
@@ -391,7 +480,9 @@ async def signature_forms(
     if not full:
         # No field to show: the mailbox keeps its stored signature.
         return replace(custom, reply_mode=reply_mode)
-    return SignatureForms(stored=stored, full=full, short=short, reply_mode=reply_mode)
+    # SG-5a: only a rendered form takes the quote rule (§23.3.6 decision 3).
+    return SignatureForms(stored=stored, full=full, short=short, reply_mode=reply_mode,
+                          rendered=True)
 
 
 async def resolve_signature(db: Any, account_id: str, kind: str) -> str:

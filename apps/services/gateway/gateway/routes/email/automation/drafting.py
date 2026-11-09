@@ -69,9 +69,10 @@ from gateway.routes.email.core import (
 from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
+    SignatureForms,
     append_signature_text,
-    resolve_signature,
     sign_html,
+    signature_forms,
     strip_signature_text,
 )
 from gateway.routes.email.transport.send import (
@@ -84,19 +85,44 @@ from gateway.routes.email.transport.send import (
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+#: No signature: the forms of a draft path whose settings read failed.
+_NO_FORMS = SignatureForms(stored="", full="")
 
-async def _account_signature(db: Any, account_id: str) -> str:
-    """The account's configured signature (HTML/plain, '' when unset) — for the
-    draft-write paths that don't already hold it via _load_assistant_about.
 
-    WS-17 SG-2 (D-EM-66): the resolver gives it. Each draft path asks for the
-    kind ``new``, because a draft row holds no kind field. SG-5 passes the
-    kind of the draft. The send keeps a ``new`` form that it finds in the body
-    (``SignatureForms.for_body``), so a reply carries one signature."""
+async def _account_forms(db: Any, account_id: str) -> SignatureForms:
+    """Each form of the account's signature (``""`` when unset), for the
+    draft paths that don't already hold it via _load_assistant_about.
+
+    WS-17 SG-2 (D-EM-66): the resolver gives them. A draft row holds no kind
+    field, so a backstop appends ``for_body("new", text)``. The send keeps a
+    form that it finds in the body (``SignatureForms.for_body``), so a reply
+    carries one signature. SG-5a: each strip removes the form that its own
+    text holds (``SignatureForms.held``), and the seals use
+    :func:`draft_send_form`. A failed read gives no signature, as on main."""
     try:
-        return await resolve_signature(db, account_id, "new")
-    except Exception:  # noqa: BLE001 — a draft save must not fail on settings
-        return ""
+        return await signature_forms(db, account_id)
+    except Exception:  # a draft save must not fail on settings
+        return _NO_FORMS
+
+
+def draft_send_form(forms: SignatureForms, body_text: str | None) -> str:
+    """THE form that a send of a stored draft adds, and that its seal strips.
+
+    WS-17 SG-5a (§23.3.6 decision 9). ``/drafts/send``, ``GET /drafts/seal``
+    and ``held_card.seal_of`` each call this with the stored text of the
+    draft, so one draft gets one seal digest, and a chat-card send of a
+    compact reply answers 200, not 409. A draft row holds no kind, so the kind
+    is ``new`` until SG-5b. ``for_body`` keeps a form that the text holds."""
+    return forms.for_body("new", body_text)
+
+
+async def _signed_draft_text(db: Any, account_id: str, body: str) -> str:
+    """The backstop of a draft write: ``body`` with the form that ``for_body``
+    gives, under the new text and above the quote (SG-5a). A body that holds
+    a form above the quote comes back unchanged."""
+    forms = await _account_forms(db, account_id)
+    return append_signature_text(
+        forms.for_body("new", body), body, above_quote=forms.rendered)
 
 
 def _resolve_draft_attachments(
@@ -519,10 +545,12 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
                 "WHERE account_id = :aid AND thread_id IN (:tid, :tmpl)"
             ), {"aid": account_id, "tid": thread_id,
                 "tmpl": template_draft_key(thread_id)})).fetchall()
-            sig = await _account_signature(db, account_id)
+            forms = await _account_forms(db, account_id)
 
             def _fold(body: str) -> str:
-                return _normalize_text(strip_signature_text(sig, body or ""))
+                # SG-5a: each text drops the form that it holds.
+                return _normalize_text(
+                    strip_signature_text(forms.held(body), body or ""))
 
             wrote = {_fold(r.draft_text) for r in records
                      if (r.draft_text or "").strip()}
@@ -797,15 +825,17 @@ async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> N
             # started. Strip it from BOTH sides so the unchanged-check diffs
             # what the user wrote — never the boilerplate — and the signature
             # never leaks into learned prefs.
-            sig = await _account_signature(db, account_id)
-            sent_text = strip_signature_text(sig, sent_text)
+            # SG-5a: each side drops the form that it holds.
+            forms = await _account_forms(db, account_id)
+            sent_text = strip_signature_text(forms.held(sent_text), sent_text)
             row = (await db.execute(text(
                 "SELECT draft_text FROM email_ai_drafts "
                 "WHERE account_id = :aid AND thread_id = :tid"
             ), {"aid": account_id, "tid": thread_id})).fetchone()
             if not row:
                 return
-            original = strip_signature_text(sig, row.draft_text or "")
+            drafted = row.draft_text or ""
+            original = strip_signature_text(forms.held(drafted), drafted)
             await db.execute(text(
                 "DELETE FROM email_ai_drafts "
                 "WHERE account_id = :aid AND thread_id = :tid"
@@ -3435,6 +3465,11 @@ def _fold_draft(sig: str, body: str) -> str:
     return _normalize_text(strip_signature_text(sig, body or ""))
 
 
+def _fold_held(forms: SignatureForms, body: str | None) -> str:
+    """:func:`_fold_draft` of a text, less the form that it holds (SG-5a)."""
+    return _fold_draft(forms.held(body), body or "")
+
+
 async def chat_draft_record(db: Any, account_id: str, thread_id: str | None) -> list[str]:
     """The text that Metorite wrote for the thread, as a list of one or none."""
     if not thread_id:
@@ -3445,7 +3480,7 @@ async def chat_draft_record(db: Any, account_id: str, thread_id: str | None) -> 
 
 
 async def _live_is_chat_text(
-    provider: Any, provider_message_id: str, wrote: set[str], sig: str,
+    provider: Any, provider_message_id: str, wrote: set[str], forms: SignatureForms,
 ) -> bool:
     """True while the provider's live body is still the text Metorite wrote.
 
@@ -3458,7 +3493,7 @@ async def _live_is_chat_text(
             provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
     except Exception:  # unread or too slow: the draft is the member's
         return False
-    return _fold_draft(sig, _live_draft_text(live)) in wrote
+    return _fold_held(forms, _live_draft_text(live)) in wrote
 
 
 def _addresses_of(value: Any) -> list[str]:
@@ -3518,13 +3553,14 @@ async def _upsert_reply_draft(
     if thread_id:
         rows = list((await db.execute(text(_THREAD_DRAFT_SQL), {
             "aid": account_id, "tid": thread_id})).fetchall())
-    sig = await _account_signature(db, account_id) if rows else ""
+    # SG-5a: each text drops the form that it holds (``_fold_held``).
+    forms = await _account_forms(db, account_id) if rows else _NO_FORMS
     texts = prior if prior is not None else (
         await chat_draft_record(db, account_id, thread_id) if rows else [])
-    wrote = {_fold_draft(sig, t) for t in texts if (t or "").strip()}
-    ours = next((r for r in rows if _fold_draft(sig, r.body_text) in wrote), None)
+    wrote = {_fold_held(forms, t) for t in texts if (t or "").strip()}
+    ours = next((r for r in rows if _fold_held(forms, r.body_text) in wrote), None)
     if ours is not None and not await _live_is_chat_text(
-            provider, ours.provider_message_id, wrote, sig):
+            provider, ours.provider_message_id, wrote, forms):
         ours = None
     kept = any(r is not ours for r in rows)
     provider_id = ""
@@ -3593,12 +3629,12 @@ async def trash_chat_draft(
         "id": local_id, "aid": account_id, "tid": thread_id})).fetchone()
     if row is None:
         return False
-    sig = await _account_signature(db, account_id)
-    wrote = {_fold_draft(sig, t)
+    forms = await _account_forms(db, account_id)
+    wrote = {_fold_held(forms, t)
              for t in await chat_draft_record(db, account_id, thread_id)}
-    if _fold_draft(sig, row.body_text) not in wrote:
+    if _fold_held(forms, row.body_text) not in wrote:
         return False
-    if not await _live_is_chat_text(provider, row.provider_message_id, wrote, sig):
+    if not await _live_is_chat_text(provider, row.provider_message_id, wrote, forms):
         return False
     await provider.trash_message(row.provider_message_id)
     await db.execute(text("DELETE FROM email_messages WHERE id = :id"), {"id": row.id})
@@ -3753,8 +3789,7 @@ async def upsert_draft(
         # The signature lives IN the draft body so the upstream (provider)
         # draft shows it too. The composer normally seeds it already — this is
         # the idempotent backstop for bodies that arrived without it.
-        body = append_signature_text(
-            await _account_signature(db, req.account_id), req.body)
+        body = await _signed_draft_text(db, req.account_id, req.body)
         if req.from_chat:
             # §21 fix round 3: the signature can carry NBSP or a line-end
             # space ("-- "). A chat draft keeps none, so its send is clean.
@@ -4098,7 +4133,8 @@ async def draft_seal(
         ), {"id": draft_id, "aid": account_id})).fetchone()
         if not drow:
             raise HTTPException(status_code=404, detail="Draft not found")
-        signature = await _account_signature(db, account_id)
+        # SG-5a decision 9: the form of the send, from the one helper.
+        signature = draft_send_form(await _account_forms(db, account_id), drow.body_text)
         async with provider_session(
             db, user.email or "anonymous", account_id=account_id,
         ) as sess:
@@ -4156,8 +4192,11 @@ async def send_draft_endpoint(
             from gateway.routes.email.signature import build_signed_bodies  # noqa: PLC0415
             # WS-17 SG-2 (D-EM-66): the resolver gives the signature. The
             # draft row holds no kind field, so the send asks for ``new``, as
-            # each draft path does (SG-5 adds the kind of the draft).
-            signature = await resolve_signature(db, req.account_id, "new")
+            # each draft path does (SG-5b adds the kind of the draft). SG-5a:
+            # the send keeps the form that the text holds above the quote,
+            # and the two seals strip the same form (``draft_send_form``).
+            forms = await signature_forms(db, req.account_id)
+            signature = draft_send_form(forms, drow.body_text)
             if req.expect is not None:
                 await _check_chat_send(provider, drow, req.expect, signature)
             # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
@@ -4171,7 +4210,7 @@ async def send_draft_endpoint(
                 # Fallback (e.g. IMAP): send a fresh message threaded via the
                 # reply reference, then bin the leftover draft.
                 send_text, send_html = build_signed_bodies(
-                    signature, drow.body_text or "", None)
+                    signature, drow.body_text or "", None, above_quote=forms.rendered)
                 await provider.send_message(
                     to=to, subject=drow.subject or "",
                     body_text=send_text, body_html=send_html,
@@ -4199,7 +4238,7 @@ async def send_draft_endpoint(
 
             if signature.strip():
                 send_text, send_html = build_signed_bodies(
-                    signature, drow.body_text or "", None)
+                    signature, drow.body_text or "", None, above_quote=forms.rendered)
                 # A Gmail draft keeps its HTML and its inline images, and
                 # the signature goes into that HTML (EM-G3a-f7 PR-C1b). Each
                 # other provider signs as on main.
@@ -4294,8 +4333,7 @@ async def save_draft(
         reply_to = await _reply_to_list(
             req.message_id, user.email or "anonymous", frm.get("email", ""))
         # Signature-in-body (idempotent): the saved draft shows it upstream too.
-        body = append_signature_text(
-            await _account_signature(db, req.account_id), req.body)
+        body = await _signed_draft_text(db, req.account_id, req.body)
         async with provider_session(
             db, user.email or "anonymous",
             message_id=req.message_id, require_auth=False,

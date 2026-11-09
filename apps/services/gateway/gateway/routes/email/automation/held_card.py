@@ -932,11 +932,13 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
     """The seal of a draft's text NOW (``drafting.draft_text_seal``): the
     subject, the stored text and the live text at the provider. 404 for no
     draft, 502 for a provider that gives no text. A seam, so a test passes a
-    fake."""
+    fake. The form of the signature comes from ``draft_send_form``, as at
+    ``/drafts/send`` and ``GET /drafts/seal`` (WS-17 SG-5a, decision 9)."""
     from gateway.routes.email.automation.drafting import (
         DRAFT_TEXT_READ_FAILED_DETAIL,
         DraftTextRefused,
-        _account_signature,
+        _account_forms,
+        draft_send_form,
         draft_text_seal,
     )
     from gateway.routes.email.core import provider_session
@@ -946,7 +948,7 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
             "id": draft_id, "aid": account_id, "uid": owner})).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Draft not found")
-        signature = await _account_signature(db, account_id)
+        signature = draft_send_form(await _account_forms(db, account_id), row.body_text)
         async with provider_session(db, owner, account_id=account_id) as sess:
             try:
                 return await draft_text_seal(sess.provider, row.provider_message_id,

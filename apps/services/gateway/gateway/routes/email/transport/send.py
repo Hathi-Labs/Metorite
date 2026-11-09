@@ -213,16 +213,18 @@ async def send_email(
             # message carries it. The drafter no longer bakes it into the body.
             # WS-17 SG-2 (D-EM-66): the resolver gives it, with the kind of
             # this mail. A body that holds the form a draft path wrote keeps
-            # that form, so the mail carries one signature.
+            # that form, so the mail carries one signature. SG-5a: a rendered
+            # form counts only above the quote, in ``for_body`` and in the
+            # dedupe and the swap of ``build_signed_bodies``.
             from gateway.routes.email.signature import (
                 build_signed_bodies,
-                resolve_signature_for_send,
+                signature_forms,
             )
-            signature = await resolve_signature_for_send(
-                db, req.account_id, "reply" if req.reply_to_message_id else "new",
-                req.body_text)
+            forms = await signature_forms(db, req.account_id)
+            signature = forms.for_body(
+                "reply" if req.reply_to_message_id else "new", req.body_text)
             send_text, send_html = build_signed_bodies(
-                signature, req.body_text, req.body_html)
+                signature, req.body_text, req.body_html, above_quote=forms.rendered)
 
             # ``_reply_target`` resolved the conversation id of the message
             # being replied to, so the provider threads the reply. Gmail needs

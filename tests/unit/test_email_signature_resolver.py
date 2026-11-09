@@ -37,16 +37,19 @@ import pytest
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
 from fastapi import BackgroundTasks, HTTPException
+from gateway.routes.email import core as email_core
 from gateway.routes.email import signature as sig
 from gateway.routes.email import signature_preview, signature_render
 from gateway.routes.email.automation import assistant as assistant_mod
 from gateway.routes.email.automation import drafting
+from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.automation import reply_card as rc
 from gateway.routes.email.signature import (
     append_signature_text,
     build_signed_bodies,
     signature_text,
 )
+from gateway.routes.email.transport import forward as fwd
 from gateway.routes.email.transport import send as send_mod
 from gateway.routes.email.transport.send import SendEmailRequest
 from pydantic import ValidationError
@@ -740,3 +743,252 @@ def test_the_preview_is_a_gated_member_route_that_writes_nothing() -> None:
     source = Path(signature_preview.__file__).read_text(encoding="utf-8")
     for word in ("execute(", "_tenant_session", "get_db", "INSERT", "UPDATE"):
         assert word not in source, word
+
+
+# ── 6. SG-5a: one signature for every kind (§23.3.6) ────────────────────────
+#
+# The SG-5 audit (2026-11-09) found two defects on main, with the flag on, a
+# ``classic`` template, ``reply_mode`` short and the stored form
+# ``<p>Ravi Kumar</p>``:
+#
+# 1. A reply draft holds the full form, and its quote holds an earlier compact
+#    reply. ``for_body`` found the compact form in the quote, and the send put
+#    the table inside the quote. The full form stayed above as plain text.
+# 2. A body that holds the compact form went out through ``/drafts/send``
+#    with kind ``new``. The text then held the name two times.
+#
+# The compact form is one line, so it matches inside a ``> `` quote line.
+
+_STORED_FORM = "<p>Ravi Kumar</p>"
+_NEW_TEXT = "Hi Kim,\n\nThe quote stands."
+_DRAFT_ID = "b0000000-0000-4000-8000-0000000000d1"
+_MAIL_ID = "c0000000-0000-4000-8000-0000000000e1"
+
+
+def _form_text(form: str) -> str:
+    """The text of one form: ``short``, ``full`` or ``stored``."""
+    if form == "stored":
+        return signature_text(_STORED_FORM)
+    layout = signature_render.SHORT_LAYOUT if form == "short" else "classic"
+    return signature_render.render(layout, _FIELDS)[1]
+
+
+def _arrow_quote(form: str) -> str:
+    """A ``>`` quote of an earlier reply that ends with ``form``."""
+    lines = ["Thanks.", "", *_form_text(form).split("\n")]
+    return "On Mon, 9 Nov 2026, Kim wrote:\n" + "\n".join(f"> {x}".rstrip() for x in lines)
+
+
+def _outlook_quote(form: str) -> str:
+    """An Outlook quote, which holds the earlier mail as it was, with no ``>``."""
+    return ("________________________________\nFrom: Kim <kim@client.test>\n"
+            "Sent: Monday, 9 November 2026 10:00\nTo: Jane <jane@sg2.test>\n"
+            f"Subject: Re: Quote\n\nThanks.\n\n{_form_text(form)}")
+
+
+#: The first text of each quote, in the text and in the HTML of a send.
+_QUOTE_MARKS = ("Kim wrote:", "________________________________")
+
+
+class _DraftDb(_Db):
+    """``_Db``, and one draft row for each read of ``email_messages``."""
+
+    def __init__(self, stored: str | None, settings: Any, body: str) -> None:
+        super().__init__(stored, settings)
+        self.draft = SimpleNamespace(
+            provider_message_id="pm-1", subject="Re: Quote",
+            to_addresses=[{"email": "kim@client.test"}], cc_addresses=[],
+            bcc_addresses=[], body_text=body, thread_id=None)
+
+    async def execute(self, statement: Any, params: Any = None) -> _Result:
+        out = await super().execute(statement, params)
+        sql = self.sql[-1]
+        if sql.startswith("SELECT") and "FROM email_messages" in sql:
+            return _Result(self.draft)
+        return out
+
+
+class _DraftProvider:
+    """A provider that signs a draft in place and sends it."""
+
+    def __init__(self, live: str) -> None:
+        self.live = live
+        self.updated: list[dict[str, Any]] = []
+        self.sent: list[str] = []
+
+    async def get_message_body(self, _pmid: str) -> Any:
+        return SimpleNamespace(body_text=self.live, body_html="")
+
+    async def get_draft_recipients(self, _pmid: str) -> dict[str, list[str]]:
+        return {"to": ["kim@client.test"], "cc": [], "bcc": []}
+
+    async def update_draft(self, pmid: str, **kw: Any) -> str:
+        self.updated.append(kw)
+        return pmid
+
+    async def send_draft(self, pmid: str) -> None:
+        self.sent.append(pmid)
+
+
+def _wire_drafts(monkeypatch: pytest.MonkeyPatch, db: _Db, provider: Any) -> None:
+    """The draft routes and the held card read ``db`` and ``provider``."""
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield db
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=provider)
+
+    async def _owner(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def _account(_db: Any, raw: Any, *_a: Any, **_k: Any) -> str:
+        return str(raw)
+
+    from gateway.routes.email import account_ref
+
+    for mod in (drafting, hc):
+        monkeypatch.setattr(mod, "_tenant_session", _session)
+    monkeypatch.setattr(drafting, "provider_session", _provider_session)
+    monkeypatch.setattr(email_core, "provider_session", _provider_session)
+    monkeypatch.setattr(drafting, "_assert_account_owner", _owner)
+    monkeypatch.setattr(account_ref, "resolve_account_filter", _account)
+
+
+async def _send_draft(monkeypatch: pytest.MonkeyPatch, db: _DraftDb,
+                      digest: str | None = None) -> dict[str, Any]:
+    """One ``POST /email/drafts/send`` of the draft row. Answers the signed
+    text and HTML, or the plain row when the send did not sign it."""
+    provider = _DraftProvider(db.draft.body_text)
+    _wire_drafts(monkeypatch, db, provider)
+    expect = None if digest is None else {
+        "to": ["kim@client.test"], "cc": [], "bcc": [], "text_digest": digest}
+    await drafting.send_draft_endpoint(drafting.DraftSendRequest(
+        account_id=_ACC, draft_id=_DRAFT_ID, expect=expect), BackgroundTasks(), user=_ME)
+    assert provider.sent == ["pm-1"]
+    if not provider.updated:
+        return {"body_text": db.draft.body_text, "body_html": None}
+    return provider.updated[-1]
+
+
+async def _forward(monkeypatch: pytest.MonkeyPatch, db: _Db, note: str,
+                   original: str) -> dict[str, Any]:
+    """One ``POST /email/forward`` of a mail whose text is ``original``.
+    Answers the send kwargs."""
+    sent: dict[str, Any] = {}
+    mail = SimpleNamespace(
+        id=_MAIL_ID, account_id=_ACC, provider_message_id="pm-9", subject="Quote",
+        from_address={"name": "Kim", "email": "kim@client.test"},
+        to_addresses=[{"email": "jane@sg2.test"}], cc_addresses=[], received_at=None,
+        body_text=original, body_html=f"<p>{original}</p>", snippet="", provider="gmail")
+
+    class _FwdDb(_Db):
+        async def execute(self, statement: Any, params: Any = None) -> _Result:
+            out = await super().execute(statement, params)
+            if "FROM email_messages em" in self.sql[-1]:
+                return _Result(mail)
+            return out
+
+    fdb = _FwdDb(db.stored, db.settings)
+
+    class _Provider:
+        forwards_natively = False
+
+        async def send_message(self, **kw: Any) -> str:
+            sent.update(kw)
+            return "sent-1"
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield fdb
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=_Provider())
+
+    monkeypatch.setattr(fwd, "_tenant_session", _session)
+    monkeypatch.setattr(fwd, "provider_session", _provider_session)
+    await fwd.forward_email(fwd.ForwardEmailRequest(
+        message_id=_MAIL_ID, to=["geo@client.test"], note=note), user=_ME)
+    db.sql += fdb.sql
+    return sent
+
+
+def _above(part: str, marks: tuple[str, ...] = _QUOTE_MARKS) -> str:
+    """The part of a text or an HTML above the first quote mark."""
+    cut = min((part.index(m) for m in marks if m in part), default=len(part))
+    return part[:cut]
+
+
+def _one_signature_above(sent: dict[str, Any], form: str,
+                         marks: tuple[str, ...] = _QUOTE_MARKS) -> None:
+    """The text and the HTML above the quote each hold ``form`` once, and no
+    other form. A template form is the table in the HTML."""
+    name = "Ravi Kumar" if form == "stored" else "Jane Doe"
+    other = "Jane Doe" if form == "stored" else "Ravi Kumar"
+    text, html = _above(sent["body_text"], marks), _above(sent["body_html"] or "", marks)
+    assert text.count(name) == 1 and other not in text, text
+    assert html.count(name) == 1 and other not in html, html
+    tables = 0 if form == "stored" else 1
+    assert html.count('role="presentation"') == tables, html
+    assert sent["body_html"].count('role="presentation"') == tables, "a table sits in the quote"
+
+
+#: Each route of done-when a, with the kind that it asks for.
+_ROUTES = ("send-reply", "send-new", "drafts-send", "forward")
+
+
+async def _route_send(monkeypatch: pytest.MonkeyPatch, db: _Db, route: str,
+                      body: str, original: str = "The first mail.") -> dict[str, Any]:
+    if route == "forward":
+        return await _forward(monkeypatch, db, body, original)
+    if route == "drafts-send":
+        ddb = _DraftDb(db.stored, db.settings, body)
+        out = await _send_draft(monkeypatch, ddb)
+        db.sql += ddb.sql
+        return out
+    return await _send(monkeypatch, db, body, "local-1" if route == "send-reply" else None)
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("held", ["short", "full", "stored"])
+@pytest.mark.parametrize("reply_mode", ["full", "short"])
+async def test_any_held_form_above_the_quote_is_kept_once(
+    monkeypatch: pytest.MonkeyPatch, route: str, held: str, reply_mode: str,
+) -> None:
+    """Done-when a (defects 1 and 2). The text above the quote holds one
+    form, and the quote holds the compact form of an earlier reply. Each send
+    keeps the held form, adds no second one, and puts the HTML of the held
+    form above the quote."""
+    _flag(monkeypatch, "*")
+    db = _Db(_STORED_FORM, _template(reply_mode))
+    new = f"{_NEW_TEXT}\n\n{_form_text(held)}"
+    if route == "forward":
+        # The note of a forward has no quote. The forwarded mail holds the
+        # compact form, and the note never reads it.
+        sent = await _route_send(monkeypatch, db, route, new, _form_text("short"))
+        _one_signature_above(sent, held, ("Forwarded message",))
+        return
+    sent = await _route_send(monkeypatch, db, route, f"{new}\n\n{_arrow_quote('short')}")
+    _one_signature_above(sent, held)
+
+
+@pytest.mark.parametrize("route", ["send-reply", "send-new", "drafts-send"])
+@pytest.mark.parametrize("quoted", ["short", "full", "stored"])
+@pytest.mark.parametrize("reply_mode", ["full", "short"])
+async def test_a_quote_never_counts_as_the_signature(
+    monkeypatch: pytest.MonkeyPatch, route: str, quoted: str, reply_mode: str,
+) -> None:
+    """Done-when b. The quote holds a form, and the new text holds none. The
+    send adds ``of(kind)`` above the quote, and never signs inside it."""
+    _flag(monkeypatch, "*")
+    db = _Db(_STORED_FORM, _template(reply_mode))
+    body = f"{_NEW_TEXT}\n\n{_outlook_quote(quoted)}"
+    sent = await _route_send(monkeypatch, db, route, body)
+    kind = "reply" if route == "send-reply" else "new"
+    want = "short" if kind == "reply" and reply_mode == "short" else "full"
+    _one_signature_above(sent, want)
+    text = _above(sent["body_text"])
+    assert text.index("The quote stands.") < text.index(_form_text(want).split("\n")[0])
