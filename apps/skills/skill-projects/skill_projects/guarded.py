@@ -33,6 +33,7 @@ who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -51,7 +52,17 @@ from skill_projects.client import (
     post_file,
     uuid_of,
 )
-from skill_projects.inbox import DECISIONS_OFF, _area_key, _clean_area_name, _my_area, subject_words
+from skill_projects.inbox import (
+    DECISIONS_OFF,
+    TEMPLATES_OFF,
+    UPDATE_HEALTHS,
+    UPDATES_OFF,
+    UPDATES_PAGE_MAX,
+    _area_key,
+    _clean_area_name,
+    _my_area,
+    subject_words,
+)
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -81,6 +92,7 @@ from skill_projects.writes import (
     REPORT_CHANGE_REFUSED,
     _clears,
     _confirm,
+    _date_arg,
     _field_of,
     _fields_block,
     _int_or_none,
@@ -2387,6 +2399,89 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
     return f"Removed {name} as the authority page of {path}.\n  project_id: {pid}\n  pin_id: {pin}"
 
 
+# ── WS-39 LP-1a: delete a project update ─────────────────────────────────────
+
+#: The pages of updates that the delete reads to find the named one. Each
+#: page holds :data:`inbox.UPDATES_PAGE_MAX` updates.
+UPDATE_DELETE_PAGES = 10
+
+
+async def _find_update(pid: str, wanted: str) -> tuple[dict[str, Any] | None, str]:
+    """The live update *wanted* of a project, read page by page.
+
+    Returns ``(row, "")``, or ``(None, "")`` when no page holds it, or
+    ``(None, UPDATES_OFF)`` while the flag is off. Every call is a read.
+    """
+    pid = uuid_of(pid, "project_id")
+    before = ""
+    for _ in range(UPDATE_DELETE_PAGES):
+        params: dict[str, Any] = {"limit": UPDATES_PAGE_MAX}
+        if before:
+            params["before"] = before
+        try:
+            got = (await get(f"/projects/nodes/{pid}/updates", params)) or {}
+        except GatewayRefusal as exc:
+            if getattr(exc, "status", None) == 404:
+                return None, UPDATES_OFF
+            raise
+        for row in got.get("rows") or []:
+            if str(row.get("id") or "").lower() == wanted:
+                return row, ""
+        before = str(got.get("next_before") or "")
+        if not before:
+            break
+    return None, ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def delete_project_update(project_id: str, update_id: str) -> str:
+    """Delete one update of a project. update_id is an update_id from
+    list_project_updates. ONE update per call. The card names the project, the
+    health, the author and the text. The update leaves the project and its
+    list, and the app has no undo for it. The server decides if the member may
+    delete it, and a refusal comes back in one sentence."""
+    if _many(update_id) or _many(project_id):
+        return f"delete_project_update {ONE_ACT.replace('id', 'update_id')}"
+    pid, node = await _node(project_id)
+    uid = uuid_of(update_id, "update_id")
+    row, off = await _find_update(pid, uid)
+    if off:
+        return off
+    name = data(node.get("name"))
+    if row is None:
+        return (
+            f"{name} has no live update like that. list_project_updates lists its "
+            f"updates, each with an update_id.\n  project_id: {pid}"
+        )
+    health = UPDATE_HEALTHS.get(str(row.get("health")), str(row.get("health")))
+    refused = delete_refusal(row, "update of", name)
+    if refused:
+        return refused
+    impact = (
+        f"1 update ({health}) leaves {name} and its list of updates. The app has "
+        "no undo for it"
+    )
+    if not await _confirm(
+        title="Delete this project update?",
+        detail=f"{name} · {health}",
+        context=_guard_card(
+            impact,
+            {
+                "project": name,
+                "health": health,
+                "author": data(row.get("author")),
+                "body": str(row.get("body") or ""),
+            },
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/updates/{uid}")
+    return (
+        f"Deleted the update ({health}) of {name}.\n  project_id: {pid}\n"
+        f"  update_id: {uid}"
+    )
+
+
 # ── One person decides (WS-ALN ALN-2a, D-OP-9) ──────────────────────────────
 
 #: What the member reads for a 403, a 404 or a 409 of the answer route.
@@ -2748,9 +2843,189 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "revoke_access",
     "pin_authority",
     "unpin_authority",
+    "delete_project_update",
     "answer_decision",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",
     "promote_reminder",
 ]
+
+
+# ── Templates (WS-39 TPL-1a, task 18) ───────────────────────────────────────
+
+#: The longest template name and description (``templates.NAME_MAX`` and
+#: ``templates.DESCRIPTION_MAX`` of the gateway). A pin test holds the copies.
+TEMPLATE_NAME_MAX = 120
+TEMPLATE_DESCRIPTION_MAX = 2000
+
+
+async def _templates_or_off(template_id: str = "") -> tuple[list[dict[str, Any]], str]:
+    """``(templates, "")``, or ``([], TEMPLATES_OFF)`` when the flag is off.
+    This read runs BEFORE any card. A 404 here is the flag. Any other
+    refusal is raised again for the shared wrapper. *template_id* reads that
+    one template, so a template past the first page of the list is found."""
+    params = {"template_id": template_id} if template_id else None
+    try:
+        got = (await get("/projects/templates", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return [], TEMPLATES_OFF
+        raise
+    return list(got.get("rows") or []), ""
+
+
+def _template_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a refusal of a template route. The server's own
+    words say what happened and what to do next. A 5xx is raised again."""
+    status = getattr(exc, "status", None)
+    if status in (403, 404, 409, 422):
+        said = str(getattr(exc, "detail", "") or "").strip()
+        return (f"{REFUSED} {data(said) if said else 'The server refused the template.'} "
+                "Nothing was changed.")
+    raise exc
+
+
+def _counts_line(counts: dict[str, Any]) -> str:
+    return (
+        f"{int(counts.get('tasks') or 0)} starter tasks, "
+        f"{int(counts.get('statuses') or 0)} statuses, "
+        f"{int(counts.get('types') or 0)} task types, "
+        f"{int(counts.get('fields') or 0)} fields and "
+        f"{int(counts.get('tags') or 0)} tags"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def save_as_template(
+    project_id: str, name: str, description: str = "", start_date: str = "",
+) -> str:
+    """Save one project as a template of the organization (WS-39 TPL-1a).
+    ONE project per call. The template copies the project's statuses, task
+    types, fields and tags, and its tasks and subtasks with their dates as
+    days from the start. It copies no person, no comment and no history. A
+    done task becomes an open starter task. Every member of the organization
+    can list the template, so the server takes only a project that the whole
+    organization can see. start_date (YYYY-MM-DD) is the day that the
+    offsets count from. Leave it out to count from the earliest task date."""
+    if _many(project_id):
+        return f"save_as_template {ONE_ACT}"
+    title = " ".join(str(name or "").split())
+    if not title:
+        return "A template needs a name. Nothing was changed."
+    if len(title) > TEMPLATE_NAME_MAX:
+        return f"A template name has {TEMPLATE_NAME_MAX} characters at most. Nothing was changed."
+    about = " ".join(str(description or "").split())
+    if len(about) > TEMPLATE_DESCRIPTION_MAX:
+        return (f"A template description has {TEMPLATE_DESCRIPTION_MAX} characters at most. "
+                "Nothing was changed.")
+    start = _date_arg(start_date, "start_date")
+    pid, node = await _node(project_id)
+    held, off = await _templates_or_off()
+    if off:
+        return off
+    taken = next((r for r in held if str(r.get("name") or "").strip().lower() == title.lower()), None)
+    if taken is not None:
+        return (f"A template called {data(taken.get('name'))} already exists. Pick another name. "
+                f"Nothing was changed.\n  template_id: {taken.get('id')}")
+    impact = (
+        "every member of the organization can list this template and make a project from it. "
+        f"It copies the statuses, types, fields, tags and tasks of {data(node.get('name'))}, "
+        "with no person, comment or history"
+    )
+    rest: dict[str, Any] = {"project": data(node.get("name")), "name": data(title)}
+    if about:
+        rest["description"] = data(about)
+    rest["starts from"] = start or "the earliest task date"
+    if not await _confirm(
+        title="Save this project as a template?",
+        detail=f"{data(node.get('name'))} · {data(title)}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    body: dict[str, Any] = {"project_id": pid, "name": title}
+    if about:
+        body["description"] = about
+    if start:
+        body["start_date"] = start
+    try:
+        row = (await post("/projects/templates", body)) or {}
+    except GatewayRefusal as exc:
+        return _template_refusal(exc)
+    return (
+        f"Saved the template {data(row.get('name'))}: {_counts_line(row.get('counts') or {})}."
+        f"\n  template_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def create_project_from_template(
+    template_id: str, parent_id: str, name: str = "", description: str = "",
+    start_date: str = "",
+) -> str:
+    """Make a new project from a template (WS-39 TPL-1a). ONE template per
+    call. template_id comes from list_templates. parent_id is the space, the
+    folder or the project to make the new project in. A space holds no
+    tasks, so the template always makes a project. The new project gets the
+    template's statuses, and its starter tasks and subtasks with their dates:
+    start_date (YYYY-MM-DD, today when left out) plus the days of each task.
+    A task type, field or tag that the space lacks is added to the whole
+    space. name is the project name, the template's name when left out."""
+    if _many(template_id) or _many(parent_id):
+        return f"create_project_from_template {ONE_ACT}"
+    tid = uuid_of(template_id, "template_id")
+    title = " ".join(str(name or "").split())
+    about = " ".join(str(description or "").split())
+    start = _date_arg(start_date, "start_date")
+    held, off = await _templates_or_off(tid)
+    if off:
+        return off
+    template = next((r for r in held if str(r.get("id") or "").lower() == tid), None)
+    if template is None:
+        return "No template has that template_id. Call list_templates. Nothing was changed."
+    pid, node = await _node(parent_id)
+    path = await _project_path(node)
+    counts = template.get("counts") or {}
+    impact = (
+        f"a new project with {_counts_line(counts)} goes inside {path}. Each person who "
+        "can see it there sees the new project. A task type, field or tag that the space "
+        "lacks is added to the whole space"
+    )
+    rest = {
+        "from": data(template.get("name")),
+        "under": path,
+        "name": data(title or template.get("name")),
+        "start": start or "today",
+    }
+    if about:
+        rest["description"] = data(about)
+    if not await _confirm(
+        title="Make a project from this template?",
+        detail=f"{data(template.get('name'))} · inside {data(node.get('name'))}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    # One key for each approved card. A retry of this request makes no
+    # second project: the gateway returns the first one (TPL-1a).
+    body: dict[str, Any] = {
+        "idempotency_key": f"chat-{uuid.uuid4().hex}", "parent_project_id": pid,
+    }
+    if title:
+        body["name"] = title
+    if about:
+        body["description"] = about
+    if start:
+        body["start_date"] = start
+    try:
+        made = (await post(f"/projects/templates/{tid}/apply", body)) or {}
+    except GatewayRefusal as exc:
+        return _template_refusal(exc)
+    project = made.get("project") or {}
+    created = made.get("created") or {}
+    lanes = ("its own copy of the template's statuses" if made.get("own_statuses")
+             else "the statuses of the space")
+    return (
+        f"Made {data(project.get('name'))} from the template {data(template.get('name'))}: "
+        f"{int(created.get('tasks') or 0)} tasks, with {lanes}."
+        f"\n  project_id: {project.get('id')}"
+    )
