@@ -1,11 +1,13 @@
 -- ============================================================================
--- 382_email_auto_run_chosen_at.sql - the time of the member's Auto-run choice
+-- 390_email_auto_run_chosen_at.sql - the time of the member's Auto-run choice
 -- (WS-17 EM-G11c2, Metorite task 2305, parent task 2267)
 -- ============================================================================
 -- Spec: project-docs/specs/email_app_master_plan.md §12.3.13.7 · R1 · R5 · R6.
 -- R1: origin/main held 372 as its highest file on 2026-11-09. Open PRs and
--- branches hold 371, 373, 374, 375 and 378. So this file is 382, with
+-- branches hold 371, 373, 374, 375 and 378. So this file was 382, with
 -- headroom. Check the number again at merge (scripts/premerge.sh).
+-- At 01:45 UTC on 2026-11-09 main held 384. A branch held 385 and SG-2
+-- (task 2178) held 388. So the file moved to 390.
 --
 -- Why: task 2267 shows a notice for a Gmail mailbox with no stored Auto-run
 --   choice. It read "a settings row exists" as "the member chose". But each
