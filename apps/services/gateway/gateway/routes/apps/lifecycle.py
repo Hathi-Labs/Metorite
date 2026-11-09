@@ -19,13 +19,12 @@ import asyncio
 import json
 import secrets
 import shutil
-import subprocess
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext
-from acb_common.child_env import child_env
+from acb_skills import safe_open
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
     _log,
@@ -168,27 +167,20 @@ def starter_index_html(name: str) -> str:
 
 
 def _git_init(workspace: Path) -> None:
-    """Best-effort ``git init`` + baseline commit — never fails creation."""
-    git_env = [
-        "-c", "user.name=Metorite",
-        "-c", "user.email=metorite@local",
-    ]
+    """Best-effort ``git init`` + baseline commit — never fails creation.
+
+    Through ``durability._git``, the one host git of an app dir, with its
+    safe flags and its config check (§7.5 rule A, WS-43h).
+    """
+    from gateway.routes.apps.durability import _GIT_IDENT, _git
+
     for args in (
-        ["git", "init"],
-        ["git", "add", "-A"],
-        ["git", *git_env, "commit", "-m", "initial scaffold"],
+        ("init",),
+        ("add", "-A"),
+        (*_GIT_IDENT, "commit", "-m", "initial scaffold"),
     ):
-        try:
-            subprocess.run(
-                args, cwd=str(workspace), capture_output=True,
-                timeout=30, check=False,
-                env=child_env(),
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            _log.warning(
-                "apps.git_init_skipped",
-                workspace=str(workspace), error=str(exc)[:120],
-            )
+        if _git(workspace, *args) is None:
+            _log.warning("apps.git_init_skipped", workspace=str(workspace))
             return
 
 
@@ -196,12 +188,10 @@ def _scaffold_workspace(
     workspace: Path, manifest: dict[str, Any], name: str,
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "app.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+    safe_open.write_bytes(
+        workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
     )
-    (workspace / "index.html").write_text(
-        starter_index_html(name), encoding="utf-8",
-    )
+    safe_open.write_bytes(workspace, "index.html", starter_index_html(name).encode("utf-8"))
     _git_init(workspace)
 
 
@@ -219,11 +209,10 @@ def _fork_workspace(
     newly-created app."""
     new_workspace.mkdir(parents=True, exist_ok=True)
     for rel, (content, _sha) in files.items():
-        target = new_workspace / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    (new_workspace / "app.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+        # The safe opener refuses a link at any depth (WS-43h review P0).
+        safe_open.write_bytes(new_workspace, rel, content.encode("utf-8"))
+    safe_open.replace_bytes(
+        new_workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
     )
     _git_init(new_workspace)
 
@@ -236,10 +225,10 @@ def _sync_workspace_manifest(workspace: Path, fields: dict[str, Any]) -> None:
         return
     manifest.update(fields)
     try:
-        (workspace / "app.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+        safe_open.replace_bytes(
+            workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _log.warning("apps.manifest_sync_failed", error=str(exc)[:120])
 
 
@@ -697,9 +686,13 @@ async def delete_app(
     # (a corrupt workspace_path must never delete arbitrary directories).
     root = apps_root().resolve()
     if workspace != root and workspace.is_relative_to(root):
-        import shutil
-        await asyncio.get_event_loop().run_in_executor(
-            None, lambda: shutil.rmtree(workspace, ignore_errors=True),
-        )
+        def _remove() -> None:
+            # Follows no link inside the app dir (WS-43h review P0).
+            try:
+                safe_open.remove_tree(workspace.parent, workspace.name)
+            except (OSError, ValueError) as exc:
+                _log.warning("apps.workspace_remove_failed", error=str(exc)[:120])
+
+        await asyncio.get_event_loop().run_in_executor(None, _remove)
     _log.info("apps.deleted", slug=slug, by=_uid(user))
     return {"slug": slug, "deleted": True}
