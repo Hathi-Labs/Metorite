@@ -133,6 +133,15 @@ describe("VOX-4: the Scribe card and the vision note", () => {
     expect(text).toContain("tier-stt");
   });
 
+  it("the AssemblyAI card names the key, the declared model, the verb and the tier (VOX-6)", () => {
+    const text = PROVIDER_GUIDES.assemblyai.steps.join(" ");
+    expect(text).toContain("provider id assemblyai");
+    expect(text).toContain("assemblyai/universal-3-5-pro/hi,en");
+    expect(text).toContain("native_assemblyai");
+    expect(text).toContain("tier-stt");
+    expect(PROVIDER_GUIDES.assemblyai.description).toContain("until task 2449");
+  });
+
   it("the Sarvam card is the one VOX-2 wrote", () => {
     expect(PROVIDER_GUIDES.sarvam.steps.join(" ")).toContain("native_sarvam");
   });

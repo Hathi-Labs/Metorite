@@ -48,6 +48,10 @@ FENCES=(
   tests/unit/test_fence_lists.py
   tests/unit/test_index_completeness.py
   tests/unit/test_doc_names_resolve.py
+  # CIV-25 2c: exact-list pins that every feature PR edits (green alone, red together).
+  tests/unit/test_projects_chat_x_pin.py
+  tests/unit/test_index_union.py
+  tests/unit/test_chat_parity.py
 )
 BASE="${PREMERGE_BASE:-origin/main}"
 

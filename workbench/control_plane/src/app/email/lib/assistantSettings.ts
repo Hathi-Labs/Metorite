@@ -54,17 +54,6 @@ export function withoutAutoRunChoice(s: AssistantSettingsSave): AssistantSetting
 }
 
 /**
- * The body of a save of another field: the settings, the change, and no
- * Auto-run marker. `SettingsTab.tsx` `persistPatch` sends only this.
- */
-export function settingsPatchBody(
-  s: AssistantSettingsSave,
-  patch: Partial<AssistantSettings>,
-): AssistantSettings {
-  return withoutAutoRunChoice({ ...s, ...patch });
-}
-
-/**
  * The body of the member's own Auto-run act: the switch in AI settings, the
  * switch and Done of setup, and "Turn on" of the notice. It sets `auto_run`
  * and adds the marker `auto_run_choice`, so the server stamps the choice. No

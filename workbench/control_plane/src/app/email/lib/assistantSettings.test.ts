@@ -17,8 +17,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn, autoRunChoiceBody,
-  settingsPatchBody, settingsSaveBody, withoutAutoRunChoice,
+  settingsSaveBody, withoutAutoRunChoice,
 } from "./assistantSettings";
+import { patchBody } from "./signatureSave";
 import type { AssistantSettings } from "./types";
 
 type NewMailboxFixture = {
@@ -142,13 +143,18 @@ describe("the Auto-run choice marker (task 2305)", () => {
     });
   });
 
+  // A toggle sends persist(patchBody(s, p)), and persist sends
+  // settingsSaveBody(next, false). That pair is the body on the wire.
+  const toggleBody = (state: AssistantSettings, p: Partial<AssistantSettings>) =>
+    settingsSaveBody(patchBody(state, p), false);
+
   it("a save of another field never sends the marker, even from a state that held one", () => {
     const held = { ...SETTINGS, auto_run_choice: true as const };
-    const body = settingsPatchBody(held, { signature: "— Ravi" });
+    const body = toggleBody(held, { signature: "— Ravi" });
     expect(body).toEqual({ ...SETTINGS, signature: "— Ravi" });
     expect("auto_run_choice" in body).toBe(false);
     // A patch that changes auto_run is still no explicit act: no marker.
-    expect("auto_run_choice" in settingsPatchBody(SETTINGS, { auto_run: true })).toBe(false);
+    expect("auto_run_choice" in toggleBody(SETTINGS, { auto_run: true })).toBe(false);
   });
 
   it("persist drops the marker unless the caller is the Auto-run switch", () => {
@@ -161,7 +167,7 @@ describe("the Auto-run choice marker (task 2305)", () => {
   });
 
   it("the read-only GET field is never the marker", () => {
-    const body = settingsPatchBody({ ...SETTINGS, auto_run_chosen: true }, { about: "x" });
+    const body = toggleBody({ ...SETTINGS, auto_run_chosen: true }, { about: "x" });
     expect(body.auto_run_chosen).toBe(true);
     expect("auto_run_choice" in body).toBe(false);
   });
@@ -176,7 +182,7 @@ describe("the Auto-run choice marker (task 2305)", () => {
 
   it("persistPatch and persist strip the marker", () => {
     expect(src).toContain(
-      "const persistPatch = (p: Partial<AssistantSettings>) => persist(settingsPatchBody(s, p));",
+      "const persistPatch = (p: Partial<AssistantSettings>) => persist(patchBody(s, p));",
     );
     expect(src).toMatch(
       /const persist = async \(next: AssistantSettingsSave, autoRunChoice = false\) => \{\s*setSettings\(withoutAutoRunChoice\(next\)\);/,

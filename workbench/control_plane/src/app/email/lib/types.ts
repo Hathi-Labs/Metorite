@@ -704,6 +704,12 @@ export interface RunMessageResult {
   unavailable?: boolean;
 }
 
+/** One link or image that the server's signature clean removed. */
+export interface SignatureRemoved {
+  kind: "link" | "image";
+  value: string;
+}
+
 export interface AssistantSettings {
   account_id: string;
   about: string;
@@ -713,6 +719,13 @@ export interface AssistantSettings {
    *  recognises it (a client-side re-derivation could drift by whitespace and
    *  get double-signed). */
   signature_text?: string;
+  /** What the server's clean took out of the signature at this save (WS-17
+   *  SG-1, D-EM-70): each link or image whose address is not https, mailto
+   *  or tel. Empty on a GET. */
+  signature_removed?: SignatureRemoved[];
+  /** False when this server has no https address to host a signature image,
+   *  so the editor turns its upload button off (§23.3.9). */
+  signature_image_upload?: boolean;
   auto_run: boolean;
   /** Read-only: true when the member chose Auto-run (task 2267). The server
    *  reads a stored choice stamp or a stored `auto_run: true` (task 2305). A
