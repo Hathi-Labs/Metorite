@@ -7464,6 +7464,39 @@ the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-
 - **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
   `test_operator_console_invocations.py` and `providerGuides.test.ts`.
 
+**VOX-8 (task 2505). The mic hears the languages the member speaks.** HIGH,
+because it changes the metered door. Design: `personalization.md` §5.3a.
+Needs PZ-52 for the list.
+
+- **Why:** the owner said on 2026-11-09: "just because our preference is
+  English doesn't mean that it should not understand Hindi as input."
+- **Files:** `chat_transcribe.py`, `acb_auth/console_resolve.py`
+  (`transcribe_on_console`), and in the Console `main.py`
+  (`audio_transcriptions`), `router.py`, `stt_sarvam.py` and
+  `stt_assemblyai.py`.
+- **Do:**
+  - The gateway loads `style.languages` of the proven member on the server. It
+    sends them as the form field `language_hints`: lowercase base tags
+    joined by commas, at most 6 and 64 characters. It never reads a language
+    from the request (R5).
+  - The door accepts the optional field `language_hints`. It drops a tag that
+    is not well formed. It ignores a field that is too long or too big. It
+    never answers 4xx because of it.
+  - Sarvam sends no `language_code`, so the vendor detects the language.
+  - AssemblyAI: a model id that names languages wins. Otherwise it sends the
+    supported tags as `language_codes`, `en` first when present. It sends
+    nothing when fewer than two tags are supported.
+  - The usage row is the same with or without a hint. Billing reads the
+    seconds of the WAV, as in VOX-6.
+- **Done when:** a clip on `tier-stt` with the list `en,hi,kn` makes the
+  AssemblyAI request carry `language_codes: ["en","hi"]` and the Sarvam
+  request carry no `language_code`. A client field `language_hints` on the
+  gateway route changes nothing.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_language_hints.py`
+  (R8) pins both request bodies, the drop of `kn` and of a bad tag, the model
+  id that wins, and equal usage rows. `tests/unit/test_chat_transcribe_hints.py`
+  pins that the gateway reads the profile and ignores the client.
+
 ### 31.6 Owner calls
 
 **The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
@@ -7483,7 +7516,7 @@ Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
 VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
-the chat mic (VOX-1) and the operator Try box (VOX-4).
+the chat mic (VOX-1) and the operator Try box (VOX-4). VOX-8 follows PZ-52 (`personalization.md` §5.3a), because it reads the list that PZ-52 stores.
 
 ### 31.8 What §31 does not do
 

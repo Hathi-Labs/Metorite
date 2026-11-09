@@ -534,6 +534,139 @@ alias. The tool reads through the tenant session, so it sees one org only.
 The offer to save the alias needs the alias tool of PZ-6. PZ-5 adds no
 prompt line.
 
+### 5.3a Languages I speak (PZ-52, PZ-53, VOX-8)
+
+**Status: PROPOSED 2026-11-09, task 2505. Nothing is built. The owner has not approved it.**
+This section sits after §5.4 so that it does not touch the text of PZ-51 (§5.3).
+
+The owner said on 2026-11-09: "it should still try and detect Indian languages
+even if the preference is set to auto in the settings. Say, for example, if
+it's set to English as a preference but is talking Hindi, it should still
+attempt to talk in Hindi. Have a cascading thing where it might be preferring
+English, but then Hindi, then Kannada, then Telugu, etc." The owner also said:
+"just because our preference is English doesn't mean that it should not
+understand Hindi as input."
+
+Today the member picks one language (Settings → Assistant → Language). This
+section makes it an ordered list. The list does two jobs. It tells the chat
+which language to use when the message does not decide. It tells the mic which
+languages to expect.
+
+**Preview.** `workbench/control_plane/ux-shots/lang-list/index.html` is a local
+mock of the control. It is not product code.
+
+#### The list (PZ-52)
+
+- `style.languages` is an ordered list of BCP 47 tags, for example
+  `["en", "hi", "kn"]`.
+- It holds at most **6** tags. A tag appears once. The parser lowercases each
+  tag and drops a repeat. A seventh tag is a 422.
+- `_clean_style` checks each tag with the same rules as `style.language`
+  today (shape, length, no digit run).
+- The default is empty. An empty list means "the language of my message". The
+  Settings control shows "English" as a grey hint, and it stores nothing.
+- **Expand and contract (R6).** `style.language` stays and always holds the
+  first tag. A write of `languages` sets `language` to its first tag. A write
+  of `language` alone sets `languages` to a list of one. If one write holds
+  both and they disagree, `languages` wins.
+- **A read of an old profile** that has only `style.language` returns
+  `languages` as a list of one. No migration runs. The data stays in the same
+  `user_settings.assistant_profile` column.
+- **A read after an old writer.** If `languages[0]` differs from `language`,
+  an old build wrote `language` last. Then `language` wins, and the reader
+  returns a list of one.
+- Release N writes both keys. A later release may drop `language`. That
+  release is a separate task.
+
+#### The chat (PZ-52)
+
+- The style line of the member block lists the languages in order. Example:
+  `Languages: English (en), then Hindi (hi), then Kannada (kn). Answer in the
+  language of their message. When that is unclear, use the first in the list.`
+- A list of one keeps the PZ-51 line (`Language: Kannada (kn). ...`).
+- The PZ-51 rule decides the reply language. It answers in the language of the
+  message. The list changes nothing there. It is only the fallback order when
+  the language of the message is unclear.
+- `block_language` still returns one tag, the first.
+- The setup coach (§12.5) still asks one question, "Which language should I
+  answer you in?". The answer becomes a list of one.
+
+#### The mic (VOX-8)
+
+The member's list must not narrow what the mic understands. A member who lists
+only English can still speak Hindi to the assistant.
+
+- **The gateway reads the list itself (R5).** `chat_transcribe.transcribe`
+  loads the profile of the proven member, in the tenant session, with the
+  reader that builds the block. The request carries no language field. The
+  route ignores any such field or header from the client.
+- **The new Console field.** `POST /v1/audio/transcriptions` takes an optional
+  form field `language_hints`.
+  - **Shape:** a comma-separated list of lowercase base language tags, for
+    example `en,hi,kn`. The gateway strips a region (`en-IN` becomes `en`).
+  - **Cap:** at most 6 tags and 64 characters in all.
+  - **Order:** the first tag is the most preferred.
+  - **An unknown tag:** the door drops a tag that is not well formed. The
+    handler drops a tag that its vendor does not support. The door never
+    refuses a clip because of this field. A field with more than 6 tags, or
+    one that is too long, is ignored as a whole. The hint is advice.
+  - **No hint:** an absent or empty field gives today's behaviour, exactly.
+- **Sarvam (`stt_sarvam.py`).** The handler sends **no `language_code`**,
+  with or without a hint, so Sarvam detects the language. The hint never
+  narrows detection. The reason is the owner's rule: Hindi must be understood
+  even when the list says English. The modes (`translit`, `codemix`,
+  `transcribe`, `translate`) do not change.
+- **AssemblyAI (`stt_assemblyai.py`).**
+  - A model id that names languages (`assemblyai/universal-3-5-pro/hi,en`)
+    wins. The operator chose it. The hint is not used.
+  - Otherwise the handler keeps the hint tags that are in its 32 `LANGUAGES`.
+    It sends them as `config.language_codes`, in list order, with `en` first
+    when `en` is in the list. `kn` is not in `LANGUAGES`, so the handler drops
+    it.
+  - **Fewer than two supported tags:** the handler sends no `config`. One tag
+    could steer the model away from Hindi for a member who lists only English.
+  - **No supported tag:** the handler sends no `config`, as today.
+- **Billing does not change.** The Console bills the seconds that it measures
+  from the WAV bytes (VOX-6). The hint adds no charge and no usage column.
+  The `transcribe` row for the same clip is equal with and without a hint.
+- **No provider key moves.** The gateway still calls only the Console door.
+
+#### What does not change
+
+- **Saved records stay in English (PZ-51).** Titles, descriptions, comments,
+  notes, CRM records, calendar events and drafts are in English. The list does
+  not change that. Only the chat reply comes back in the regional language.
+- The mic text is the transcript as the vendor returns it. Sarvam `translit`
+  still gives Roman script (§31.6 Q1).
+- The automatic reply drafts of the Email app keep their open question from
+  PZ-51.
+- The WhatsApp voice notes keep `acb_stt` (§31.8).
+
+#### Slices
+
+| Slice | What | Done when | Fence (R7) | Tier |
+|---|---|---|---|---|
+| **PZ-52** | `style.languages` in `_clean_style`, the dual write with `style.language`, the old-profile read, the block line, the route in `admin/assistant_profile.py` | A profile with `languages=["en","hi","kn"]` gives the line `Languages: English (en), then Hindi (hi), then Kannada (kn).` An old profile with `language="kn"` reads as `["kn"]` | `tests/unit/test_assistant_profile_languages.py`: cap 6, repeat dropped, 7th tag 422, old read, mismatch rule, block line. R8: the PUT and GET round trip on a real database | AGENT-SAFE · STANDARD |
+| **PZ-53** | The Settings control: ordered chips, rank 1 "Preferred", drag and button reorder, remove, add from the 9 languages | The control saves the order, and a reload shows it | `profile.test.ts` (the `LANGUAGES` map, the move helpers), a pane test for the keyboard moves, and the captures of the UI gate | AGENT-SAFE · STANDARD |
+| **VOX-8** | Console: `language_hints` on the door and in both handlers. Gateway: read the list server-side and send it. Details are in `projects_ai_chat.md` §31 | A WAV clip on a `tier-stt` chain with AssemblyAI sends `language_codes` from the list. A Sarvam clip sends none | See §31 VOX-8 | HIGH |
+
+PZ-52 goes first. PZ-53 and VOX-8 follow in parallel. VOX-8 reads
+`style.languages` from the profile, so it needs PZ-52. No slice adds a flag,
+because an empty list changes nothing. The existing voice routing switch turns
+the mic path off.
+
+Numbers: `PZ-51` is taken (PR 2031). No branch uses `PZ-52` or `PZ-53`.
+`VOX-7` may be held by branch `mt-ae7b5305-wave`, so this section takes `VOX-8`.
+Re-check all three at merge (R1).
+
+#### Owner calls
+
+| # | Call | Recommendation |
+|---|---|---|
+| Q1 | How many languages may the list hold? | **6.** It covers the usual Indian mix. The cap keeps the block line and the hint short |
+| Q2 | When the list has only English (or one language), does AssemblyAI get a steer? | **No.** Send nothing, so the vendor detects the language. A steer of `en` alone may hurt Hindi. A manual test of 10 Hindi clips with the list `["en"]` should confirm it before the owner binds AssemblyAI above Sarvam |
+| Q3 | Offer more than the 9 languages (for example Odia and Punjabi)? | **Not now.** Keep the 9 of `LANGUAGES`. Sarvam already detects the rest. Add more when the chat tests show a need |
+
 ### 5.5 Learning from the chat
 
 Five tools on the orchestrator, behind the flag:
