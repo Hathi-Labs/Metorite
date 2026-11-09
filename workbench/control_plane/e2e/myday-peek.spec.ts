@@ -123,14 +123,20 @@ const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children
 async function setup(page: Page, opts: { peek?: boolean } = {}): Promise<Store> {
   const store: Store = { status: "s1", feedReads: 0, patches: [] };
   const peek = opts.peek ?? true;
-  await page.addInitScript((on: boolean) => {
-    for (const k of ["cc-shell-bar", "cc-shell-nav", "cc-shell-dock", "cc-my-day", "cc-my-day-feed"]) {
-      localStorage.setItem(k, "1");
-    }
-    if (on) localStorage.setItem("cc-my-day-peek", "1");
-    else localStorage.removeItem("cc-my-day-peek");
-    localStorage.removeItem("cc-sidebar-collapsed");
-  }, peek);
+  const flags = ["cc-shell-bar", "cc-shell-nav", "cc-shell-dock", "cc-my-day", "cc-my-day-feed"];
+  await page.addInitScript(
+    ({ on, keys }: { on: boolean; keys: string[] }) => {
+      for (const k of keys) localStorage.setItem(k, "1");
+      // The landing hello opens the assistant over `/` once a session, as a
+      // full sheet on a phone (`ChatNudge`, `CHAT_LANDED_KEY`). It is not
+      // this spec's subject, and it covers the rows.
+      sessionStorage.setItem("cc-shell-chat-landed", "1");
+      if (on) localStorage.setItem("cc-my-day-peek", "1");
+      else localStorage.removeItem("cc-my-day-peek");
+      localStorage.removeItem("cc-sidebar-collapsed");
+    },
+    { on: peek, keys: flags },
+  );
   await page.route("**/api/**", async (route: Route) => {
     const req: Request = route.request();
     const path = new URL(req.url()).pathname;
