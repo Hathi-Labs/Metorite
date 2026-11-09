@@ -11308,11 +11308,13 @@ The Router runs litellm with no `drop_params`. A step whose model refuses a samp
 - A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
 - Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
-### 6A.18 Model setup in one step (MS) — SPEC ONLY (2026-11-09, Metorite epic task 2458)
+### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 TO MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
 
 **Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
 
 **Slice tasks:** MS-1 is task 2481, MS-2 is task 2482, MS-3 is task 2483 and MS-4 is task 2484. MS-5 stays closed (owner call 4).
+
+**Status, 2026-11-09:** MS-1 is built on branch `mt-312becee-ms1` (task 2481), and it waits for review and merge. MS-2, MS-3 and MS-4 are spec only. "MS-1 as built" below the slice table lists what the build changed in this text.
 
 #### The problem, with the production facts
 
@@ -11442,13 +11444,15 @@ Why the Try comes first: a 400 or a 404 is terminal in the Router. A bad first s
 
 **The Try helpers.** The existing tries walk the chain (`router.py` `_try_chain`). MS adds a single-model mode to them. Chat, image creation, embeddings and speech out have no Try today. MS-2 adds one for each job it offers, by the CP-13b rule: the platform key, an audit row, and no `usage_event` row. A job with no Try is not offered in the connect flow.
 
-**The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 attempts after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
+**The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 tries after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. The chat door and the vision door drop a step for a missing key only, because they call `acompletion` with or without a capability row. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
 
 **One writer at a time.** Adopt, a fix and Undo each read a chain and then write it. Each one takes `pg_advisory_xact_lock` on `(tier, task)` first, so two writes to one chain cannot lose one.
 
 **Undo.** Undo writes the chain from before the adopt back as a new row (section 6A.5, insert only). It writes only when the newest chain row still carries the `effective_from` that the adopt wrote. When a later write moved the chain, Undo returns 409 and changes nothing. A declare is an upsert of the `(model, task)` row (`main.py` declare route), so Undo restores a chain, never a verb. `dry_run` returns what the call would write and runs no write.
 
-**`GET /catalog/health`** returns `{ entries: [{ kind, tier, task, model, invocation, reason, fix }] }`. `fix` is `null` or `{ model, invocation }`. **`POST /catalog/health/fix`** takes the entries to repair. It writes each fix as a new declare and a new chain row.
+**`GET /catalog/health`** returns `{ entries, chains }`. Each entry holds `kind`, `rules`, `tier`, `task`, `job`, `rank`, `model`, `model_label`, `invocation`, `reason`, `fix` and `help`. `fix` is `null` or `{ action, model, invocation, label, same_as }`, and `action` is `replace` or `remove`. Each `chains` line is one chain with an entry (rule H5). It holds the entry count, `window_blocked`, the banner text and the H5 fix.
+
+**`POST /catalog/health/fix`** takes `{ entries: [{ tier, task, model }] }`. A `model` of `null` selects the H5 chain fix. It writes each fix as a new declare and a new chain row. The Console judges each chain again under its lock, and it never takes a fix from the request. A stale entry answers 409. An entry with no fix answers 400.
 
 #### Health rules
 
@@ -11500,6 +11504,21 @@ The preview file is `workbench/control_plane/ux-shots/ms-connect/index.html`. It
 | **MS-3** (task 2483) | Operator console UI: the connect panel, the health banner, "Advanced" | STANDARD | The owner approved the preview on 2026-11-09. The owner runs Flow 1 on the dev stack | `vitest` for the flow state machine. A fence that no string on the page holds `acompletion`, `atranscription` or `native_` outside "Advanced" |
 | **MS-4** (task 2484) | Fold `providerGuides.ts` into the registry. The page reads `GET /catalog/providers` | LOW | `providerGuides.ts` is gone. `test_operator_console_vendor_slugs.py` reads the registry | The same slug test, pointed at the registry |
 | **MS-5** (closed, owner call 4) | A Sarvam speech-out handler, `native_sarvam_tts`, for `bulbul` | HIGH | Only if the owner wants speech out. A Try plays 2 seconds of Hindi audio | `test_handlers_sarvam_tts.py` |
+
+#### MS-1 as built (2026-11-09, task 2481)
+
+The build is on branch `mt-312becee-ms1`. Its fences are `tests/unit/test_provider_registry.py` and `tests/unit/test_catalog_health_r8.py` (R8). Both are in the must-run lists of `pr-check.yml` and `deploy.yml`, and the first is a safety fence in `tests/fences.json`. The build changed this text in these places:
+
+- **H4.** An id with no mode works by itself, because the Sarvam handler adds `translit`. So it makes no entry alone. A fix still writes the registry id that names the mode. Only a provider with a default mode gets this step, so an AssemblyAI id with no languages keeps its meaning.
+- **H2.** `sarvam` is not in `litellm.provider_list`. litellm loads it from its OpenAI-like `providers.json`. The registry reads both lists, then the native vendors.
+- **H5 is a chain line, not a step entry.** The done-when asks for three Speech to text entries, so H5 adds no fourth one. It gives the banner text and, when a working step sits past the window, the chain of working steps.
+- **The reason an entry shows.** It is the first rule in the fix order, then H8. When the exact-key rule blocks a fix, the entry shows H6 if a platform key sits under an alias, and H8 if not.
+- **A fix writes the working steps first.** A 400 is terminal in the Router, so a dead first step stops the walk. The dead steps that the operator did not pick stay after the working ones. The H5 chain fix drops them.
+- **The chain lock.** A bind, an unbind and a fix take `pg_advisory_xact_lock` on `(tier, task)`. A fix waits 5 seconds for it, then answers 409. A chain write now takes its date from `clock_timestamp()` after the lock, and a fix reads the chain at `statement_timestamp()`. With `now()`, a writer that waited would date its chain before the chain it waited for.
+- **The registry.** Mistral and OpenRouter carry no model, because this section names no model id for them. The live list at connect time (MS-2) adds them. Speech-out items with no handler are not in the registry.
+- **No flag.** The VOX-4 tries shipped with a matrix row and no flag. MS-1 does the same: two VIEWER reads, and a fix with the bind's gate (ADMIN and a window).
+
+Left for MS-2: the H6 button, H7, the declare-time and bind-time guards, and a credential entry for a key under an alias that no chain uses.
 
 #### Owner calls
 
