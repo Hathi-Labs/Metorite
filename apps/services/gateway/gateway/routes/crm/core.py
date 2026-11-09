@@ -1726,13 +1726,36 @@ def default_deal_pipeline_sql(org_column: str) -> str:
 #: membership copies it.
 MEMBERSHIP_COLUMNS: tuple[str, ...] = ("probability", "max_dwell_days")
 
-#: What a new membership copies from its stage row ``s``. A value outside the
-#: range of a CHECK of migration 398 stays NULL, and then each reader reads
-#: the stage row, as before.
-_COPY_SQL: dict[str, str] = {
-    "probability": "CASE WHEN s.probability BETWEEN 0 AND 100 THEN s.probability END",
-    "max_dwell_days": "CASE WHEN s.max_dwell_days >= 1 THEN s.max_dwell_days END",
-}
+#: D-CRM-10: a ``won`` stage forecasts 100 and a ``lost`` stage 0, in each
+#: pipeline. ``admin.py`` and ``pipelines.py`` refuse a write that breaks it,
+#: with a 422 and words. A write that copies a value, or puts a stored value
+#: back, writes NULL in its place (:func:`fitted_value_sql`).
+CLAMPED_PROBABILITY: dict[str, int] = {"won": 100, "lost": 0}
+
+
+def fitted_value_sql(column: str, value: str, stage: str = "s") -> str:
+    """*value*, as SQL, when it passes each rule of *column* for the stage row
+    *stage* NOW, else NULL (CRM-M3b repair 1).
+
+    The rules are the CHECKs of migration 398, and for the win chance the
+    clamp of D-CRM-10 for the CURRENT type of the stage. NULL on a membership
+    reads the stage row, and the old route keeps that row clamped. So a write
+    that copies a value, or puts a stored value back, leaves a state that
+    ``PATCH /crm/pipelines/{id}/stages/{status_id}`` takes. It never refuses,
+    so no Undo stays stuck on a stage whose type changed. *value* and *stage*
+    are SQL of this package, never caller text."""
+    if column == "max_dwell_days":
+        return f"CASE WHEN {value} >= 1 THEN {value} END"
+    if column != "probability":
+        raise ValueError(f"not a membership column: {column}")
+    pinned = " ".join(
+        f"WHEN '{kind}' THEN {value} = {chance}"
+        for kind, chance in sorted(CLAMPED_PROBABILITY.items())
+    )
+    return (
+        f"CASE WHEN {value} BETWEEN 0 AND 100 "
+        f"AND (CASE {stage}.type {pinned} ELSE true END) THEN {value} END"
+    )
 
 
 def copied_values_sql(source: str | None = None) -> str:
@@ -1740,10 +1763,47 @@ def copied_values_sql(source: str | None = None) -> str:
     the order of :data:`MEMBERSHIP_COLUMNS`.
 
     With *source*, the alias of the membership of the pipeline that a create
-    copies, each value comes from there first. Else from the stage row."""
-    if source is None:
-        return ", ".join(_COPY_SQL[c] for c in MEMBERSHIP_COLUMNS)
-    return ", ".join(f"COALESCE({source}.{c}, {_COPY_SQL[c]})" for c in MEMBERSHIP_COLUMNS)
+    copies, each value comes from there first. Else from the stage row. Each
+    value passes :func:`fitted_value_sql`, else it is NULL."""
+    return ", ".join(
+        fitted_value_sql(c, f"COALESCE({source}.{c}, s.{c})" if source else f"s.{c}")
+        for c in MEMBERSHIP_COLUMNS
+    )
+
+
+def restored_values_sql() -> str:
+    """The two values that the Undo of a take-out puts back, from the binds
+    ``:probability`` and ``:max_dwell_days``, as SQL over the stage row ``s``.
+    Each value passes :func:`fitted_value_sql` for the stage now, else it is
+    NULL (CRM-M3b repair 1)."""
+    return ", ".join(
+        fitted_value_sql(c, f"CAST(:{c} AS smallint)") for c in MEMBERSHIP_COLUMNS
+    )
+
+
+async def fit_member_values(
+    db: Any, status_id: str, values: dict[str, Any],
+) -> dict[str, Any]:
+    """Each membership value of *values*, or None where it fails the rules of
+    the deal stage *status_id* NOW (CRM-M3b repair 1).
+
+    One read through :func:`fitted_value_sql`, so SQL holds the one rule. An
+    Undo that puts stored values back calls it before its write, so its row
+    logs what it wrote."""
+    columns = [c for c in MEMBERSHIP_COLUMNS if c in values]
+    if not columns:
+        return {}
+    row = (await db.execute(
+        text(
+            "SELECT "
+            + ", ".join(
+                f"{fitted_value_sql(c, f'CAST(:{c} AS smallint)')} AS {c}" for c in columns
+            )
+            + " FROM crm_deal_statuses s WHERE s.id = CAST(:status_id AS uuid)"
+        ),
+        {"status_id": str(status_id), **{c: values[c] for c in columns}},
+    )).first()
+    return {c: (getattr(row, c, None) if row is not None else None) for c in columns}
 
 
 async def entry_probability(db: Any, status: Any, pipeline_id: Any) -> int | None:

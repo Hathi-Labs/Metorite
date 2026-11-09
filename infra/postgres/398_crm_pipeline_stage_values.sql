@@ -9,10 +9,10 @@
 --       * `max_dwell_days`: the days a deal may sit in the stage in this
 --         pipeline before its card shows a warning. The CHECK
 --         `crm_pipeline_stages_max_dwell_days_min` holds 1 or more.
---       NULL means "not set here": each reader takes
---       COALESCE(ps.<column>, s.<column>), so the stage row fills a NULL.
---       The file copies the value of each stage row into each of its
---       memberships, so every pipeline reads what it read before.
+--       NULL means "follow the stage row": each reader takes
+--       COALESCE(ps.<column>, s.<column>), so a NULL membership reads what it
+--       read before this file.
+--       The file writes NO row. Each membership stays NULL (repair 2).
 -- Why:  WS-CRM CRM-M3 build item 3 (project-docs/specs/crm_conversational.md
 --       §8). A stage name is one shared row, and two pipelines may share it.
 --       The win chance edited in one pipeline must not change the other.
@@ -24,22 +24,27 @@
 -- does not rewrite the table. Old code never names them: an INSERT of old code
 -- leaves both NULL, and each reader of the new code then reads the stage row,
 -- as old code does. Old code writes the stage row only, and reads the stage
--- row only. The stage row keeps both columns. No rename, no drop. A later
--- contract release may drop the COALESCE, after each writer sets both values.
+-- row only. The stage row keeps both columns. No rename, no drop.
 -- Each CHECK is added NOT VALID, and a guarded block validates it, as 386 does.
--- The backfill writes only a value inside each range, so each CHECK holds. A
--- stage row with a value outside the range leaves NULL, and the COALESCE reads
--- that stage row, as before. The file sets lock_timeout first, and the runner
--- tries the whole file again on a lock timeout.
--- Idempotent per infra/postgres/README.md: ADD COLUMN IF NOT EXISTS,
--- constraints guarded on pg_constraint, and a backfill that writes only a
--- membership whose two columns are both NULL. A second run changes no value
--- that a reader sees.
+-- The file sets lock_timeout first, and the runner tries the whole file again
+-- on a lock timeout.
+--
+-- Why no backfill (CRM-M3b repair 2). The deploy applies this file BEFORE it
+-- restarts the services, so old code runs for a time on the new schema. In
+-- that time an admin can set a win chance through the old status PATCH, which
+-- writes the stage row only. A copy of the stage row in a membership would
+-- then hide that edit for ever, because each new reader takes the membership
+-- first. A NULL membership reads the stage row, so with no copy each reader
+-- sees what it saw before, and that edit too. New code writes a value into a
+-- membership only after the restart: the route of one pipeline, the old route
+-- for every pipeline (core.fan_out_stage_values), and a copy when a membership
+-- is made. A later contract release may fill the NULLs and drop the COALESCE.
+-- Idempotent per infra/postgres/README.md: ADD COLUMN IF NOT EXISTS, and
+-- constraints guarded on pg_constraint. A second run changes nothing.
 -- Tenant-bound (R5): no new table. `crm_pipeline_stages` keeps its tenant
--- `organization_id` and its FORCE row level security (247). The backfill binds
--- each organization in turn, as 247 does, because FORCE binds the table owner
--- too unless it is a superuser or BYPASSRLS. The generated phases need no
--- change, because the file adds no table and no policy.
+-- `organization_id` and its FORCE row level security (247). The file writes no
+-- row, so it binds no organization. The generated phases need no change,
+-- because the file adds no table and no policy.
 --
 -- The number is taken at build time (R1). It was 394 until 2026-11-09 11:15
 -- UTC, when two branches held 396 and 397. Main held 390, so this file took
@@ -83,42 +88,7 @@ BEGIN
 END
 $add$;
 
--- ── 2. The backfill: each membership takes the values of its stage row ──────
---
--- One organization at a time, with that organization bound when row level
--- security binds the runner. The binding is LOCAL to this transaction. A role
--- that bypasses row level security binds nothing. A membership that holds a
--- value already keeps it, so a second run changes nothing that a reader sees.
-
-DO $backfill$
-DECLARE
-    org_id uuid;
-    bypass boolean;
-BEGIN
-    SELECT rolsuper OR rolbypassrls INTO bypass
-      FROM pg_roles WHERE rolname = current_user;
-
-    FOR org_id IN SELECT id FROM organization ORDER BY id LOOP
-        IF NOT bypass THEN
-            PERFORM set_config('app.tenant_id', org_id::text, true);
-        END IF;
-
-        UPDATE crm_pipeline_stages ps
-           SET probability = CASE WHEN s.probability BETWEEN 0 AND 100
-                                  THEN s.probability END,
-               max_dwell_days = CASE WHEN s.max_dwell_days >= 1
-                                     THEN s.max_dwell_days END
-          FROM crm_deal_statuses s
-         WHERE s.id = ps.status_id
-           AND s.organization_id = org_id
-           AND ps.organization_id = org_id
-           AND ps.probability IS NULL
-           AND ps.max_dwell_days IS NULL;
-    END LOOP;
-END
-$backfill$;
-
--- ── 3. Validate the two CHECKs ──────────────────────────────────────────────
+-- ── 2. Validate the two CHECKs ──────────────────────────────────────────────
 
 DO $validate$
 BEGIN

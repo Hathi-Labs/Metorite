@@ -874,8 +874,10 @@ def _m3b_migration() -> Path:
 
 def test_the_m3b_migration_is_expand_only_and_says_why() -> None:
     """R1, R6. A free number, a header that names the parts, two nullable
-    columns, each CHECK NOT VALID and then validated, the lock timeout, and a
-    backfill that binds each org. No drop, no rename, no default."""
+    columns, each CHECK NOT VALID and then validated, and the lock timeout.
+    No drop, no rename, no default, and no backfill (repair 2): old code runs
+    between the migration and the restart, and a copied value would hide its
+    edit of the stage row."""
     path = _m3b_migration()
     numbers = [int(p.name.split("_", 1)[0]) for p in path.parent.glob("[0-9]*.sql")]
     assert numbers.count(int(path.name.split("_", 1)[0])) == 1
@@ -885,16 +887,15 @@ def test_the_m3b_migration_is_expand_only_and_says_why() -> None:
         assert required in header, required
     bare = "\n".join(re.sub(r"--.*$", "", line) for line in sql.splitlines())
     for forbidden in ("DROP TABLE", "DROP COLUMN", "RENAME", "TRUNCATE", "DELETE FROM",
-                      "INSERT INTO", "DEFAULT"):
+                      "INSERT INTO", "DEFAULT", "UPDATE "):
         assert forbidden not in bare, forbidden
     assert "SET LOCAL lock_timeout" in bare
     assert re.search(r"ADD COLUMN IF NOT EXISTS probability SMALLINT NULL;", bare)
     for check in ("crm_pipeline_stages_probability_pct", "crm_pipeline_stages_max_dwell_days_min"):
         assert re.search(rf"ADD CONSTRAINT {check}\s+CHECK \([^;]*\) NOT VALID", bare), check
         assert f"VALIDATE CONSTRAINT {check}" in bare, check
-    # The backfill binds each org in turn, and writes only an empty membership.
-    assert "set_config('app.tenant_id', org_id::text, true)" in bare
-    assert "ps.probability IS NULL" in bare and "ps.max_dwell_days IS NULL" in bare
+    # Repair 2: no backfill, and the header says why.
+    assert "Why no backfill" in header and "restarts the services" in header
 
 
 def test_the_seed_copies_the_values_as_core_does() -> None:
@@ -993,10 +994,11 @@ async def test_a_win_chance_edited_in_one_pipeline_leaves_the_other(pns) -> None
                 (await _call(pns, admin, "GET", "/crm/statuses/deal")).json()}
     assert statuses["Proposal"]["probability"] == 50, "the stage row stays"
     (row,) = _changes(pns, "pipeline_stage", "change")
+    # "before" holds the stored values. "after" names no stage (repair 8), so
+    # Change history shows no "Stage: Proposal -> Proposal" line.
     assert row.before == {"status_id": ids["proposal"], "stage": "Proposal",
                           "probability": 50, "max_dwell_days": None}
-    assert row.after == {"status_id": ids["proposal"], "stage": "Proposal",
-                         "probability": 35, "max_dwell_days": 9}
+    assert row.after == {"status_id": ids["proposal"], "probability": 35, "max_dwell_days": 9}
     assert row.ladder_level == "team" and str(row.entity_id) == amc["id"]
     assert "win chance" in row.summary and "warning days" in row.summary
     # The same value again changes nothing and logs nothing.
@@ -1009,6 +1011,33 @@ async def test_a_win_chance_edited_in_one_pipeline_leaves_the_other(pns) -> None
     assert (await _lanes(pns, admin, amc["id"]))["Proposal"]["probability"] == 50
     twice = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
     assert twice.status_code == 409 and _code(twice) == "already_undone", twice.text
+
+
+async def test_the_undo_of_an_edit_puts_null_back_where_the_pipeline_followed_the_stage(
+    pns,
+) -> None:
+    """Repair 3. A membership that old code wrote holds NULL and follows the
+    stage row. The edit row keeps the STORED value, so its Undo puts NULL
+    back, and the pipeline follows a later edit of the stage row again. A
+    value that the pipeline shows already logs nothing."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    path = _values_path(ids["pipeline"], ids["proposal"])
+    same = await _call(pns, admin, "PATCH", path, {"probability": 50})
+    assert same.status_code == 200 and _changes(pns, "pipeline_stage", "change") == []
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    r = await _call(pns, admin, "PATCH", path, {"probability": 40, "max_dwell_days": 5})
+    assert r.status_code == 200, r.text
+    (row,) = _changes(pns, "pipeline_stage", "change")
+    assert (row.before["probability"], row.before["max_dwell_days"]) == (None, None)
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 200, undo.text
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    # The pipeline follows the stage row again: a stage-row edit shows on the board.
+    _one(pns, "UPDATE crm_deal_statuses SET probability = 55, max_dwell_days = 8 "
+              "WHERE id = CAST(:s AS uuid) RETURNING id", s=ids["proposal"])
+    lane = (await _lanes(pns, admin, ids["pipeline"]))["Proposal"]
+    assert (lane["probability"], lane["max_dwell_days"]) == (55, 8)
 
 
 async def test_the_clamp_and_each_bad_value_is_a_4xx_with_words(pns) -> None:
@@ -1322,8 +1351,9 @@ async def test_a_zoho_shaped_org_reads_the_same_board_after_the_migration(pns) -
     """Done when 7 (R8). A Mirror org with Zoho stages, win chances, an
     overlay and warning days, two pipelines, and memberships as old code
     wrote them (no values). The board and the pipeline list read the same
-    before and after migration 398 runs, and a second run changes nothing. A
-    stage row outside a CHECK leaves its membership NULL."""
+    before and after migration 398 runs, and a second run changes nothing.
+    The file writes no membership (repair 2), so each one reads its stage
+    row, even a stage row outside a CHECK."""
     from tests.unit._tenant_ladder import _exec_file
 
     ids = _seed(pns, pns.org_a)
@@ -1366,10 +1396,9 @@ async def test_a_zoho_shaped_org_reads_the_same_board_after_the_migration(pns) -
             _exec_file(c, str(_m3b_migration()))
             c.commit()
         assert await board() == before
-    assert _membership(pns, partners, ids["proposal"]) == (50, None)
-    assert _membership(pns, partners, ids["qualify"]) == (10, 7)
-    assert _membership(pns, partners, odd) == (None, None), "outside a CHECK: NULL"
-    assert _membership(pns, ids["pipeline"], ids["won"]) == (100, None)
+    for pipeline, status in ((partners, ids["proposal"]), (partners, ids["qualify"]),
+                             (partners, odd), (ids["pipeline"], ids["won"])):
+        assert _membership(pns, pipeline, status) == (None, None), "no backfill"
 
 
 async def test_a_second_org_reads_and_writes_nothing_of_the_first(
@@ -1391,3 +1420,233 @@ async def test_a_second_org_reads_and_writes_nothing_of_the_first(
         assert c.execute(text(
             "SELECT count(*) FROM crm_pipeline_stages "
             "WHERE organization_id = CAST(:a AS uuid)"), {"a": pns.org_a}).scalar() == 0
+
+
+# ── CRM-M3b repair round 1 ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("flag", ["", "*"])
+async def test_the_undo_of_a_take_out_meets_the_clamp_of_the_stage_now(
+    pns, monkeypatch, flag: str,
+) -> None:
+    """Repair 1, in the order of the review (P1). Take "Proposal" (open, 50)
+    out of a pipeline, make it ``won`` at 100 through the old route, and undo
+    the take-out. The pipeline shows ``won`` at 100, never the stored value.
+    The take-out, the old route and the Undo are not behind
+    ``CRM_PIPELINES_ORGS``, so the case runs with the flag off too. With the
+    flag on, the stage first gets 35 in a second pipeline through the new
+    route."""
+    from acb_common import get_settings
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    if flag:
+        pid = (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).json()["id"]
+        edit = await _call(pns, admin, "PATCH", _values_path(pid, ids["proposal"]),
+                           {"probability": 35})
+        assert edit.status_code == 200, edit.text
+        stored = (35, None)
+    else:
+        # The membership holds a copy of the stage row, as the seed and a
+        # stage add write it.
+        pid = ids["pipeline"]
+        with pns.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE crm_pipeline_stages SET probability = 50 "
+                "WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"),
+                {"p": pid, "s": ids["proposal"]})
+        stored = (50, None)
+    monkeypatch.setattr(get_settings(), "crm_pipelines_orgs", flag, raising=False)
+    out = await _call(pns, admin, "DELETE", _values_path(pid, ids["proposal"]))
+    assert out.status_code == 200, out.text
+    (taken,) = _changes(pns, "pipeline_stage", "delete")
+    assert (taken.before["probability"], taken.before["max_dwell_days"]) == stored
+    won = await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{ids['proposal']}",
+                      {"type": "won", "probability": 100})
+    assert won.status_code == 200, won.text
+    back = await _call(pns, admin, "POST", f"/crm/change-history/{taken.id}/undo")
+    assert back.status_code == 200, back.text
+    assert _membership(pns, pid, ids["proposal"]) == (None, None), "the stored value broke the clamp"
+    lane = (await _lanes(pns, admin, pid))["Proposal"]
+    assert (lane["type"], lane["probability"]) == ("won", 100)
+    listed = {(pl["id"], s["name"]): (s["type"], s["probability"])
+              for pl in (await _call(pns, admin, "GET", "/crm/pipelines")).json()
+              for s in pl["stages"]}
+    assert listed[(pid, "Proposal")] == ("won", 100)
+    (put_back,) = [x for x in _changes(pns, "pipeline_stage", "create") if x.undoes_id]
+    assert put_back.after["probability"] is None, "the row logs what the Undo wrote"
+
+
+async def test_a_copy_and_a_status_undo_never_put_back_a_value_that_breaks_the_clamp(
+    pns,
+) -> None:
+    """Repair 1 for each other write that copies a value into a membership:
+    a copy of a pipeline, a stage add, and the Undo of an old-route edit after
+    the stage became ``won``. Each writes NULL in place of a value that breaks
+    the clamp of the stage now, and NULL reads the stage row."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    # States that no route makes: "Won" at 40 in the default pipeline, and a
+    # "won" stage row at 60 that no pipeline lists.
+    with pns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_pipeline_stages SET probability = 40 "
+            "WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"),
+            {"p": ids["pipeline"], "s": ids["won"]})
+    signed = str(_one(pns, "INSERT INTO crm_deal_statuses (organization_id, name, type, "
+                           "position, probability) VALUES (CAST(:o AS uuid), 'Signed', 'won', "
+                           "35, 60) RETURNING id", o=pns.org_a))
+    copy = await _call(pns, admin, "POST", "/crm/pipelines",
+                       {"name": "Renewals", "copy_from": ids["pipeline"]})
+    assert copy.status_code == 201, copy.text
+    renewals = copy.json()["id"]
+    assert _membership(pns, renewals, ids["won"]) == (None, None)
+    assert _membership(pns, renewals, ids["proposal"]) == (50, None), "a value that fits stays"
+    put = await _call(pns, admin, "POST", f"/crm/pipelines/{renewals}/stages",
+                      {"status_id": signed})
+    assert put.status_code == 201, put.text
+    assert _membership(pns, renewals, signed) == (None, None)
+    # The old route: the stage row is 100 already, so its second edit writes
+    # only the membership, and its Undo puts back 35 after the type change.
+    path = f"/crm/statuses/deal/{ids['proposal']}"
+    assert (await _call(pns, admin, "PATCH", path, {"probability": 100})).status_code == 200
+    assert (await _call(pns, admin, "PATCH", _values_path(ids["pipeline"], ids["proposal"]),
+                        {"probability": 35})).status_code == 200
+    assert (await _call(pns, admin, "PATCH", path, {"probability": 100})).status_code == 200
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (100, None)
+    assert (await _call(pns, admin, "PATCH", path, {"type": "won"})).status_code == 200
+    second = _changes(pns, "deal_stage", "change")[-2]
+    assert second.before == {"pipelines": {ids["pipeline"]: {"probability": 35}}}, second.before
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{second.id}/undo")
+    assert undo.status_code == 200, undo.text
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+    lane = (await _lanes(pns, admin, ids["pipeline"]))["Proposal"]
+    assert (lane["type"], lane["probability"]) == ("won", 100)
+
+
+async def test_the_weighted_aggregate_reads_the_lanes_of_the_board(pns) -> None:
+    """Repair 4. A deal with no win chance of its own. The weighted aggregate
+    of one pipeline reads the win chance of the stage in that pipeline, as the
+    board of that pipeline does. With no pipeline, both read the default deal
+    pipeline. One deal never gives two numbers."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    amc = (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).json()
+    assert (await _call(pns, admin, "PATCH", _values_path(amc["id"], ids["proposal"]),
+                        {"probability": 20})).status_code == 200
+    _one(pns, "INSERT INTO crm_deals (organization_id, name, status_id, pipeline_id, amount, "
+              "currency) VALUES (CAST(:o AS uuid), 'Weighted', CAST(:s AS uuid), "
+              "CAST(:pl AS uuid), 1000, 'INR') RETURNING id",
+         o=pns.org_a, s=ids["proposal"], pl=amc["id"])
+    for pipeline, expected in ((amc["id"], 200.0), (None, 500.0)):
+        params = {"pipeline_id": pipeline} if pipeline else None
+        board = await _call(pns, admin, "GET", "/crm/pipeline", params=params)
+        assert board.status_code == 200, board.text
+        (lane,) = [x for x in board.json()["lanes"] if x["status"]["name"] == "Proposal"]
+        query = {"entity": "deals", "measure": "weighted", **(params or {})}
+        agg = await _call(pns, admin, "GET", "/crm/aggregate", params=query)
+        assert agg.status_code == 200, agg.text
+        assert (lane["weighted"], agg.json()["total"]) == (expected, expected), pipeline
+
+
+#: The deal surfaces that show a win chance or the warning days of a deal
+#: stage (CRM-M3b, D166). Each reads the membership first.
+_DEAL_READERS = ("aggregate.py", "reports.py", "pipeline.py", "pipelines.py", "records.py")
+
+#: Each way to read a stage-row value alone, with a form that once shipped,
+#: so the fence is not vacuous.
+_STAGE_ROW_READS: tuple[tuple[str, str], ...] = (
+    (r"""["'][^"'\n]*\bSELECT\b[^"'\n]*\b(?:probability|max_dwell_days)\b[^"'\n]*"""
+     r"""\bFROM crm_deal_statuses\b""", '"SELECT id, type, probability FROM crm_deal_statuses"'),
+    (r"SELECT \* FROM crm_deal_statuses\b",
+     '"SELECT * FROM crm_deal_statuses ORDER BY position, name"'),
+    (r"""read_statuses\(\s*db,\s*["']crm_deal_statuses["']""",
+     'return await read_statuses(db, "crm_deal_statuses")'),
+    (r"\bs\.(?:probability|max_dwell_days)\b", '"CAST(s.max_dwell_days AS int) AS limit_days"'),
+)
+
+#: The form that reads the membership first. The fence removes it before it looks.
+_MEMBERSHIP_FIRST = re.compile(r"COALESCE\(ps\.(probability|max_dwell_days), s\.\1\)")
+
+
+def test_no_deal_reader_reads_the_stage_row_value_alone() -> None:
+    """R7 for the rule of ``apps/services/gateway/AGENTS.md`` (CRM-M3b repair
+    5). A deal reader never reads ``s.probability`` or ``s.max_dwell_days``
+    alone, so one deal never shows two win chances. The held-stage read of
+    the board is the one stage-row list: a stage that the pipeline does not
+    list has no membership. Mutation: put back the old ``_weighted`` read ->
+    red."""
+    crm = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
+    for pattern, shipped in _STAGE_ROW_READS:
+        assert re.search(pattern, shipped), ("non-vacuity", pattern)
+    found: list[tuple[str, str]] = []
+    for name in _DEAL_READERS:
+        source = _MEMBERSHIP_FIRST.sub("", (crm / name).read_text(encoding="utf-8"))
+        for pattern, _shipped in _STAGE_ROW_READS:
+            found += [(name, m.group(0)) for m in re.finditer(pattern, source)]
+        held = source.count('EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]')
+        assert held == (1 if name == "pipeline.py" else 0), (name, held)
+    assert found == [], found
+
+
+@pytest.mark.parametrize("sqlstate", ["40P01", "40001", "55P03"])
+async def test_the_value_route_answers_try_again_on_a_lock_failure(
+    pns, monkeypatch, sqlstate: str,
+) -> None:
+    """R7 for the 409 ``try_again`` of the value route (repair 6). A deadlock
+    (40P01), a serialization failure (40001) or a lock that is not free
+    (55P03) gives 409 with words that say to try again, never a 500. The
+    transaction rolls back, so nothing changes."""
+    from gateway.routes.crm import pipelines
+    from sqlalchemy.exc import DBAPIError
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+
+    async def locked(*_a: Any, **_kw: Any) -> Any:
+        raise DBAPIError("UPDATE crm_pipeline_stages", None, _LockError(sqlstate))
+
+    monkeypatch.setattr(pipelines, "set_stage_values_in", locked)
+    r = await _call(pns, admin, "PATCH", _values_path(ids["pipeline"], ids["proposal"]),
+                    {"probability": 30})
+    assert r.status_code == 409 and _code(r) == "try_again", r.text
+    assert "Try again" in _words(r)
+    assert _membership(pns, ids["pipeline"], ids["proposal"]) == (None, None)
+
+
+async def test_another_database_error_of_the_value_route_stays_an_error(
+    pns, monkeypatch,
+) -> None:
+    """Only the three transient states map to the 409. Any other error stays
+    an error, so the mapping hides no defect."""
+    from gateway.routes.crm import pipelines
+    from sqlalchemy.exc import DBAPIError
+
+    ids = _seed(pns, pns.org_a)
+
+    async def broken(*_a: Any, **_kw: Any) -> Any:
+        raise DBAPIError("UPDATE crm_pipeline_stages", None, _LockError("42P01"))
+
+    monkeypatch.setattr(pipelines, "set_stage_values_in", broken)
+    with pytest.raises(DBAPIError):
+        await _call(pns, _admin(pns.org_a), "PATCH",
+                    _values_path(ids["pipeline"], ids["proposal"]), {"probability": 30})
+
+
+async def test_the_undo_of_an_edit_of_a_deleted_stage_says_it_cannot_come_back(pns) -> None:
+    """Repair 7. A status delete removes each membership of the stage too, so
+    no take-out is left to undo. The words say that the stage was deleted,
+    and never ask for the Undo of a take-out."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    edit = await _call(pns, admin, "PATCH", _values_path(ids["pipeline"], ids["qualify"]),
+                       {"probability": 15})
+    assert edit.status_code == 200, edit.text
+    deleted = await _call(pns, admin, "DELETE", f"/crm/statuses/deal/{ids['qualify']}")
+    assert deleted.status_code == 200, deleted.text
+    (row,) = _changes(pns, "pipeline_stage", "change")
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 409 and _code(undo) == "gone", undo.text
+    words = _words(undo)
+    assert '"Qualify" was deleted, so this change cannot come back' in words, words
+    assert "took it out" not in words, words

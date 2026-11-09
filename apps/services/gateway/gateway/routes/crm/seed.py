@@ -85,9 +85,12 @@ _PIPELINE_SQL = (
 #: CRM-M3b (migration 398): each membership copies the win chance and the
 #: warning days of its stage row. The text of ``core.copied_values_sql()``,
 #: kept here because this module is a leaf. ``test_crm_pipelines_native.py``
-#: holds the two equal.
+#: holds the two equal. A value that breaks a CHECK of migration 398, or the
+#: clamp of D-CRM-10 for the type of the stage, stays NULL (repair 1).
 COPIED_VALUES = (
-    "CASE WHEN s.probability BETWEEN 0 AND 100 THEN s.probability END, "
+    "CASE WHEN s.probability BETWEEN 0 AND 100 AND (CASE s.type "
+    "WHEN 'lost' THEN s.probability = 0 WHEN 'won' THEN s.probability = 100 "
+    "ELSE true END) THEN s.probability END, "
     "CASE WHEN s.max_dwell_days >= 1 THEN s.max_dwell_days END"
 )
 

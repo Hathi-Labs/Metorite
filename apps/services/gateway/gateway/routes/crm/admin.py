@@ -55,6 +55,7 @@ from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import (
+    CLAMPED_PROBABILITY,
     MEMBERSHIP_COLUMNS,
     MIRROR_OVERLAY_COLUMNS,
     STAGE_REQUIREABLE_FIELDS,
@@ -67,6 +68,7 @@ from gateway.routes.crm.core import (
     assert_writable,
     current_tenant,
     fan_out_stage_values,
+    fit_member_values,
     insert_row,
     is_mirror_mode,
     load_row,
@@ -144,15 +146,15 @@ def _kind(kind: str) -> tuple[str, str]:
         ) from None
 
 
-#: D-CRM-10 — a won-type lane forecasts 100 and a lost-type lane 0.
-#:
-#: Enforced here rather than trusted downstream, and as a **422 on the
-#: contradiction** rather than a silent rewrite: probability *informs* and
-#: ``type`` *decides*, so a stage typed won at 40% cannot close a deal but it
-#: can quietly halve the weighted pipeline every forecast surface reads. The
-#: owner who typed it is the one who should be told.
-CLAMPED_PROBABILITY: dict[str, int] = {"won": 100, "lost": 0}
-
+# D-CRM-10 — a won-type lane forecasts 100 and a lost-type lane 0. The rule
+# is ``CLAMPED_PROBABILITY``. ``core.py`` holds it since CRM-M3b, so a copy of
+# a membership value reads the same rule.
+#
+# Enforced here rather than trusted downstream, and as a **422 on the
+# contradiction** rather than a silent rewrite: probability *informs* and
+# ``type`` *decides*, so a stage typed won at 40% cannot close a deal but it
+# can quietly halve the weighted pipeline every forecast surface reads. The
+# owner who typed it is the one who should be told.
 
 #: The two fields whose movement the clamp judges. A PATCH naming neither is
 #: not a forecast decision and must never be refused on forecast grounds.
@@ -731,8 +733,11 @@ async def _membership_values(
     status_id = str(row.id)
     if members is not None:
         held = await stage_memberships(db, status_id, MEMBERSHIP_COLUMNS)
+        # Repair 1: a stored value that fails the rules of the stage now goes
+        # back as NULL, which reads the stage row (``core.fit_member_values``).
         back = {
-            pid: {c: v for c, v in vals.items() if c in MEMBERSHIP_COLUMNS}
+            pid: await fit_member_values(db, status_id, {
+                c: v for c, v in vals.items() if c in MEMBERSHIP_COLUMNS})
             for pid, vals in members.items() if pid in held
         }
         await write_memberships(db, status_id, back)

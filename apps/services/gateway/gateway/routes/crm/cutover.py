@@ -126,6 +126,7 @@ from gateway.routes.crm.core import (
     DEAL_PIPELINE_SQL,
     _tenant_session,
     count_records,
+    fitted_value_sql,
     from_jsonb,
     router,
 )
@@ -1224,11 +1225,15 @@ async def fold_cutover_overlay(db: Any, org: str) -> dict[str, int]:
     CRM-M3b (D166): a deal stage's ``ui_probability`` goes into each of its
     pipeline memberships too, BEFORE the stage fold clears it. Each reader
     takes the membership value first (migration 398), so the board reads the
-    same win chance before and after the switch.
+    same win chance before and after the switch. A value that breaks the
+    clamp of D-CRM-10 for the type of the stage goes in as NULL, and NULL
+    reads the stage row, which the fold sets to the same value
+    (``core.fitted_value_sql``, CRM-M3b repair 1).
     """
     folded: dict[str, int] = {}
     members = await db.execute(text(
-        "UPDATE crm_pipeline_stages ps SET probability = s.ui_probability "
+        "UPDATE crm_pipeline_stages ps SET probability = "
+        f"{fitted_value_sql('probability', 's.ui_probability')} "
         "FROM crm_deal_statuses s WHERE s.id = ps.status_id "
         "AND s.ui_probability IS NOT NULL AND s.organization_id = CAST(:o AS uuid) "
         "AND ps.organization_id = CAST(:o AS uuid)"
