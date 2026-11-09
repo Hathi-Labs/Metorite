@@ -704,3 +704,9 @@ UPDATE email_signature_images SET organization_id = (SELECT id FROM organization
 
 UPDATE pm_project_updates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE pm_templates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_template_applies SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

@@ -185,6 +185,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
                              {"project_id": UUID, "limit": 2, "before": UUID}],
     # WS-ALN ALN-2a — the member's own open decisions
     "my_decisions": [{}],
+    # WS-39 TPL-1a — the templates of the organization
+    "list_templates": [{}],
     "project_views": [{"project_id": UUID}],
     "calendar": [
         {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},

@@ -98,6 +98,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   project_authorities: { icon: "Users", label: "Authority pages" },
   // WS-39 LP-1a: the updates of a project, newest first.
   list_project_updates: { icon: "Megaphone", label: "Project updates" },
+  // WS-39 TPL-1a: the templates of the organization.
+  list_templates: { icon: "LayoutList", label: "Templates" },
   my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
@@ -209,6 +211,9 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
   // WS-39 LP-1a: the delete of a project update.
   delete_project_update: { icon: "Trash2", label: "Project update deleted" },
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  save_as_template: { icon: "LayoutList", label: "Template saved" },
+  create_project_from_template: { icon: "FolderPlus", label: "Project made from a template" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
@@ -332,6 +337,9 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "remove_report_recipient",
   "set_report_schedule",
   "promote_reminder",
+  // WS-39 TPL-1a
+  "save_as_template",
+  "create_project_from_template",
 ]);
 
 /**

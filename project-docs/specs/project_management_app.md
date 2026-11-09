@@ -20,6 +20,11 @@
 > Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
 > Fix round 3 (2026-11-08): a task sits in one open cycle at most, and a closed cycle is history.
 > Fix round 4 (2026-11-09): migration 364 became 372. A race of a cycle write answers 409, never 500.
+> 🟢 **WS-39 TPL-1a BUILT 2026-11-08, dark, not merged** (§14.2 row TPL-1a, §14.8,
+> migration 384, branch `mt-8d741fc0-tpl1a-templates`, Metorite task 18). A member saves
+> a project as an org-wide template and makes a project from it, through three routes,
+> one MCP read and three chat tools, with no web UI. `PROJECTS_TEMPLATES_ORGS` ships
+> empty. TPL-1b (the project menu and the picker) is open.
 > · **Previously updated 2026-10-25**
 > 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
 > on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
@@ -9320,7 +9325,7 @@ The research for cycles of agent teams is in §2 and §12 of `project-docs/resea
 
 ## 14. The Linear and Plane items (LP-0, task 987, 2026-11-08)
 
-**Status: ACTIVE. This section holds rows, and §14.2a holds the design of LP-1a (built 2026-11-08, not merged).** It records no new decision. Epic: LP (task 978). Build order: LIN (task 2301). Reviews: `project-docs/research/linear_parity_2026-11.md` (§3, §7 and §8) and `project-docs/research/plane_pm_research_2026-08.md`. Task 956 restored the Plane file.
+**Status: ACTIVE. This section holds rows. §14.2a holds the design of LP-1a (built 2026-11-08, not merged), and §14.8 holds the design of TPL-1a.** It records no new decision. Epic: LP (task 978). Build order: LIN (task 2301). Reviews: `project-docs/research/linear_parity_2026-11.md` (§3, §7 and §8) and `project-docs/research/plane_pm_research_2026-08.md`. Task 956 restored the Plane file.
 
 **The bottom line.** This section gives each Linear and Plane item a spec row, so a builder may start it. Eleven items (LP-1 to LP-11), Templates (task 18) and OP-12 (task 839) have one row each. Two items wait for an owner call (§14.5). Every row ships dark behind a flag that is OFF by default. This section does not repeat a row of §13.6.
 
@@ -9356,7 +9361,9 @@ Each row has one Metorite task. The scope carries the description of the task. W
 | **LP-9** | 2213 | Label groups. A tag can belong to a named group. A task takes at most one tag of an exclusive group. Views group and filter by the group. Tags are flat today. Keep one colour vocabulary (`statusAccent.ts`). Linear parity row P11 | A group, an exclusive rule and a refusal with a reason are proved on a real database. Views group by a group | `tests/unit/test_pm_tag_groups_r8.py` (new) | HIGH (a migration, a new MCP write route) | `PROJECTS_TAG_GROUPS_ORGS` | LP-0. Shares the tag catalogue of MCP-G21 (task 2216) |
 | **LP-10** | 2214 | Importers for Jira, Asana and Linear, beside the ClickUp importer, on the adapter shape of `project_import.md` §4.2. Today only `routes/projects/importer/clickup.py` exists. Each source is one slice with its own row in `project_import.md`. First slice: the Jira CSV adapter, and its row there | A Jira export imports in one step in the local stack, and the idempotency rules of `project_import.md` §6.1 hold | `tests/unit/test_pm_import_jira.py` (new), beside the ClickUp import tests | STANDARD. HIGH if an adapter needs a migration | `PROJECTS_IMPORT_ORGS` (reuse the flag of the existing importer if it has one) | LP-0. D80 (a file importer is allowed) |
 | **LP-11** | 2215 | An Insights builder inside Reports. The member picks a measure (count, cycle time, lead time, triage time), a slice and a segment. The builder adds percentile markers and a cumulative flow chart. It stays inside Reports on the existing reads, with no second analytics seam. The MCP read `board_stats` (MCP-G19a, task 1957) counts on the same visibility path, so reuse it where it fits. First slice: one measure, one slice and the cumulative flow chart | A cumulative flow chart and a sliced measure match the numbers of the existing Reports sections | `tests/unit/test_pm_insights.py` (new) | STANDARD (read only) | `PROJECTS_INSIGHTS_ORGS` | LP-0. The row in `projects_reports.md` comes first |
-| **TPL** | 18 | Templates. A project template holds the statuses, types, custom fields and tags, the work style (WM-0), the milestones (WM-2), the starter tasks with dates relative to the project start, the intake settings and the recipes (LP-6). A task template holds a title pattern, its fields and a subtask checklist. A library per work style: an operations board (Flow), a product team (Sprints), a bet (Cycles), an installation and a customer order (Plan), customer onboarding, and hiring. "Save as template" works from any project. Mira builds a template from a short description, on one approve card. A template is org-wide by default, as task types are since migration 175. First slice: save a project as a template and make a project from it. The library and the Mira path follow | A member makes a project from a template in the local stack, and the starter dates fall in place | `tests/unit/test_pm_templates_r8.py` (new) | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0. Milestones, recipes and intake settings join when WM-2, LP-6 and LP-8 land |
+| **TPL** | 18 | Templates. A project template holds the statuses, types, custom fields and tags, the work style (WM-0), the milestones (WM-2), the starter tasks with dates relative to the project start, the intake settings and the recipes (LP-6). A task template holds a title pattern, its fields and a subtask checklist. A library per work style: an operations board (Flow), a product team (Sprints), a bet (Cycles), an installation and a customer order (Plan), customer onboarding, and hiring. "Save as template" works from any project. Mira builds a template from a short description, on one approve card. A template is org-wide by default, as task types are since migration 175. First slice: save a project as a template and make a project from it, in two rows, TPL-1a and TPL-1b. The library and the Mira path follow | A member makes a project from a template in the local stack, and the starter dates fall in place | `tests/unit/test_pm_templates_r8.py` (new) | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0. Milestones, recipes and intake settings join when WM-2, LP-6 and LP-8 land |
+| **TPL-1a** | 18 | **Built 2026-11-08, dark, not merged.** The store, the routes and the tools, with no web UI. Migration 384 adds `pm_templates` and `pm_template_applies`, each with FORCE RLS. `POST /projects/templates` saves a project as a template, `GET /projects/templates` lists the templates of the org or reads one by its id, and `POST /projects/templates/{template_id}/apply` makes a project from one. Chat: `list_templates` (A), `save_as_template` (C) and `create_project_from_template` (C). MCP: `list_templates` (A) only. The two MCP writes come later, with a preview and a confirm step (§14.3). §14.8 holds the design: the private-source rule, the caps, the apply, the key and the counter | R8: a round trip with a task tree of three levels and its dates, one project for one key, tenancy, the private-source rule, the caps and the date range, the settings right, a task create that waits for no apply, two applies of one moment, the flag off, and FORCE RLS | `tests/unit/test_pm_templates_r8.py`, `tests/unit/test_mcp_edge_templates.py` | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0 |
+| **TPL-1b** | 18 | Open. "Save as template" in the project menu, and a template picker in "New project", over the routes of TPL-1a. The picker shows the counts of each template and asks for the start date. The owner preview gates it (D145) | A member saves a project and makes a project from it in the local stack, and the starter dates fall in place | Advisory: a vitest test of the menu item and the picker, and the visual review | STANDARD (frontend only) | `PROJECTS_TEMPLATES_ORGS` | TPL-1a |
 | **OP-12** | 839 | The views become one tab row on desktop and tablet: the six canvases, the saved views and "+ View". No sideways scroll. Below 1280 px the canvas tabs show the icon only, with a tooltip that names the key. Tabs that do not fit fold into a "More" menu. The phone keeps one View button and a vertical sheet. `ModeSwitch` is the one switcher. Subscriptions and favorites (Linear parity row P14) are not in the task. First slice: the tab row only | At 1440, 1024 and 768 px every canvas and saved view is one click away with no scrollbar. At 390 px the sheet lists them vertically. The keys o, b, l, t, c and m still switch the canvas | Advisory: a vitest test for the tab row (new) and the visual review. Nothing tests layout (CLAUDE.md §4) | STANDARD (frontend only) | None. It is a layout, and the D145 owner preview gates it | None. SP-3 (task 962) uses the row |
 
 ### 14.2a LP-1a — the design of the first slice of LP-1 (built 2026-11-08)
@@ -9439,7 +9446,7 @@ Each row names the tool that an external agent calls and the tool that the chat 
 | LP-9 | `list_tag_groups` (A), `set_tag_group` (C). `update_task` refuses a second tag of an exclusive group, with a reason | `set_tag_group` (C) |
 | LP-10 | None. A file cannot travel over the MCP | A command that opens the importer for the named source |
 | LP-11 | `insights_query` (A), on the `board_stats` visibility path | `insights_query` (A) |
-| TPL | `list_templates` (A), `create_project_from_template` (C), `save_as_template` (C) | The same three |
+| TPL | `list_templates` (A), built in TPL-1a. `create_project_from_template` and `save_as_template` stay off the MCP in TPL-1a: each is class C, and an MCP write of either one needs a preview and a confirm step first, as `move_tasks` has (EA3-53) | The same three, in the `projects-structure` pack, built in TPL-1a. Each write shows one card |
 | OP-12 | None | None. The tab row only re-lays controls that the chat already reaches |
 
 ### 14.4 The build order
@@ -9633,6 +9640,68 @@ The file is `project-docs/research/linear_parity_2026-11.md`. The source type is
 
 
 ---
+
+### 14.8 The template store (TPL-1a)
+
+**Status: BUILT 2026-11-08, dark, not merged.** This section is the design of the row TPL-1a of §14.2. Code: `apps/services/gateway/gateway/routes/projects/templates.py`. Migration: `infra/postgres/384_pm_templates.sql`. Fence: `tests/unit/test_pm_templates_r8.py` (R8).
+
+**The tables.** Each has the tenant `organization_id` and FORCE RLS, and only `templates.py` writes them.
+
+- `pm_templates` holds one template: `kind` (`project` or `task`), `name`, `description`, `work_style`, `payload`, `source_project_id`, `created_by`, `created_at` and `updated_at`. The unique index is on `(organization_id, lower(name), kind)`. TPL-1a writes `kind = 'project'` only.
+- `pm_template_applies` holds one apply: the member, the idempotency key, the SHA-256 of the request, the template and the project. The unique index is on `(organization_id, applied_by, idempotency_key)`.
+- A delete of the source project sets `source_project_id` to NULL, because a template is a copy and not a link. A delete of the new project sets `project_id` of the apply to NULL.
+- No work style exists yet (WM-0), so `work_style` is NULL in each row of TPL-1a.
+
+**The payload (`schema_version` 1).** It holds `statuses`, `types`, `fields`, `tags`, `tasks` and `counts`.
+
+- Each status keeps its name, its stage, its color and its position. Each type keeps its name, its icon, its color and `is_epic`. Each field keeps its key, its name, its type, its options and `required`. Each tag keeps its name, its color and its description.
+- `tasks` is a tree. Each task keeps its title, its description, the name of its status and of its type, its tags, its custom field values, `importance`, `leveraged`, `estimate_mins`, and `start_offset_days` and `due_offset_days`. A subtask sits in `children`.
+- The payload holds no id of the source, no assignee, no comment and no activity. It also holds no milestone, no recipe and no intake setting.
+- The save reads only the tasks of the project itself. It skips an archived task, and a task in triage, because intake text comes from outside. A done or a cancelled task keeps no status, so it starts open in a new project.
+- The offsets count in calendar days from the start date that the save names, or from the earliest start or due day of the tasks. A due day is the day of `due_at` in the zone of the member who saves.
+
+**Who may do what.**
+
+- **Save:** the right that edits the source project, which is `core.load_visible_project`.
+- **List:** each member of the org with `feature:projects`. A template is org-wide, as a task type is since migration 175. `?template_id=` reads one template by its id, so a caller never looks for an id inside the first page of 200.
+- **Apply:** the right to make a project under the parent, which is `tree.create_node_in`, the one creator of `POST /projects/nodes`.
+- **A status set of its own:** `projects:settings:write` (`core.SETTINGS_WRITE`), the right of `set_status_set`. Step 3 of the apply reads it.
+
+**The private-source rule (the safer of the two choices).** A save refuses a project that the whole org cannot see, with 403 `source_not_org_wide`. The project, or a project above it, must hold the `org` grant. A sealed project and a personal project never pass. The check asks the one visibility seam as a member with no group, no grant of its own and no admin right. So a template never holds a title or a description that a lister could not read at the save. The other choice, a template that only the readers of its source see, fails open when the source moves or goes, so TPL-1a does not take it.
+
+**A template is a copy made at the save.** The source must be org-wide at the moment of the save, and the template keeps what it copied then. A later change of the source does not reach the template: a new grant, a new seal, a move into a private tree or a delete. Each member can still read and apply the template. To take the text back, a person deletes the template (a later row). This is the price of a copy, and it is the reason for the org-wide rule above.
+
+**An outside agent.** A connection with pins or a left-out list sees less than its member (D-EA-12). An agent lists only a template whose source project it can see now. No agent sees a template whose source is gone.
+
+**The payload is data, never code.** `parse_payload` checks it on each save and on each apply.
+
+- It needs `schema_version` 1 and refuses an extra key and a value of the wrong type.
+- The caps: 500 tasks, 10 levels of tasks, 50 statuses, 50 types, 40 fields, 500 tags, 2,000 characters of a title, 20,000 characters of a description, and 1 MiB of JSON text.
+- It walks the tree with a stack before any parser, so it refuses a payload by its depth before a parser reads it.
+- A task may name only a status and a type of the template, and the statuses must hold one Done status (D79).
+- Three CHECKs of the table hold the object, the version and the 1 MiB. A refusal is 422 `template_too_large` or `template_invalid`.
+- Each date of an apply must fall in the years 1900 to 2999: the start date, and each start date and due date of a task. A date outside them answers 422 `date_out_of_range`, never 500, and the apply writes nothing.
+- Each text of the payload leaves the MCP edge as `untrusted_text`.
+
+**The apply.** Two transactions.
+
+1. A short first transaction answers a replay of the key at once. Else it reads the template and the parent, and it reserves one task number for each starter task with `core.reserve_task_numbers`, the one allocator, as the file import does. It commits at once. So the lock of the counter row of the space lasts one statement, and a task create of another member in the space never waits for the apply. A failed apply, or a replay that wins the claim after the reserve, leaves a gap in the task numbers, and the apply accepts that gap.
+2. The second transaction claims the key with `INSERT … ON CONFLICT DO NOTHING`. A second apply with the same key waits for the first, then answers 200 with the first project and `replayed: true`. The same key with another body answers 409 `key_used`, and so does a key whose project is gone.
+3. It makes the project under the parent through `tree.create_node_in`. A space holds no tasks, so the apply needs `parent_project_id`, and the template always makes a project or a subproject. When the parent moved to another space after the reserve, the apply answers 409 and the client sends the same key again.
+4. The statuses: when the parent's set holds the same names and stages, the project keeps that set. Else the caller's right decides. With `projects:settings:write`, the project owns a copy of the template's set, as `set_status_set` mode `own` does for an empty node. Without it, the project keeps the parent's set, and each template status maps to the lane of the same name and stage, else to the first lane of the same stage (backlog, to do, in progress), else to the first open lane.
+5. The apply adds to the space each task type, field and tag that the space lacks, by the identity of `core.VOCABULARY_IDENTITY`. Each insert is `ON CONFLICT DO NOTHING`, then a read again, so two applies of the same moment into one space both land with one row of each. A field of the same key and another type answers 409 `field_conflict`. A field that the apply adds is never required, because it lands on the whole space.
+6. It makes the task tree through `tasks.create_task_in`, parents first, and each task takes the next reserved number. A date is the start date plus the offset, in calendar days. The repo has `work_schedule.working_days_between`, which counts working days, and no helper that adds them, so TPL-1a uses calendar days. A due date goes through `personal.stored_due`, so it is noon of that day in the zone of the member.
+7. It writes one activity row on the project, "Made from the template".
+
+**What the card approves.** The apply writes the importance, the `leveraged` mark, the estimate, the tags and the custom field values of each task as the template holds them. The chat card names the template and its counts, and the person who approves it approves those values, as a person does who fills the same values in by hand. Each value still passes the checks of `create_task_in` and `custom_fields.apply_values`. The narrowing of an agent's body (EA-6d, MCP-G2) does not apply to them, because the server builds them from the stored template, and no agent sends them.
+
+The apply is quiet, as the file import is (§6.10 of `project_import.md`). It emits `pm.project.created` once, and no event, text link or ALN-1 check job for each task. A deadlock or a lock timeout answers 409, and the client sends the same key again.
+
+**The flag.** `PROJECTS_TEMPLATES_ORGS` is a `*_ORGS` list with the default empty. While it does not hold the org, each route answers 404 and writes nothing. `templates_allowed` is its one reader. A change is a SIGHUP reload (`docs/flag_reload.md`).
+
+**MCP and chat.** The chat has the three tools: `list_templates` is class A, and `save_as_template` and `create_project_from_template` are class C, so the chat asks one card for each. They are in the `projects-structure` pack. The MCP has `list_templates` only. The two writes stay off the MCP in TPL-1a, because rule 2 of `external_agent_access.md` §9.5 keeps a class C pair off the edge. An MCP write of a template needs a preview and a confirm step first, as `move_tasks` has (EA3-53). A later row adds them.
+
+**Not in TPL-1a.** The web UI is TPL-1b. A rename, an edit and a delete of a template, the library of work styles, the task template kind and the Mira path wait for later rows.
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

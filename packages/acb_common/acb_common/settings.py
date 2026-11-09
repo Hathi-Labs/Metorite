@@ -1057,6 +1057,16 @@ class Settings(BaseSettings):
     # value. Fence: tests/unit/test_sprint_store_r8.py.
     projects_sprints_orgs: str = ""
 
+    # ── The templates of Projects (WS-39 TPL-1a, task 18) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/projects/templates` route answers 404 and no
+    # template row is written. The one reader is
+    # `gateway.routes.projects.templates.templates_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_pm_templates_r8.py.
+    projects_templates_orgs: str = ""
+
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

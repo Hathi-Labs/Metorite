@@ -7780,6 +7780,90 @@ MOVE_TASKS = Tool(
 )
 
 
+# ── The templates of Projects (WS-39 TPL-1a, project_management_app.md §14.8) ─
+#
+# The read only. The save and the apply stay off the edge in TPL-1a: an MCP
+# write of a template comes later, with a preview and a confirm step, as
+# `move_tasks` has (EA3-53). The chat has both writes, behind one card each.
+
+TEMPLATES_ROUTE = "/projects/templates"
+
+#: The numbers of a template, in the order of the gateway's ``counts``.
+TEMPLATE_COUNT_KEYS: tuple[str, ...] = ("statuses", "types", "fields", "tags", "tasks")
+TEMPLATE_KEYS: tuple[str, ...] = ("id", "kind", "name", "description", "counts", "created_at")
+
+TEXT_TEMPLATES_OFF = "Project templates are not on for this organization."
+
+_COUNTS_SCHEMA = _object({name: {"type": "integer"} for name in TEMPLATE_COUNT_KEYS})
+_TEMPLATE_SCHEMA = _object({
+    "id": {"type": "string"}, "kind": _NULLABLE_STRING, "name": _UNTRUSTED_SCHEMA,
+    "description": _UNTRUSTED_OR_NULL, "counts": _COUNTS_SCHEMA,
+    "created_at": _NULLABLE_STRING,
+})
+
+
+def _template(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One template, in the keys of :data:`TEMPLATE_KEYS` only. Its name and
+    its description are text that a member wrote, so each is untrusted."""
+    counts = _dict(row.get("counts"))
+    return {
+        "id": str(row.get("id")),
+        "kind": _str_or_none(row.get("kind")),
+        "name": untrusted(row.get("name") or ""),
+        "description": untrusted(row.get("description")),
+        "counts": {name: int(counts.get(name) or 0) if _number(counts.get(name)) else 0
+                   for name in TEMPLATE_COUNT_KEYS},
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+_LIST_TEMPLATES_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "template_id": {"type": "string", "pattern": _UUID_PATTERN,
+                        "description": "Read one template by its id. Leave it out to"
+                                       " list the templates by name."},
+    },
+    "additionalProperties": False,
+}
+_LIST_TEMPLATES_OUTPUT: dict[str, Any] = _object({
+    "templates": {"type": "array", "items": _TEMPLATE_SCHEMA},
+    "more": {"type": "boolean"},
+})
+
+
+async def _list_templates(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One GET of the list, or of one template by its id. A 404 is the flag off."""
+    query = [("template_id", str(args["template_id"]))] if "template_id" in args else []
+    body = await _get(ctx, TEMPLATES_ROUTE, TEXT_TEMPLATES_OFF, query=query)
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    rows = [r for r in _rows_of(body) if isinstance(r, dict)]
+    return {"templates": [_template(r) for r in rows], "more": body.get("more") is True}
+
+
+LIST_TEMPLATES = Tool(
+    name="list_templates",
+    title="List project templates",
+    description=(
+        "List the project templates of this member's organization, by name, or"
+        " read one by its template_id. Each template gives its id, its description"
+        " and its counts: the statuses, task types, fields, tags and starter tasks"
+        " that a new project gets from it. Every member of the organization sees the"
+        " same list. A person makes a project from a template, or saves a project as"
+        " one, in the Metorite chat or app." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_TEMPLATES_INPUT,
+    output_schema=_LIST_TEMPLATES_OUTPUT,
+    route=TEMPLATES_ROUTE,
+    params={"template_id": "template_id"},
+    not_found=TEXT_TEMPLATES_OFF,
+    run=_list_templates,
+    routes=(TEMPLATES_ROUTE,),
+)
+
+
 # ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
 
 _RUN_ID_INPUT: dict[str, Any] = {
@@ -9417,7 +9501,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``update_comment`` and ``delete_comment`` of MCP-G9, and ``claim_task`` of EA-6b, then
 #: ``set_assignees`` of MCP-G2, then the four tools of MCP-G1:
 #: ``create_project``, ``update_project``, ``preview_move_tasks`` and
-#: ``move_tasks``. The six agent-run
+#: ``move_tasks``. WS-39 TPL-1a adds the read ``list_templates`` after
+#: ``get_attachment``. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
 #: shows only while the runs flag is on too. ``record_outside_decision`` of
 #: MCP-G15 follows it, on the same flag. ``delete_task`` of EA-6h is last.
@@ -9430,6 +9515,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
+    LIST_TEMPLATES,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,

@@ -40,6 +40,8 @@ The write cap is now two settings, `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S`,
 
 **MCP-G12, MCP-G14 and MCP-G10 are BUILT 2026-11-08 and not merged (branch `mt-5be99476-g12-write-clarity`, Metorite tasks 1023, 1208 and 844).** `update_task` takes null for `due_at`, `start_date` and `estimate_mins`, and null clears the field. `create_task` with the Epic type and a parent answers "An Epic cannot have a parent. Leave out type_id or parent_task_id." A refusal of the write cap holds `retry_after` in seconds, and the reply sends `Retry-After`. A busy answer does the same when the gateway names a wait. Every write tool carries one line that names the limit of 120 changes in 10 minutes. The batch write for comments (G10 item 3) is not built. The fence is `tests/unit/test_mcp_edge_write_clarity.py`.
 
+**WS-39 TPL-1a is BUILT 2026-11-08 and not merged (branch `mt-8d741fc0-tpl1a-templates`, Metorite task 18). It ships dark behind `PROJECTS_TEMPLATES_ORGS`.** One read joins the edge, `list_templates` (§9.1). The save and the apply of a template stay off the edge, because each is class C in the chat manifest. An MCP write of a template comes later, with a preview and a confirm step, as `move_tasks` has (EA3-53, §14). `project_management_app.md` §14.8 holds the design.
+
 **MCP-G18 is BUILT 2026-11-06 and merged (Metorite task 1727, first slice).** The read of the image itself is IMG-3 (task 1999, `projects_ai_chat.md` §30.4), by the owner request of 2026-11-07. `get_task_context` returns the metadata of the files on a task. Names are `untrusted_text`. It has no link, no bytes and no upload (§15, row MCP-G18).
 
 **MCP-G15 is BUILT 2026-11-04 and not merged (branch `mt-c4fee5e7-decided-elsewhere`, Metorite task 1567).** An agent records a decision that its member made outside Metorite, such as in the agent's own chat. The new tool is `record_outside_decision` (§12.1, "A decision made outside Metorite"). The run moves from `awaiting` to `in_progress`, and the task leaves each list that waits on the member. It goes live at the merge under `agent_runs_enabled`, which is ON. No migration.
@@ -689,6 +691,8 @@ The timeline rule stays. MCP-G18 adds one separate key, by owner decision (2026-
 
 `get_company_context` is not in EA-3. EA-5 adds it, with the `context:read` scope (§13).
 
+**`list_templates` (WS-39 TPL-1a).** It needs `projects:read`. It calls `GET /projects/templates` once, and returns each template of the organization with its id, its kind, its counts and the date it was made. The input `template_id` reads one template by its id. The name and the description leave as `untrusted_text`. The route answers 404 while `PROJECTS_TEMPLATES_ORGS` does not hold the organization. A connection with pins or a left-out list sees only a template whose source project it can see (`project_management_app.md` §14.8).
+
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
 EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). MCP-G2 builds `set_assignees`, and it adds inputs to `create_task` and `update_task` (EA3-52). MCP-G1 builds `create_project`, `update_project`, `preview_move_tasks` and `move_tasks` (EA3-53). MCP-G20 builds `update_tasks`. MCP-G9 builds `update_comment` and `delete_comment`. Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
@@ -948,6 +952,8 @@ EA-6b moved `claim_task` into the table above (EA3-34), and EA-6c moved `add_com
 
 MCP-G1 adds `move_tasks`, a move across projects, as a class C tool (EA3-53). Its human confirmation step is the preview: the move needs the `preview_id` of the same selection, and `destructiveHint: true` makes the client ask the person. A bulk change is not exposed. A slice that adds one must add a human confirmation step too. MCP-G2 exposes the unassign of another person through `set_assignees`, and EA3-52 records why it needs no confirmation card. An agent may assign only a person who can already open the task, so it cannot widen access. `set_assignees` has `destructiveHint: true`, so a client may ask the person before a call.
 
+**The templates (WS-39 TPL-1a).** The save and the apply of a template are class C in the chat manifest, so rule 2 of §9.5 keeps both pairs off the edge. An apply makes a project with up to 500 tasks, and a save makes a row that each member reads. A slice that exposes either one must add a human confirmation step first, as the rule above says, such as the preview and the confirm of `move_tasks`. Until then a member makes a template, or a project from one, in the chat or in the app.
+
 The archive is the one class C act that an agent can reach, and only through a request (EA3-40). The tool `request_task_archive` is class B, because it only writes a question. The class C act is the archive itself, and only the member does it, on a route that the edge cannot call.
 
 **The archive (EA3-33, EA3-40, EA-6g, MERGED and live, #1070).** An agent may archive a task only after the member of the connection approves it on the task in Metorite. The approval goes through an agent run of EA-12 (§12.1), not through MCP elicitation. EA3-2 keeps `/mcp` stateless, and Claude Code declines a form elicitation in the terminal and in VS Code. The agent never deletes a task, and an archive does not cascade to the subtasks.
@@ -1039,6 +1045,7 @@ SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance
 **The fourth exception (MCP-G2).** The move and the PUT of the assignees gain `If-Match`, and the create gains `assignees`. Each field needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends none of the three.
 
 **The fifth exception (MCP-G1).** The node PATCH gains `If-Match`. It needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends no `If-Match`.
+
 
 **The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". A read has the annotations `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. A write (EA-6a) declares its `method`, and it has `readOnlyHint: false` with the other three the same.
 
