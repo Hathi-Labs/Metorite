@@ -854,7 +854,7 @@ def test_each_length_line_is_golden(length, text) -> None:
 
 def test_the_language_line_lets_the_member_switch() -> None:
     assert _line({"style": {"language": "hi"}}, "VJ", at=2) == (
-        "Language: hi. Answer in it, unless they write in another language.")
+        "Language: Hindi (hi). Answer in it, unless they write in another language.")
 
 
 def test_the_house_voice_line_needs_a_style_key_or_a_formality() -> None:

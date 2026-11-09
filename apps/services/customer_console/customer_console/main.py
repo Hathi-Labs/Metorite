@@ -79,13 +79,14 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from customer_console import (
     analytics,
     app_hub,
     apps,
     catalog,
+    catalog_health,
     deployment_keys,
     feed,
     operator_activity,
@@ -98,6 +99,7 @@ from customer_console import (
     pricing_window,
     provider_balance,
     provider_keys,
+    provider_registry,
     store,
 )
 from customer_console import router as router_mod
@@ -2931,6 +2933,49 @@ def sync_vendor_feed(staff: Operator) -> dict[str, Any]:
     return {"source": source, **counts}
 
 
+def _write_capability(
+    conn, *, model: str, task: str, invocation: str, streams: bool, staff: StaffIdentity
+) -> dict[str, Any]:
+    """Declare one ``(model, task)`` pair on the caller's connection (MS-1).
+
+    🔴 **One writer, two callers.** ``POST /catalog/capabilities`` and
+    ``POST /catalog/health/fix`` both call it, so a fix passes the checks a
+    declare passes, and the fix writes inside its tier's ONE transaction
+    (§6A.18). It raises ``catalog.CatalogRefused`` for a pair the Console
+    refuses. The caller maps that to a 400.
+
+    It takes the operator (``staff``), and its audit row names
+    ``staff.actor``. ``test_operator_session.py`` holds that rule.
+    """
+    verb = catalog.check_invocation_for_task(invocation, task)
+    # CP-13h: a native verb must call the vendor the model prefix names.
+    # VOX-2: with the task, a `sarvam/` transcribe model takes
+    # `native_sarvam` only, and a wrong Sarvam mode is refused here.
+    # VOX-6: `assemblyai/` takes `native_assemblyai`, and a wrong code is refused.
+    catalog.check_model_for_invocation(model, verb, task=task)
+    streams = catalog.check_streams(task, streams)
+    if not _task_exists(conn, task):
+        raise catalog.CatalogRefused(f"unknown task {task!r}")
+    conn.execute(
+        text(
+            "INSERT INTO model_capability (model, task, invocation, streams) "
+            "VALUES (:m, :t, :i, :s) "
+            "ON CONFLICT (model, task) DO UPDATE "
+            "SET invocation = EXCLUDED.invocation, "
+            "    streams = EXCLUDED.streams"
+        ),
+        {"m": model, "t": task, "i": verb, "s": streams},
+    )
+    _audit(
+        conn,
+        None,
+        "catalog.capability",
+        {"model": model, "task": task, "invocation": verb},
+        actor=staff.actor,
+    )
+    return {"model": model, "task": task, "invocation": verb, "streams": streams}
+
+
 @app.post("/catalog/capabilities")
 def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any]:
     """Declare what a model can do, and which provider verb does it.
@@ -2941,37 +2986,17 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     Nobody is billed against it, so correcting it destroys no audit trail.
     """
     try:
-        invocation = catalog.check_invocation_for_task(req.invocation, req.task)
-        # CP-13h: a native verb must call the vendor the model prefix names.
-        # VOX-2: with the task, a `sarvam/` transcribe model takes
-        # `native_sarvam` only, and a wrong Sarvam mode is refused here.
-        # VOX-6: `assemblyai/` takes `native_assemblyai`, and a wrong code is refused.
-        catalog.check_model_for_invocation(req.model, invocation, task=req.task)
-        streams = catalog.check_streams(req.task, req.streams)
+        with get_engine().begin() as conn:
+            return _write_capability(
+                conn,
+                model=req.model,
+                task=req.task,
+                invocation=req.invocation,
+                streams=req.streams,
+                staff=staff,
+            )
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
-
-    with get_engine().begin() as conn:
-        if not _task_exists(conn, req.task):
-            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
-        conn.execute(
-            text(
-                "INSERT INTO model_capability (model, task, invocation, streams) "
-                "VALUES (:m, :t, :i, :s) "
-                "ON CONFLICT (model, task) DO UPDATE "
-                "SET invocation = EXCLUDED.invocation, "
-                "    streams = EXCLUDED.streams"
-            ),
-            {"m": req.model, "t": req.task, "i": invocation, "s": streams},
-        )
-        _audit(
-            conn,
-            None,
-            "catalog.capability",
-            {"model": req.model, "task": req.task, "invocation": invocation},
-            actor=staff.actor,
-        )
-    return {"model": req.model, "task": req.task, "invocation": invocation, "streams": streams}
 
 
 #: The bindings a removal must respect: the one IN FORCE, and every one that
@@ -3035,8 +3060,18 @@ def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
         if not _task_exists(conn, req.task):
             raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
 
+        # MS-1: the chain lock a bind and a health fix take. The read and the
+        # tombstone below both come AFTER it, so a chain that a bind or a fix
+        # wrote while this transaction waited is the one this unbind ends.
+        _lock_chain(conn, tier=req.tier, task=req.task)
+
         # The in-force set, under the same lock `bind_tier` takes, so an
         # unbind and a concurrent bind cannot both believe they won.
+        #
+        # ⚠️ **`statement_timestamp()`, never `now()`** (MS-1 fix round).
+        # `now()` is the start of the transaction, which is BEFORE the wait on
+        # the lock. A bind that committed during the wait dates its chain
+        # with `clock_timestamp()`, so `now()` would not see it as in force.
         rows = conn.execute(
             text(
                 "SELECT model FROM tier_binding "
@@ -3044,7 +3079,7 @@ def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
                 "  AND effective_from = ("
                 "      SELECT max(x.effective_from) FROM tier_binding x "
                 "      WHERE x.tier = :tier AND x.task = :task "
-                "        AND x.effective_from <= now()) "
+                "        AND x.effective_from <= statement_timestamp()) "
                 "FOR UPDATE"
             ),
             {"tier": req.tier, "task": req.task},
@@ -3061,10 +3096,13 @@ def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
         if all(r[0] is None for r in rows):
             return {"tier": req.tier, "task": req.task, "already": True}
 
+        # The tombstone takes its date from the clock read after the lock, as
+        # `_write_chain` does. With `now()` it would be EARLIER than the chain
+        # a waiting bind wrote, and the bound model would stay on the air.
         conn.execute(
             text(
                 "INSERT INTO tier_binding (tier, task, model, rank, effective_from) "
-                "VALUES (:tier, :task, NULL, 1, now())"
+                "VALUES (:tier, :task, NULL, 1, clock_timestamp())"
             ),
             {"tier": req.tier, "task": req.task},
         )
@@ -3196,88 +3234,353 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
         )
 
     with get_engine().begin() as conn:
-        if not _task_exists(conn, req.task):
-            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
-
-        # D68: a tier serves ONE kind of job, and the registry says which.
-        # tier-stt IS speech-to-text; binding chat onto it is a mis-click,
-        # and this is where the mis-click stops. A NULL registry task (a
-        # ghost or a pre-016 row) keeps the old freedom.
-        _check_tier_task(conn, tier=req.tier, task=req.task)
-
-        # ⚠️ **EVERY step is checked, not just the primary.** An unchecked
-        # backup is worse than no backup: it is only reached after the primary
-        # has already failed, so the 500 arrives during an outage, when nobody
-        # has attention to spare for it.
-        for model in chain:
-            # ⚠️ `FOR UPDATE` — the other half of the race
-            # `remove_capability` locks against. A plain SELECT here reads a
-            # row a concurrent DELETE has not committed yet, and both
-            # transactions then commit an in-force binding with no capability
-            # behind it. The lock is on rows this statement already reads, so
-            # it costs nothing that was not already being read.
-            capable = conn.execute(
-                text(
-                    "SELECT 1 FROM model_capability "
-                    "WHERE model = :m AND task = :t FOR UPDATE"
-                ),
-                {"m": model, "t": req.task},
-            ).first()
-            if capable is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"{model!r} declares no capability for task {req.task!r}; declare it first"
-                    ),
-                )
-
-        # 🔴 **One timestamp for the whole chain, computed ONCE.** Letting each
-        # row default to `now()` would give the steps different microsecond
-        # timestamps, and resolution takes every row at the newest one — so the
-        # chain would resolve to its last step alone. The bug would be
-        # invisible until the primary failed.
-        eff = conn.execute(
-            text("SELECT COALESCE(CAST(:eff AS TIMESTAMPTZ), now())"),
-            {"eff": req.effective_from},
-        ).scalar_one()
-
-        try:
-            for position, model in enumerate(chain, start=1):
-                conn.execute(
-                    text(
-                        "INSERT INTO tier_binding "
-                        "    (tier, task, model, rank, effective_from) "
-                        "VALUES (:tier, :task, :model, :rank, :eff)"
-                    ),
-                    {
-                        "tier": req.tier,
-                        "task": req.task,
-                        "model": model,
-                        "rank": position,
-                        "eff": eff,
-                    },
-                )
-        except IntegrityError:
-            # An explicit effective_from equal to a saved row's violates the
-            # (tier, task, rank, effective_from) PK — a retried "chain from
-            # the 1st" POST used to 500 here.
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "a chain for this (tier, task) already exists at that "
-                    "exact effective_from; omit it to save a new row dated "
-                    "now, or pass a later timestamp"
-                ),
-            ) from None
-
-        _audit(
+        _lock_chain(conn, tier=req.tier, task=req.task)
+        _write_chain(
             conn,
-            None,
-            "catalog.binding",
-            {"tier": req.tier, "task": req.task, "chain": chain},
-            actor=staff.actor,
+            tier=req.tier,
+            task=req.task,
+            chain=chain,
+            effective_from=req.effective_from,
+            staff=staff,
         )
     return {"tier": req.tier, "task": req.task, "model": chain[0], "chain": chain}
+
+
+def _chain_lock_key(tier: str, task: str) -> str:
+    """The text the chain lock hashes. One ``(tier, task)``, one key."""
+    return json.dumps(["tier_binding", tier, task])
+
+
+def _lock_chain(conn, *, tier: str, task: str, timeout: str | None = None) -> None:
+    """Take the ``(tier, task)`` chain lock until the transaction ends (§6A.18).
+
+    🔴 **One writer at a time.** A bind, an unbind and a health fix each take
+    it BEFORE they read the chain, so two writes to one chain cannot lose
+    one. ``pg_advisory_xact_lock`` stacks inside one transaction, so a
+    second call by the same writer is harmless.
+
+    *timeout* sets ``lock_timeout`` for the rest of the transaction. A wait
+    longer than it raises SQLSTATE 55P03, which the fix route answers 409.
+    """
+    if timeout is not None:
+        conn.execute(text("SELECT set_config('lock_timeout', :t, true)"), {"t": timeout})
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": _chain_lock_key(tier, task)},
+    )
+
+
+def _write_chain(
+    conn,
+    *,
+    tier: str,
+    task: str,
+    chain: list[str],
+    effective_from: datetime | None,
+    staff: StaffIdentity,
+    audit_extra: dict[str, Any] | None = None,
+) -> None:
+    """Write one whole chain on the caller's connection. **INSERT only** (MS-1).
+
+    🔴 **One writer, two callers.** ``POST /catalog/bindings`` and
+    ``POST /catalog/health/fix`` both call it, after :func:`_lock_chain`. So
+    a fix passes the checks a bind passes, inside its tier's ONE transaction.
+    The audit row is ``catalog.binding`` with ``tier``, ``task`` and
+    ``chain``. A fix adds its own keys through *audit_extra*.
+    The row names the operator (``staff.actor``), never a shared actor.
+    """
+    if not _task_exists(conn, task):
+        raise HTTPException(status_code=400, detail=f"unknown task {task!r}")
+
+    # D68: a tier serves ONE kind of job, and the registry says which.
+    # tier-stt IS speech-to-text; binding chat onto it is a mis-click,
+    # and this is where the mis-click stops. A NULL registry task (a
+    # ghost or a pre-016 row) keeps the old freedom.
+    _check_tier_task(conn, tier=tier, task=task)
+
+    # ⚠️ **EVERY step is checked, not just the primary.** An unchecked
+    # backup is worse than no backup: it is only reached after the primary
+    # has already failed, so the 500 arrives during an outage, when nobody
+    # has attention to spare for it.
+    for model in chain:
+        # ⚠️ `FOR UPDATE` — the other half of the race
+        # `remove_capability` locks against. A plain SELECT here reads a
+        # row a concurrent DELETE has not committed yet, and both
+        # transactions then commit an in-force binding with no capability
+        # behind it. The lock is on rows this statement already reads, so
+        # it costs nothing that was not already being read.
+        capable = conn.execute(
+            text(
+                "SELECT 1 FROM model_capability "
+                "WHERE model = :m AND task = :t FOR UPDATE"
+            ),
+            {"m": model, "t": task},
+        ).first()
+        if capable is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{model!r} declares no capability for task {task!r}; declare it first"
+                ),
+            )
+
+    # 🔴 **One timestamp for the whole chain, computed ONCE.** Letting each
+    # row default to `now()` would give the steps different microsecond
+    # timestamps, and resolution takes every row at the newest one — so the
+    # chain would resolve to its last step alone. The bug would be
+    # invisible until the primary failed.
+    #
+    # ⚠️ **`clock_timestamp()`, not `now()`** (MS-1). `now()` is the start of
+    # the transaction, which is BEFORE the wait on the chain lock. A writer
+    # that waited would then date its chain EARLIER than the chain it waited
+    # for, and the newer write would lose in silence.
+    eff = conn.execute(
+        text("SELECT COALESCE(CAST(:eff AS TIMESTAMPTZ), clock_timestamp())"),
+        {"eff": effective_from},
+    ).scalar_one()
+
+    try:
+        for position, model in enumerate(chain, start=1):
+            conn.execute(
+                text(
+                    "INSERT INTO tier_binding "
+                    "    (tier, task, model, rank, effective_from) "
+                    "VALUES (:tier, :task, :model, :rank, :eff)"
+                ),
+                {
+                    "tier": tier,
+                    "task": task,
+                    "model": model,
+                    "rank": position,
+                    "eff": eff,
+                },
+            )
+    except IntegrityError:
+        # An explicit effective_from equal to a saved row's violates the
+        # (tier, task, rank, effective_from) PK — a retried "chain from
+        # the 1st" POST used to 500 here.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "a chain for this (tier, task) already exists at that "
+                "exact effective_from; omit it to save a new row dated "
+                "now, or pass a later timestamp"
+            ),
+        ) from None
+
+    _audit(
+        conn,
+        None,
+        "catalog.binding",
+        {"tier": tier, "task": task, "chain": chain, **(audit_extra or {})},
+        actor=staff.actor,
+    )
+
+
+# ── MS-1: the provider registry and catalog health (§6A.18) ─────────────────
+#
+# 🔴 **Operator routes, and no flag.** The two reads are VIEWER, and the fix
+# is ADMIN with an elevation window, the gate bind takes. The VOX-4 tries
+# shipped the same way: a MATRIX row and no flag. Nothing here reaches a
+# customer, and no route here returns, logs or audits a secret.
+
+
+@app.get("/catalog/providers")
+def catalog_providers(staff: Operator) -> dict[str, Any]:
+    """The provider registry, with ``connected`` and the key label. **No secret.**
+
+    ``connected`` counts a live PLATFORM key under the EXACT provider id. A
+    key under an alias (``sarvam.ai``) or a BYOK key does not count (§6A.18).
+    """
+    with get_engine().begin() as conn:
+        labels = store.platform_credential_labels(conn)
+    return {
+        "providers": provider_registry.wire(labels),
+        "jobs": [
+            {"task": task, "label": label}
+            for task, label in provider_registry.JOB_LABELS.items()
+        ],
+    }
+
+
+def _health_report(
+    conn,
+    chains: dict[tuple[str, str], list[str]],
+) -> tuple[catalog_health.Report, dict[tuple[str, str], tuple[str, bool]]]:
+    """Judge *chains* against the capability rows and the PLATFORM keys."""
+    caps = store.capability_rows(conn)
+    keys = frozenset(store.platform_credential_labels(conn))
+    verbs = {pair: row[0] for pair, row in caps.items()}
+    return catalog_health.assess(chains, verbs, keys), caps
+
+
+@app.get("/catalog/health")
+def read_catalog_health(staff: Operator) -> dict[str, Any]:
+    """Every bound step that cannot work, with a reason and a fix (§6A.18).
+
+    ``entries`` holds one row per step. ``chains`` holds one line per chain
+    with an entry (rule H5), for the banner. A ``fix`` names a model id and
+    a verb, and only when a live platform key sits under the exact prefix.
+    """
+    with get_engine().begin() as conn:
+        report, _ = _health_report(conn, store.in_force_chains(conn))
+    return {
+        "entries": [catalog_health.entry_wire(e) for e in report.entries],
+        "chains": [catalog_health.chain_wire(c) for c in report.chains],
+    }
+
+
+class HealthFixEntry(BaseModel):
+    """One entry to repair.
+
+    ⚠️ ``model`` is REQUIRED, with no default. ``null`` names the chain line
+    (H5), and it is legal only when that line has a fix. A body that forgets
+    the field is a 422, so it can never select the chain fix by accident.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    tier: str = Field(min_length=1, max_length=64)
+    task: str = Field(min_length=1, max_length=32)
+    model: str | None = Field(min_length=1, max_length=200)
+
+
+class HealthFixRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    entries: list[HealthFixEntry] = Field(min_length=1, max_length=100)
+
+
+#: The SQLSTATEs a fix answers 409 "try again": a deadlock, a serialization
+#: failure, and a lock wait past `_FIX_LOCK_TIMEOUT`. Never a 500.
+_FIX_RETRY_SQLSTATES = frozenset({"40P01", "40001", "55P03"})
+
+#: How long a fix waits for the chain lock. A test sets it shorter.
+_FIX_LOCK_TIMEOUT = "5s"
+
+
+def _sqlstate(exc: DBAPIError) -> str | None:
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code if isinstance(code, str) else None
+
+
+def _fix_streams(model: str, task: str, caps: dict[tuple[str, str], tuple[str, bool]]) -> bool:
+    """The ``streams`` a fix declares: the registry's, the old row's, or False."""
+    known = provider_registry.registry_model(model, task)
+    if known is not None:
+        return known.streams
+    row = caps.get((model, task))
+    return bool(row and row[1]) and task in catalog.STREAMABLE_TASKS
+
+
+def _fix_one_tier(
+    *, tier: str, task: str, picked: list[str | None], staff: StaffIdentity
+) -> dict[str, Any]:
+    """Repair one chain, in ONE transaction, under the chain lock.
+
+    The lock comes first, then the read. The health is judged again here
+    from the database, and never from the request, so a stale screen cannot
+    write a stale fix. The declares and the chain row go in together, so a
+    half-fixed chain never serves.
+    """
+    with get_engine().begin() as conn:
+        if not _task_exists(conn, task):
+            raise HTTPException(status_code=400, detail=f"unknown task {task!r}")
+        _lock_chain(conn, tier=tier, task=task, timeout=_FIX_LOCK_TIMEOUT)
+        models = store.in_force_chain(conn, tier=tier, task=task)
+        if not models:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{tier} has no chain for {task!r} now. Read the health list again",
+            )
+        report, caps = _health_report(conn, {(tier, task): models})
+        try:
+            plan = catalog_health.plan_fix(
+                report, tier=tier, task=task, models=models, picked=picked
+            )
+        except catalog_health.FixRefused as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+        try:
+            for model, verb in plan.declares:
+                if caps.get((model, task), ("", False))[0] == verb:
+                    continue
+                _write_capability(
+                    conn,
+                    model=model,
+                    task=task,
+                    invocation=verb,
+                    streams=_fix_streams(model, task, caps),
+                    staff=staff,
+                )
+        except catalog.CatalogRefused as exc:
+            raise _catalog_refusal(exc) from exc
+        replaced = [{"from": old, "to": new} for old, new in plan.replaced]
+        _write_chain(
+            conn,
+            tier=tier,
+            task=task,
+            chain=list(plan.chain),
+            effective_from=None,
+            staff=staff,
+            audit_extra={
+                "via": "health_fix",
+                "was": models,
+                "replaced": replaced,
+                "removed": list(plan.removed),
+            },
+        )
+    return {
+        "tier": tier,
+        "task": task,
+        "was": models,
+        "chain": list(plan.chain),
+        "replaced": replaced,
+        "removed": list(plan.removed),
+    }
+
+
+@app.post("/catalog/health/fix")
+def fix_catalog_health(req: HealthFixRequest, staff: Operator) -> dict[str, Any]:
+    """Repair the named entries. **ADMIN and a window**, as bind (§6A.18).
+
+    🔴 **One transaction for each tier.** Each tier takes its chain lock
+    (``pg_advisory_xact_lock`` on ``(tier, task)``) before it reads the
+    chain. Each fix is a declare and a NEW chain row (§6A.5, insert only).
+    The audit row is ``catalog.binding``, the bind's own shape, with
+    ``via: health_fix``.
+
+    A deadlock, a serialization failure or a lock wait answers 409 "try
+    again", never a 500. When a later tier fails, the detail names the
+    tiers that this request already fixed.
+    """
+    groups: dict[tuple[str, str], list[str | None]] = {}
+    for entry in req.entries:
+        model = None if entry.model is None else entry.model.strip()
+        groups.setdefault((entry.tier.strip(), entry.task.strip()), []).append(model)
+
+    fixed: list[dict[str, Any]] = []
+    for (tier, task), picked in groups.items():
+        done = ", ".join(f"{f['tier']} ({f['task']})" for f in fixed)
+        prefix = f"{done} fixed; " if done else ""
+        try:
+            fixed.append(_fix_one_tier(tier=tier, task=task, picked=picked, staff=staff))
+        except DBAPIError as exc:
+            if _sqlstate(exc) not in _FIX_RETRY_SQLSTATES:
+                raise
+            _log.warning(
+                "catalog.health_fix_conflict",
+                extra={"fix_tier": tier, "fix_task": task, "fix_sqlstate": _sqlstate(exc)},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"{prefix}another change to {tier} ran at the same time. Try again",
+            ) from None
+        except HTTPException as exc:
+            if prefix:
+                exc.detail = f"{prefix}{exc.detail}"
+            raise
+    return {"fixed": fixed}
 
 
 @app.post("/catalog/rates")

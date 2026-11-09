@@ -57,6 +57,9 @@ BEFORE: dict[str, tuple[str, bool]] = {
 }
 #: DEC-2a: the three yes/no steps of Tasks AI.
 DEC2A = ("projects.vague_title", "projects.atomize_dedup", "projects.commitment")
+#: DEC-2b: the four pick steps of Tasks AI.
+DEC2B = ("projects.parent_step", "projects.enrich", "projects.delegate_pick",
+         "projects.propose_picks")
 ORG_SETTINGS = ("decide_feature_orgs", "my_day_decide_orgs", "crm_decide_orgs",
                 "projects_decide_orgs")
 
@@ -164,18 +167,18 @@ def _read(decision):
 def test_the_registry_lists_every_old_feature_in_the_old_order():
     old = list(BEFORE)
     assert list(df.REGISTERED[:len(old)]) == old
-    assert df.REGISTERED[len(old):] == ("projects.align", *DEC2A)
+    assert df.REGISTERED[len(old):] == ("projects.align", *DEC2A, *DEC2B)
     assert df.FEATURES == tuple(f for f in old if f.startswith("email."))
     assert df.MY_DAY_FEATURES == tuple(
         f for f in old if f.startswith("my_day.") and f != "my_day.day_plan")
     assert df.DAY_PLAN_FEATURES == ("my_day.day_plan",)
     assert df.CRM_FEATURES == tuple(f for f in old if f.startswith("crm."))
-    assert df.PROJECTS_FEATURES == ("projects.align", *DEC2A)
+    assert df.PROJECTS_FEATURES == ("projects.align", *DEC2A, *DEC2B)
 
 
 def test_on_features_is_the_old_set_plus_projects_align():
     old_on = frozenset(f for f, (_s, on) in BEFORE.items() if on)
-    assert df.ON_FEATURES == old_on | {"projects.align", *DEC2A}
+    assert df.ON_FEATURES == old_on | {"projects.align", *DEC2A, *DEC2B}
 
 
 def test_every_feature_has_a_question_type_and_one_entry():
