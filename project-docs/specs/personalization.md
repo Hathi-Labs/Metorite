@@ -8,6 +8,12 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-52 and PZ-53 BUILT 2026-11-09 on branch `mt-0261187d-langs`** (task 2505,
+no flag, owner approved the preview). `style.languages` holds up to 6 tags
+(§5.3a). Settings → Assistant shows "Languages I speak" as a ranked list.
+VOX-8 stays deferred. Fences: `tests/unit/test_assistant_profile_languages.py`
+and `tests/unit/test_assistant_profile_languages_r8.py`.
+
 **PZ-51 BUILT 2026-11-09** (task 2500, no flag). Every chat turn carries one
 language rule (§5.3). The assistant answers in the member's language and
 saves every record in English. The style line names the language. Fence:
@@ -572,7 +578,7 @@ prompt line.
 
 ### 5.3a Languages I speak (PZ-52, PZ-53, VOX-8)
 
-**Status: PROPOSED 2026-11-09, task 2505. Nothing is built. The owner has not approved it.**
+**Status: APPROVED by the owner 2026-11-09. PZ-52 and PZ-53 BUILT 2026-11-09 on branch `mt-0261187d-langs` (task 2505, no flag). The owner deferred VOX-8, and nobody built it.**
 This section sits after §5.4 so that it does not touch the text of PZ-51 (§5.3).
 
 The owner said on 2026-11-09: "it should still try and detect Indian languages
@@ -682,11 +688,22 @@ only English can still speak Hindi to the assistant.
 
 | Slice | What | Done when | Fence (R7) | Tier |
 |---|---|---|---|---|
-| **PZ-52** | `style.languages` in `_clean_style`, the dual write with `style.language`, the old-profile read, the block line, the route in `admin/assistant_profile.py` | A profile with `languages=["en","hi","kn"]` gives the line `Languages: English (en), then Hindi (hi), then Kannada (kn).` An old profile with `language="kn"` reads as `["kn"]` | `tests/unit/test_assistant_profile_languages.py`: cap 6, repeat dropped, 7th tag 422, old read, mismatch rule, block line. R8: the PUT and GET round trip on a real database | AGENT-SAFE · STANDARD |
-| **PZ-53** | The Settings control: ordered chips, rank 1 "Preferred", drag and button reorder, remove, add from the 9 languages | The control saves the order, and a reload shows it | `profile.test.ts` (the `LANGUAGES` map, the move helpers), a pane test for the keyboard moves, and the captures of the UI gate | AGENT-SAFE · STANDARD |
+| **PZ-52** (BUILT 2026-11-09) | `style.languages` in `_clean_style`, the dual write with `style.language`, the old-profile read, the block line, the route in `admin/assistant_profile.py` | A profile with `languages=["en","hi","kn"]` gives the line `Languages: English (en), then Hindi (hi), then Kannada (kn).` An old profile with `language="kn"` reads as `["kn"]` | `tests/unit/test_assistant_profile_languages.py`: cap 6, repeat dropped, 7th tag 422, old read, mismatch rule, block line. R8: the PUT and GET round trip on a real database | AGENT-SAFE · STANDARD |
+| **PZ-53** (BUILT 2026-11-09) | The Settings control: ordered chips, rank 1 "Preferred", drag and button reorder, remove, add from the 9 languages | The control saves the order, and a reload shows it | `profile.test.ts` (the `LANGUAGES` map, the move helpers), a pane test for the keyboard moves, and the captures of the UI gate | AGENT-SAFE · STANDARD |
 | **VOX-8** (DEFERRED, owner 2026-11-09) | Console: `language_hints` on the door and in both handlers. Gateway: read the list server-side and send it. Details are in `projects_ai_chat.md` §31 | A WAV clip on a `tier-stt` chain with AssemblyAI sends `language_codes` from the list. A Sarvam clip sends none | See §31 VOX-8 | HIGH |
 
 **Owner, 2026-11-09 (task 2505):** "looks fine. You can continue", which approved the option "build the list for the chat now, mic hint later". VOX-8 stays closed until Sarvam has served real clips and shows a wrong-language guess. The reason: Sarvam detects every Indian language with no hint, and a hint can only narrow it. AssemblyAI steered with `hi` wrote English speech in Devanagari script (production Try, 2026-11-09). Since 2026-11-09 09:33 UTC, `tier-stt` on production is `[sarvam/saaras:v4/codemix, assemblyai/universal-3-5-pro/en]`.
+
+**As built (PZ-52, PZ-53).** `_clean_style` is the one write check. A repeat
+drops, and the cap counts the tags that are left. A lone `language` sets
+`languages` to a list of one and keeps its own case, while the list is lower
+case. `_stored_style` is the one reader: a lone `language` reads as a list of
+one, and a `language` that differs from `languages[0]` wins. The chat tool
+`profile_set` replaces the list when the member names one language. The undo
+areas treat `language` and `languages` as one.
+
+The Settings control reorders by drag, by the arrow buttons and by Alt with
+the arrow keys. It saves the whole list on each change.
 
 PZ-52 goes first. PZ-53 follows. VOX-8, when it opens, reads
 `style.languages` from the profile, so it needs PZ-52. No slice adds a flag,
@@ -3721,6 +3738,8 @@ does not exist yet is advisory until its slice builds (R7).
 | **PZ-48** · task 1473 | The line on reminders and nudges, from the bank, with the 14-day rotation | Each message picks one line. No line repeats within 14 days. No model runs at send time. Over 3 lines a day, the member gets the plain message | Planned `tests/unit/test_persona_lines.py`, advisory until PZ-48 builds. It also fails when a send path imports a model client | AGENT-SAFE · STANDARD |
 | **PZ-49** · task 1474 | The guards of §17.7 and a flattery test | Each guard has a test. A failed check gives a plain message. The evaluation set of PZ-10 covers each guard | Planned `tests/unit/test_persona_guards.py`, advisory until PZ-49 builds | AGENT-SAFE · STANDARD |
 | **PZ-51** · task 2500 | The language rule on every turn, and the style line that names the language | A turn with no profile block carries the rule. The line reads `Language: Kannada (kn).` and `block_language` returns `kn` | `tests/unit/test_assistant_profile_language.py`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
+| **PZ-52** · task 2505 | `style.languages`, the dual write, the old-profile read and the block line | See §5.3a | `tests/unit/test_assistant_profile_languages.py` and `tests/unit/test_assistant_profile_languages_r8.py`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
+| **PZ-53** · task 2505 | The ordered "Languages I speak" control | See §5.3a | `profile.test.ts` and `AssistantPane.test.ts`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
 | **PZ-50** · task 1475 | None. D-PZ-43 decided it: one persona and one tick list | The rows of §17.4 hold | No build | Decided |
 
 Verification commands for the spec slice. Run from the repository root:

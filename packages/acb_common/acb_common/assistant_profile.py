@@ -54,6 +54,8 @@ PROFILE_MAX = 6_000
 NAME_MAX = 40
 #: ``style.language``, a BCP 47 tag.
 LANGUAGE_MAX = 16
+#: Most tags in ``style.languages`` (PZ-52, ``personalization.md`` 5.3a).
+LANGUAGES_MAX = 6
 #: ``style.notes``: the most items, and the longest item.
 NOTES_MAX = 5
 NOTE_MAX = 200
@@ -382,18 +384,57 @@ def _clean_address(value: Any) -> dict[str, Any]:
     return out
 
 
+def _clean_tag(value: Any, what: str) -> str:
+    """One BCP 47 tag, trimmed. The shape, length and number rules of
+    ``style.language`` (PZ-6b, P3): a tag is exempt from grounding, so it
+    may not carry a number. A run of 3 digits or more is refused."""
+    lang = _text(value, LANGUAGE_MAX, what)
+    if not _LANGUAGE.match(lang) or _language_has_number(lang):
+        raise ValueError(f"{what} is a BCP 47 tag")
+    return lang
+
+
+def _clean_languages(value: Any) -> list[str]:
+    """``style.languages`` (PZ-52): an ordered list of at most
+    :data:`LANGUAGES_MAX` tags. Each tag is lowercased, and a repeat drops
+    (the first place stays). The cap counts the tags that are left, so a
+    repeat is never a seventh tag. A seventh tag is a ValueError."""
+    if not isinstance(value, list):
+        raise ValueError("style.languages is a list of BCP 47 tags")
+    if len(value) > LANGUAGES_MAX * 4:
+        raise ValueError(f"style.languages holds at most {LANGUAGES_MAX} tags")
+    out: list[str] = []
+    for item in value:
+        tag = _clean_tag(item, "style.languages").lower()
+        if tag not in out:
+            out.append(tag)
+    if len(out) > LANGUAGES_MAX:
+        raise ValueError(f"style.languages holds at most {LANGUAGES_MAX} tags")
+    return out
+
+
 def _clean_style(value: Any) -> dict[str, Any]:
-    raw = _object(value, ("length", "language", "notes"), "the style")
+    raw = _object(value, ("length", "language", "languages", "notes"), "the style")
     out: dict[str, Any] = {}
     if "length" in raw:
         out["length"] = _choice(raw["length"], LENGTH, "style.length")
+    # PZ-52 (R6, expand and contract): ``language`` always holds the first
+    # tag of ``languages``. A write of ``languages`` sets ``language``. A
+    # write of ``language`` alone gives a list of one. When one write holds
+    # both and they disagree, ``languages`` wins. An empty list clears both.
+    # The case of a lone ``language`` stays as the member typed it, as it did
+    # before PZ-52. Only the list lowercases.
+    tags: list[str] | None = None
+    first: str | None = None
     if "language" in raw:
-        lang = _text(raw["language"], LANGUAGE_MAX, "style.language")
-        # PZ-6b (P3): a tag is exempt from grounding, so it may not carry a
-        # number. A run of 3 digits or more is refused ("en-48213").
-        if not _LANGUAGE.match(lang) or _language_has_number(lang):
-            raise ValueError("style.language is a BCP 47 tag")
-        out["language"] = lang
+        first = _clean_tag(raw["language"], "style.language")
+        tags = [first.lower()]
+    if "languages" in raw:
+        tags = _clean_languages(raw["languages"])
+        first = tags[0] if tags else None
+    if tags and first:
+        out["language"] = first
+        out["languages"] = tags
     if "notes" in raw:
         notes = raw["notes"]
         if not isinstance(notes, list):
@@ -458,6 +499,26 @@ def _stored_keys(raw: Any, clean: Any) -> dict[str, Any]:
     return out
 
 
+def _stored_style(raw: Any) -> dict[str, Any]:
+    """The stored ``style``, as the routes answer it (PZ-52). Each key that
+    passes its own check stays. ``language`` and ``languages`` are read as a
+    pair. An old profile with only ``language`` reads as a list of one. When
+    ``language`` differs from the first tag of ``languages``, an old build
+    wrote ``language`` last. Then ``language`` wins and the list is one tag."""
+    if not isinstance(raw, dict):
+        return {}
+    out = _stored_keys({k: v for k, v in raw.items() if k not in ("language", "languages")},
+                       _clean_style)
+    one = _lenient(lambda v: _clean_tag(v, "style.language"), raw.get("language"))
+    many = _lenient(_clean_languages, raw.get("languages")) or []
+    if one and (not many or many[0] != one.lower()):
+        many = [one.lower()]
+    if many:
+        out["language"] = one or many[0]
+        out["languages"] = many
+    return out
+
+
 def _as_dict(raw: Any) -> Any:
     if isinstance(raw, str):
         try:
@@ -489,7 +550,7 @@ def stored_profile(raw: Any) -> dict[str, Any]:
     if celebrations.has_content(one):
         out[celebrations.KEY] = one
     out["address"] = _stored_keys(raw.get("address"), _clean_address)
-    out["style"] = _stored_keys(raw.get("style"), _clean_style)
+    out["style"] = _stored_style(raw.get("style"))
     for key, one, cap in (("facts", _stored_fact, FACTS_MAX),
                           ("aliases", _stored_alias, ALIASES_MAX)):
         items = raw.get(key)
@@ -1781,8 +1842,9 @@ def put_areas(last_change: Any) -> frozenset[str]:
         return frozenset({"name"}) if changed & _NAME_FIELDS else frozenset()
     if key != "style":
         return frozenset()
-    out = {"language"} if "language" in changed else set()
-    if changed - {"language"}:
+    pair = {"language", "languages"}
+    out = {"language"} if changed & pair else set()
+    if changed - pair:
         out.add("detail")
     return frozenset(out)
 
@@ -1972,28 +2034,39 @@ LANGUAGE_RULE_LINE = (
     "language in that record, such as \"write this email in Hindi\"."
 )
 
-# Accepts "kn" and "Kannada (kn)". The group is always the TAG.
+# Accepts "kn" and "Kannada (kn)". The group is always the TAG. The second
+# pattern reads the first tag of the list line of PZ-52.
 _BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in it")
+_BLOCK_LANGUAGES = re.compile(r"Languages: (?:[^.(),]*?\()?([^\s.(),]+?)\)?[,.]")
 
 
 def block_language(block: str) -> str | None:
     """The ``style.language`` tag that :func:`_style_line` wrote into *block*,
     or None. The part-of-day line reads it (PZ-39). It never guesses a
     language from a name or a region."""
-    m = _BLOCK_LANGUAGE.search(block or "")
+    m = _BLOCK_LANGUAGE.search(block or "") or _BLOCK_LANGUAGES.search(block or "")
     return m.group(1) if m else None
+
+
+def _language_label(tag: str) -> str:
+    name = LANGUAGE_NAMES.get(tag.lower())
+    return f"{name} ({tag})" if name else tag
 
 
 def _style_line(style: dict[str, Any], notes: list[str]) -> str:
     bits: list[str] = []
     if style.get("length"):
         bits.append(LENGTH_LINES[style["length"]])
-    if style.get("language"):
-        tag = _one_line(style["language"])
-        name = LANGUAGE_NAMES.get(tag.lower())
-        label = f"{name} ({tag})" if name else tag
-        bits.append(f"Language: {label}. Answer in it, "
-                    "unless they write in another language.")
+    tags = [_one_line(t) for t in style.get("languages") or [] if _one_line(t)]
+    if len(tags) > 1:
+        # PZ-52: the list in order. The PZ-51 rule line decides the reply
+        # language. The list is only the fallback order.
+        bits.append("Languages: " + ", then ".join(_language_label(t) for t in tags)
+                    + ". Answer in the language of their message. "
+                    "When that is unclear, use the first in the list.")
+    elif style.get("language"):
+        bits.append(f"Language: {_language_label(_one_line(style['language']))}. "
+                    "Answer in it, unless they write in another language.")
     if notes:
         bits.append("Notes: " + " ".join(_sentence(n) for n in notes))
     return " ".join(bits)
@@ -2303,6 +2376,9 @@ def render_export(raw: Any) -> str:
         for key, label in (("length", "Answer length"), ("language", "Language")):
             if style.get(key):
                 lines.append(f"- {label}: {_one_line(style[key])}")
+        if len(style.get("languages") or []) > 1:
+            lines.append("- Languages, in order: "
+                         + ", ".join(_one_line(t) for t in style["languages"]))
         lines += [f"- Note: {n}" for n in notes]
     if profile["facts"]:
         lines += ["", "What you asked the assistant to remember"]

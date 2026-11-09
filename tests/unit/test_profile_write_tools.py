@@ -1533,7 +1533,9 @@ def test_a_written_out_address_asks_in_the_tool(own_chat) -> None:
 ])
 def test_a_language_tag_with_a_digit_run_is_refused(tag, ok) -> None:
     if ok:
-        assert ap._clean_style({"language": tag}) == {"language": tag}
+        # PZ-52: a lone language also gives a list of one, in lower case.
+        assert ap._clean_style({"language": tag}) == {
+            "language": tag, "languages": [tag.lower()]}
     else:
         with pytest.raises(ValueError, match="BCP 47"):
             ap._clean_style({"language": tag})

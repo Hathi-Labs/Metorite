@@ -1177,6 +1177,24 @@ def _merge(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _merge_style(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
+    """:func:`_merge` for ``style``, with the language pair kept in step
+    (PZ-52). The member says ONE language to the chat, so a ``language`` that
+    differs from the first saved tag replaces the list with a list of one. A
+    ``language`` set to null clears the list too. The gateway lets
+    ``languages`` win when a write holds both, so the stale list must go."""
+    merged = _merge(prior, value)
+    if "languages" not in value and "language" in value:
+        held, one = prior.get("languages"), value["language"]
+        if isinstance(one, str) and isinstance(held, list) and held[:1] == [one]:
+            merged["language"] = prior.get("language", one)
+        else:
+            merged.pop("languages", None)
+    elif "languages" in value and value["languages"] is None:
+        merged.pop("language", None)
+    return merged
+
+
 def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[Any]:
     """The free text of a ``profile_set`` that the member must have said:
     ``address.name`` and each NEW style note. A choice field (length,
@@ -1231,7 +1249,7 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     # A style note goes into every later block, so only the typed words
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.
     typed = _ground(*free, card=key == "address")
-    merged = _merge(prior, value)
+    merged = _merge_style(prior, value) if key == "style" else _merge(prior, value)
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]

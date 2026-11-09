@@ -26,6 +26,8 @@ export type Length = (typeof LENGTHS)[number];
 export const CAPS = {
   name: 40,
   language: 16,
+  /** Most tags in `style.languages` (PZ-52). */
+  languages: 6,
   notes: 5,
   note: 200,
   fact: 300,
@@ -42,7 +44,10 @@ export interface Address {
 }
 export interface Style {
   length?: Length;
+  /** Always the first tag of `languages` (PZ-52, R6 dual write). */
   language?: string;
+  /** The languages the member speaks, most preferred first (PZ-52). */
+  languages?: string[];
   notes?: string[];
 }
 // ── The interview (PZ-26, PZ-27, `personalization.md` §14.3 and §14.4) ────
@@ -359,7 +364,53 @@ export function mergeAddress(current: Address, edit: { [K in keyof Address]?: Ad
 
 /** The new `style` value, built the same way. */
 export function mergeStyle(current: Style, edit: { [K in keyof Style]?: Style[K] | null | "" }): Style {
-  return compact({ ...current, ...edit } as Style);
+  const next = { ...current, ...edit } as Style;
+  // PZ-52: the two keys stay in step. `language` is the first tag of the list.
+  // An edit of the list sets it. An edit of the lone `language` replaces the list.
+  if ("languages" in edit) {
+    const list = Array.isArray(edit.languages) ? edit.languages : [];
+    next.languages = list;
+    next.language = list[0];
+  } else if ("language" in edit) {
+    next.languages = typeof edit.language === "string" && edit.language.trim() ? [edit.language.trim()] : [];
+  }
+  return compact(next);
+}
+
+/** The languages of a style, most preferred first. An old style holds only `language`. */
+export function styleLanguages(style: Style): string[] {
+  if (style.languages && style.languages.length > 0) return style.languages;
+  return style.language ? [style.language] : [];
+}
+
+/** The name of a language tag. A tag that the picker lacks (set in chat) shows bare. */
+export function languageName(tag: string): string {
+  return LANGUAGES[tag.toLowerCase()] ?? tag;
+}
+
+/** The list with the item at `from` moved to `to`. The same list when either is out of range. */
+export function moveLanguage(list: readonly string[], from: number, to: number): string[] {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return [...list];
+  const next = [...list];
+  const [one] = next.splice(from, 1);
+  next.splice(to, 0, one);
+  return next;
+}
+
+/** The list with `tag` added last. Unknown tags, repeats and a full list change nothing. */
+export function addLanguage(list: readonly string[], tag: string): string[] {
+  if (!(tag in LANGUAGES) || list.includes(tag) || list.length >= CAPS.languages) return [...list];
+  return [...list, tag];
+}
+
+/** The list without the item at `index`. */
+export function removeLanguage(list: readonly string[], index: number): string[] {
+  return list.filter((_, i) => i !== index);
+}
+
+/** The picker languages that the list does not hold yet, in the picker order. */
+export function languagesToAdd(list: readonly string[]): string[] {
+  return Object.keys(LANGUAGES).filter((t) => !list.includes(t));
 }
 
 /**
