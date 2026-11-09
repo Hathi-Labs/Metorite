@@ -532,6 +532,22 @@ GMAIL_FETCH_HOLD_CYCLES = 3
 GMAIL_RESET_SWEEP_NAME = "all mail"
 
 
+def _json_or_empty(resp: httpx.Response) -> Any:
+    """The JSON body of a Gmail list-style read, or ``{}`` for no body.
+
+    Google can answer 200 with an EMPTY body (production, 2026-11-08, task
+    2268). An empty or blank body, and a JSON ``null``, both give ``{}``: the
+    list has no item. A body that is not empty and not JSON still raises
+    ``ValueError`` (``json.JSONDecodeError``), so a real fault reaches the
+    log. A JSON value that is not an object passes through unchanged.
+    Use this only where ``{}`` is a true answer. A read whose payload the
+    caller needs (one message, one attachment, the token) keeps ``.json()``."""
+    if not resp.content.strip():
+        return {}
+    data = resp.json()
+    return {} if data is None else data
+
+
 class _StaleCursor(Exception):
     """``history.list`` answered 404. Gmail holds no history after the
     cursor, so the provider seeds again and sweeps (item 5)."""
@@ -1425,7 +1441,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.get("/users/me/labels")
         resp.raise_for_status()
-        data = resp.json()
+        data = _json_or_empty(resp)
 
         folders: list[EmailFolder] = []
         for label in data.get("labels", []):
@@ -1473,7 +1489,7 @@ class GmailProvider(BaseEmailProvider):
 
         resp = await client.get("/users/me/messages", params=params)
         resp.raise_for_status()
-        data = resp.json()
+        data = _json_or_empty(resp)
 
         messages: list[EmailMessage] = []
         for msg_ref in data.get("messages", []):
@@ -1515,7 +1531,7 @@ class GmailProvider(BaseEmailProvider):
                     resp.raise_for_status()
                 except httpx.HTTPError:
                     break  # one bad label must not abort the whole restore
-                data = resp.json()
+                data = _json_or_empty(resp)
                 for ref in data.get("messages", []) or []:
                     mid = ref.get("id")
                     if mid:
@@ -1973,7 +1989,7 @@ class GmailProvider(BaseEmailProvider):
                 params["pageToken"] = token
             resp = await client.get("/users/me/drafts", params=params)
             resp.raise_for_status()
-            data = resp.json() or {}
+            data = _json_or_empty(resp)
             for draft in data.get("drafts") or []:
                 mid = (draft.get("message") or {}).get("id")
                 if mid and draft.get("id"):
@@ -2258,7 +2274,7 @@ class GmailProvider(BaseEmailProvider):
         resp = await client.get("/users/me/labels")
         resp.raise_for_status()
         out: list[dict[str, str | None]] = []
-        for lbl in resp.json().get("labels", []):
+        for lbl in _json_or_empty(resp).get("labels", []):
             if lbl.get("type") == "user" and not lbl.get("name", "").startswith(
                 "CATEGORY_"
             ):
@@ -2281,7 +2297,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.get("/users/me/labels")
         resp.raise_for_status()
-        labels = resp.json().get("labels", [])
+        labels = _json_or_empty(resp).get("labels", [])
         self._label_ids_by_name = {
             lbl.get("name", "").lower(): lbl["id"]
             for lbl in labels
@@ -2430,13 +2446,8 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 403:
             return []
         resp.raise_for_status()
-        # Google can also answer 200 with an EMPTY body for a mailbox with no
-        # filter (production, 2026-11-08, task 2268). That means no filter,
-        # the same as {}. A body that is not empty and not JSON still raises,
-        # so the rules screen logs a real fault.
-        if not resp.content.strip():
-            return []
-        filters = resp.json().get("filter") or []
+        # An EMPTY 200 body means no filter, the same as {} (task 2268).
+        filters = _json_or_empty(resp).get("filter") or []
         if any(self._filter_user_label_ids(f) for f in filters):
             # Fills ``_label_names_by_id`` with the names of the user labels.
             await self._label_name_id_map()
@@ -2635,7 +2646,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.get("/users/me/profile")
         resp.raise_for_status()
-        history_id = resp.json().get("historyId")
+        history_id = _json_or_empty(resp).get("historyId")
         return str(history_id) if history_id else None
 
     async def _try_seed(self) -> str | None:
@@ -2691,7 +2702,7 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 404:
             raise _StaleCursor
         resp.raise_for_status()
-        return resp.json()
+        return _json_or_empty(resp)
 
     async def _apply_history_page(
         self, records: list[dict[str, Any]], marked: set[str],
@@ -2881,7 +2892,7 @@ class GmailProvider(BaseEmailProvider):
             try:
                 resp = await client.get("/users/me/messages", params=params)
                 resp.raise_for_status()
-                data = resp.json()
+                data = _json_or_empty(resp)
                 ids = [ref["id"] for ref in data.get("messages") or []
                        if ref.get("id")]
                 failed = await self._fetch_into(ids, result)
@@ -3132,7 +3143,7 @@ class GmailProvider(BaseEmailProvider):
         for page in range(1, self.IMPORT_MAX_PAGES + 1):
             resp = await client.get("/users/me/messages", params=params)
             resp.raise_for_status()
-            data = resp.json()
+            data = _json_or_empty(resp)
             if page == 1 and on_estimate is not None:
                 await on_estimate(_estimate_of(data))
             fetched = await self._fetch_page(_fresh_ids(data, seen))

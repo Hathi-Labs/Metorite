@@ -92,6 +92,8 @@ class _Gmail:
         self.filters_body: dict[str, Any] = {}
         # Raw bytes for the filters answer, in place of ``filters_body``.
         self.filters_raw: bytes | None = None
+        # Raw bytes for any other path (task 2434), keyed by the path.
+        self.raw: dict[str, bytes] = {}
         self.n = 1
 
     def calls(self, method: str, path: str) -> int:
@@ -108,6 +110,9 @@ class _Gmail:
         if str(request.url) == TOKEN_URL:
             return httpx.Response(200, json={"access_token": "at-2"})
         path = request.url.path.removeprefix(API)
+        if path in self.raw:
+            self.seen.append((request.method, path, {}))
+            return httpx.Response(200, content=self.raw[path])
         if path == "/profile":
             return httpx.Response(200, json={"historyId": "1"})
         method = request.method
@@ -775,3 +780,82 @@ async def test_list_filters_answers_empty_on_an_empty_body(fake: _Gmail) -> None
     fake.filters_raw = b"<html>Service Unavailable</html>"
     with pytest.raises(ValueError):
         await _provider().list_filters()
+
+
+# ── an EMPTY 200 body on a list-style read (task 2434) ──────────────────────
+#
+# Google can answer 200 with no body. Each list-style read of the provider
+# then reads it as an empty list and does not raise. One test per read.
+
+
+def _blank(fake: _Gmail, path: str, raw: bytes = b"") -> GmailProvider:
+    fake.raw[path] = raw
+    return _provider()
+
+
+def _resp(content: bytes) -> httpx.Response:
+    return httpx.Response(200, content=content)
+
+
+@pytest.mark.parametrize("content", [b"", b"  \r\n", b"null", b"{}"])
+def test_json_or_empty_gives_an_empty_dict_for_no_item(content: bytes) -> None:
+    assert gmail_mod._json_or_empty(_resp(content)) == {}
+
+
+def test_json_or_empty_passes_a_dict_and_raises_on_a_bad_body() -> None:
+    assert gmail_mod._json_or_empty(_resp(b'{"labels": [1]}')) == {"labels": [1]}
+    with pytest.raises(ValueError):
+        gmail_mod._json_or_empty(_resp(b"<html>Service Unavailable</html>"))
+
+
+async def test_list_labels_reads_an_empty_body_as_no_label(fake: _Gmail) -> None:
+    assert await _blank(fake, "/labels").list_labels() == []
+
+
+async def test_the_label_map_reads_an_empty_body_as_no_label(fake: _Gmail) -> None:
+    assert await _blank(fake, "/labels")._label_name_id_map() == {}
+
+
+async def test_list_folders_reads_an_empty_body_as_no_folder(fake: _Gmail) -> None:
+    assert await _blank(fake, "/labels").list_folders() == []
+
+
+async def test_list_messages_reads_an_empty_body_as_no_mail(fake: _Gmail) -> None:
+    out = await _blank(fake, "/messages").list_messages()
+    assert out[0] == []
+
+
+async def test_label_assignments_read_an_empty_body_as_none(fake: _Gmail) -> None:
+    assert await _blank(fake, "/messages").fetch_label_assignments() == {}
+
+
+async def test_the_draft_lookup_reads_an_empty_body_as_no_draft(
+    fake: _Gmail,
+) -> None:
+    assert await _blank(fake, "/drafts")._draft_id_for("m-1", required=False) is None
+
+
+async def test_seed_cursor_reads_an_empty_body_as_no_cursor(fake: _Gmail) -> None:
+    fake.raw["/profile"] = b""
+    assert await _provider().seed_cursor() is None
+
+
+async def test_a_history_page_reads_an_empty_body_as_no_record(fake: _Gmail) -> None:
+    provider = _blank(fake, "/history")
+    client = await provider._get_client()
+    assert await provider._history_page(client, {"startHistoryId": "1"}) == {}
+
+
+async def test_the_reset_sweep_reads_an_empty_body_as_no_mail(fake: _Gmail) -> None:
+    from email_ingestion.providers.base import SyncResult
+
+    provider = _blank(fake, "/messages")
+    result = SyncResult()
+    await provider._sweep_after_reset(50, None, None, "1", result)
+    assert result.messages == []
+
+
+async def test_the_import_reads_an_empty_body_as_no_mail(fake: _Gmail) -> None:
+    provider = _blank(fake, "/messages")
+    batches = [b async for b in provider.import_batches(None)]
+    assert all(not b for b in batches)
