@@ -474,6 +474,7 @@ def _run_as(who: str, run_id: str, app: str = "tasks") -> None:
     bind_run_context(user=who, member_verified=True, app=app, run_id=run_id)
 
 
+@pytest.mark.usefixtures("no_copilot_cli_download")
 class TestTheCopilotPathCarriesTheRun:
     """🔴 H-181. Two first-party agents run on the Copilot SDK: task-manager
     and app-builder. apis-config moved to native MAF on 2026-10-03, and
@@ -492,16 +493,6 @@ class TestTheCopilotPathCarriesTheRun:
     ``session_kwargs_for_this_run`` and the four session tests fail. Delete
     ``request_headers=`` in ``_stream_updates`` and the turn test fails.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_cli_download(self, monkeypatch):
-        """``CopilotClient()`` resolves the CLI in ``__init__`` and, with no
-        ``COPILOT_CLI_PATH``, downloads it from GitHub releases. A 504 there
-        failed the 2026-11-09 release (task 2472). A unit test never touches
-        the network, so the resolve returns a stub path."""
-        import copilot.client as _cc
-        monkeypatch.setattr(_cc, "_get_or_download_cli",
-                            lambda **_kw: "copilot-cli-not-downloaded")
 
     @staticmethod
     def _headers(payload: dict) -> dict:

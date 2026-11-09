@@ -295,6 +295,7 @@ def _load_runner():
     return mod
 
 
+@pytest.mark.usefixtures("no_copilot_cli_download")
 class TestTheMutationSandbox:
     """🔴 ``mutation_runner.py`` runs in a container with no ``acb_llm`` and
     called gateway ``/v1`` with only the LLM key.
@@ -303,16 +304,6 @@ class TestTheMutationSandbox:
     in ``_run_mutation_sandbox`` and the launch test fails. Drop
     ``provider["headers"] = headers`` in the runner and the wire test fails.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_cli_download(self, monkeypatch):
-        """``CopilotClient()`` resolves the CLI in ``__init__`` and, with no
-        ``COPILOT_CLI_PATH``, downloads it from GitHub releases. A 504 there
-        failed the 2026-11-09 release (task 2472). A unit test never touches
-        the network, so the resolve returns a stub path."""
-        import copilot.client as _cc
-        monkeypatch.setattr(_cc, "_get_or_download_cli",
-                            lambda **_kw: "copilot-cli-not-downloaded")
 
     def test_the_launch_hands_the_FAILED_RUNS_headers_in(self, monkeypatch, secret):
         from acb_auth.member_proof import verify_member
