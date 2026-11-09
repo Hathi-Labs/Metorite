@@ -15,6 +15,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
+| §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, branch `steer-redraws-card-mt-fdaefd16`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
@@ -869,8 +870,27 @@ the box holds Attach, the agent's controls and ONE round control:
    `202 {steered: true}` with no stream. The bubble then says "Added to the
    reply". The saved row carries the `steered` mark.
 4. `send_steer` writes the steer to `cc:steer:` first, then sends it on the
-   control bus. The owner's applier buffers it, and the next tool result
-   carries it to the model (`decorate_tool_result`).
+   control bus. The owner's applier buffers it. The run's next model call
+   gives it to the model as a USER message, right after the tool results
+   (`steer.SteerTurns`, task 2494).
+
+**A steer is the member's own turn (task 2494, 2026-11-09).** The model read
+a steer at the end of a tool result as a prompt injection, and it ignored the
+steer. So these rules hold:
+
+- No tool result carries a steer. `SteerTurns` is a chat middleware on a
+  per-run view of each native agent (`_tool_injection._apply_steer_turns`).
+  It puts each note into the request as a user message. It puts the note
+  back in each later request of the same run.
+- Only `stream_relay._steer_apply` fills the buffer, and only the chat route
+  of the session's member calls `send_steer`. A tool, an email body or a web
+  page never becomes a user turn.
+- A Projects card (`skill_projects.writes._confirm`) and each CRM card set
+  `close_on_steer`. A steer closes the card as REVISED, the tool writes
+  nothing, and the model can show a new card with the change.
+- A Copilot SDK agent gets no steer turn. Its steer waits for the run end,
+  and the follow-up below answers it.
+- Fence: `tests/unit/test_steer_user_turn.py`.
 
 **A steer after the last tool call.** Before 2026-10-12 such a steer was
 lost. The applier had discarded its durable copy, and the next run start
@@ -916,8 +936,8 @@ end gives its unread steers back, maybe later and on another worker. Then:
 
 **Round 2 of the review.**
 
-- The durable copy of a steer goes when a tool result carries it to the
-  model, not when the owner buffers it. A steer in the buffer then survives
+- The durable copy of a steer goes when a model call reads it as a user
+  turn (task 2494), not when the owner buffers it. A steer in the buffer then survives
   the owner process dying, for example in a deploy restart.
 - A follow-up that gets 409 or 429 draws no card and no run-cap notice. It
   asks again with the same wait. After the last try, the steer says "Your
