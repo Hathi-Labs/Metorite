@@ -118,6 +118,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_BRIEF_CARD",
       // WS-PKG PKG-18a: My Day draws the Today band above the feed.
       "NEXT_PUBLIC_TODAY_BAND",
+      // PK-1 (D204): a task row on My Day opens the task in My Day's panel.
+      "NEXT_PUBLIC_MY_DAY_PEEK",
       // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.
       "NEXT_PUBLIC_CHAT_FIRST",
       // WS-64 OP-1: the compact chrome of Projects (tool row, sheets, chips).

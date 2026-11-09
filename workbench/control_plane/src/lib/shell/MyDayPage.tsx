@@ -38,6 +38,12 @@
  * `NEXT_PUBLIC_TODAY_BAND` (`todayBandOn`). With the feed on, it sits above
  * the feed column and shows the top five cards with their reasons. It reads
  * the same feed answer as the column. `showTodayBand` is its one gate.
+ *
+ * **The panel** (`my_day_feed.md` §11.5, PK-1, D204) is a fifth flag,
+ * `NEXT_PUBLIC_MY_DAY_PEEK` (`myDayPeekOn`). With it on, a plain click on a
+ * task row opens the task in a panel at the right of the page, or in a full
+ * sheet on a phone, and the path stays `/`. `useMyDayPeek` is its one seam.
+ * Off, a row opens Projects, as before.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -68,6 +74,9 @@ import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import TodayBand from "./TodayBand";
 import { showTodayBand, todayBandOn, todayBandOnServer } from "./todayBandFlag";
+import { useMyDayPeek } from "./useMyDayPeek";
+import { MyDayPeekContext } from "./myDayGo";
+import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
 import { homePane } from "./shellNav";
 import AiWaitingCard, { useAiWaiting } from "./AiWaitingCard";
 import { publishMyDayCount } from "./myDayCount";
@@ -121,6 +130,7 @@ export default function MyDay() {
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
   const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
   const bandOn = useSyncExternalStore(noSubscribe, todayBandOn, todayBandOnServer);
+  const peekOn = useSyncExternalStore(noSubscribe, myDayPeekOn, myDayPeekOnServer);
   // The brief read is the page's, so the grid waits for it and paints once.
   // Off, the key is null: no read, and the brief never gates the page. A
   // cache hit has data at once, so a later visit is instant.
@@ -188,12 +198,29 @@ export default function MyDay() {
     if (pageCount !== null) publishMyDayCount(pageCount);
   }, [pageCount]);
 
+  // PK-1: a row opens its task in the panel. After a panel that wrote
+  // something closes, the reads that drew the rows go out again, so the row
+  // shows the change. A Projects write already drops the Projects reads
+  // (Today, Next actions). The feed and the needs reads are the shell's.
+  const peek = useMyDayPeek(peekOn, {
+    me: session?.user?.email ?? undefined,
+    onSettled: () => {
+      feed.refresh();
+      needs.refresh();
+      today.refresh();
+    },
+  });
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <MyDayPeekContext.Provider value={peek.peek}>
+    <div ref={peek.pageRef} className="flex h-full min-h-0 flex-col">
     {/* The compact bar on a phone (AppTopBar decides), so the page keeps
         its one h1 there too. */}
     <AppTopBar title={home.label} icon={home.icon} />
-    <div className="min-h-0 flex-1 overflow-auto">
+    {/* One row: the page column, and the panel at its right while a task is
+        open (PK-1). With the flag off the row holds the column alone. */}
+    <div className="flex min-h-0 flex-1">
+    <div className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-guide="home.my-day" data-testid="my-day">
       <div>
         {now ? (
@@ -318,6 +345,10 @@ export default function MyDay() {
       />
     </div>
     </div>
+    {peek.panel}
     </div>
+    {peek.reader}
+    </div>
+    </MyDayPeekContext.Provider>
   );
 }

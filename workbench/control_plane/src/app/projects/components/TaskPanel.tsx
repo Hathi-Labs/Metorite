@@ -55,7 +55,7 @@ import Badge from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
 import { EditableTaskTitle, TaskHeaderRow, type TaskWhere } from "@/components/TaskPanelHeader";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
 import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
@@ -146,6 +146,12 @@ interface Props {
    * the My tasks rows move to the new chip after a pick.
    */
   serverOverlay?: boolean;
+  /**
+   * PK-1 — the host's own icon buttons in the header, before the expand and
+   * the close (`TaskHeaderRow`'s `actions`). My Day puts "Open in Projects"
+   * here. The Projects page passes none.
+   */
+  actions?: ReactNode;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -168,6 +174,7 @@ export function TaskPanel({
   where,
   myWork = false,
   serverOverlay = false,
+  actions,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -351,6 +358,7 @@ export function TaskPanel({
                 }
               : undefined
           }
+          actions={actions}
           onClose={onClose}
         />
         {/* Wraps rather than truncates: the title is the one thing on the

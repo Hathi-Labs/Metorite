@@ -41,7 +41,6 @@
  * Fences: `feed.test.ts`, `feedState.test.ts`, `feedHandled.test.ts` and
  * `myDayPage.test.ts`.
  */
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
@@ -110,6 +109,7 @@ import {
 import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
+import { useMyDayGo } from "./myDayGo";
 import RemindersBand from "./RemindersBand";
 import { bandCount, bandRows } from "./reminderBand";
 import { isReminderKind } from "./reminderKinds";
@@ -964,7 +964,9 @@ export function phoneMenuItems(
 
 /**
  * The phone's "···" menu of a feed row. It mounts only while it is open, so
- * `useRouter` runs inside the app, and a static render never calls it.
+ * `useRouter` runs inside the app, and a static render never calls it. An
+ * open act goes through `useMyDayGo`, so a task opens in My Day's panel
+ * while that flag is on (PK-1), as a click on the row does.
  */
 function PhoneRowMenu({
   x,
@@ -983,13 +985,13 @@ function PhoneRowMenu({
   onMenu?: (choice: MenuChoice) => void;
   onClose: () => void;
 }) {
-  const router = useRouter();
+  const go = useMyDayGo();
   return (
     <ContextMenu
       x={x}
       y={y}
       autoFocus
-      items={phoneMenuItems(card, acts, onAct, (href) => router.push(href), onMenu)}
+      items={phoneMenuItems(card, acts, onAct, go, onMenu)}
       onClose={onClose}
     />
   );
