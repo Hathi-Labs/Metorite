@@ -80,6 +80,7 @@ __all__ = [
     "KEPT_HEADS",
     "OUTPUTS",
     "RUN_DATA",
+    "AppWorkspaceFileStore",
     "HostFileGuard",
     "TenantFileStore",
     "WorkspaceFileStore",
@@ -521,4 +522,51 @@ class WorkspaceFileStore(TenantFileStore):
                 name, FileStoreEntry.DIRECTORY if kind == "dir" else FileStoreEntry.FILE,
             )
             for name, kind in entries
+        ]
+
+
+class AppWorkspaceFileStore(TenantFileStore):
+    """The store of app-builder's file tools on the MAF engine (WS-43h, §7.8).
+
+    The working dir IS the app (``app.json``, ``index.html``, ``src/``,
+    ``dist/``, ``inputs/``), so the map is FLAT over the whole dir. The
+    ``app_builder`` container mounts the same dir at ``/workspace``, so a file
+    tool and a command always see the same file. Every other rule of
+    :class:`TenantFileStore` holds: the safe opener, the dir lock, the quota
+    and ``decide()`` with the real host path.
+
+    * Any part that starts with a dot is refused: ``.git`` (the App Workshop
+      checkpoints), ``.cc-instance`` and every other hidden name. A link at
+      any depth fails the call (the safe opener).
+    * Nothing goes to the blob store, and no card is shown. The Copilot CLI
+      wrote the disk only, and the App Workshop keeps an app through its own
+      checkpoints. So a write here never adds an ``instance=''`` row (§21.15).
+    * There are no skill folders and no thread folders.
+    """
+
+    def __init__(self, *, workspace: Path, guard: HostFileGuard, member: str = "") -> None:
+        super().__init__(
+            workspace=workspace, outputs_rel=OUTPUTS, run_data=Path(workspace),
+            guard=guard, member=member, inputs_rel=INPUTS,
+        )
+
+    def _place(self, path: str) -> _Place:
+        parts = safe_open.split_rel(path)
+        if any(part.startswith(".") for part in parts):
+            raise safe_open.UnsafePath("A name that starts with a dot is not an app file.")
+        # store_rel None: no blob-store mirror, no skill rule, no card.
+        return _Place(self._workspace, "/".join(parts), None)
+
+    async def _prepare(self, place: _Place) -> None:
+        del place  # no thread folder and no run data to make
+
+    async def list_children(self, directory: str = "") -> list[FileStoreEntry]:
+        place = self._place(directory)
+        async with self._guard.hold():
+            listed = await asyncio.to_thread(safe_open.list_dir, place.root, place.rel)
+        return [
+            FileStoreEntry(
+                name, FileStoreEntry.DIRECTORY if kind == "dir" else FileStoreEntry.FILE,
+            )
+            for name, kind in (listed or []) if not name.startswith(".")
         ]

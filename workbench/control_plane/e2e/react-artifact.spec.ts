@@ -21,6 +21,7 @@ import { expect, test } from "@playwright/test";
 
 import { compileArtifact } from "../src/lib/compileArtifact";
 import { appTokenCss } from "../src/lib/theme/app-tokens";
+import { FRAME_CSP } from "../src/lib/theme/sandbox-frame";
 import { THEME } from "../src/lib/theme/themes";
 
 /** An agent-authored artifact using the API surface agents are told to use. */
@@ -43,14 +44,11 @@ export default function Dashboard() {
   );
 }`;
 
-/** Mirrors the sandbox frame: same CSP, content first, bridge LAST. The token
- *  block is imported rather than copied — a stale copy would keep passing while
- *  the real one drifted, which is the exact failure this line guards. */
-const CSP = [
-  "default-src 'none'", "style-src 'unsafe-inline'",
-  "script-src 'unsafe-inline' 'unsafe-eval'", "img-src data:", "font-src data:",
-  "connect-src 'none'", "form-action 'none'", "base-uri 'none'",
-].join("; ");
+/** Mirrors the sandbox frame: the frame's own CSP, content first, bridge LAST.
+ *  The CSP and the token block are imported rather than copied — a stale copy
+ *  would keep passing while the real one drifted, which is the exact failure
+ *  this line guards (task 2432, F4). */
+const CSP = FRAME_CSP;
 
 const BRIDGE =
   `<script>window.ccSubmit=function(l,v){parent.postMessage(` +

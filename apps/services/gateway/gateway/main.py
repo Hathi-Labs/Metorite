@@ -1909,6 +1909,16 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+# Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
+# The workbench takes one slot here before it starts esbuild. The counter
+# lives in the tenant Redis wrapper. No `try`: the module needs only
+# acb_auth, acb_common and fastapi, and a router that silently failed to
+# import would answer 404, which the workbench reads as an outage.
+# Fence: `test_artifact_compile_slot.py::test_the_real_gateway_app_serves_both_routes`.
+from gateway.routes.artifact_compile import router as _artifact_compile_router  # noqa: E402
+
+app.include_router(_artifact_compile_router)
+
 try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
     # message that code built (`calendar_events_reminders.md` §5.7). Shares
