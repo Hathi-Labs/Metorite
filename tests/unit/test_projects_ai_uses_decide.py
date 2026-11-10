@@ -7,7 +7,7 @@ fails on any call that the allow-list below does not name.
 
 The scan reads the AST, so a moved line changes nothing. An entry is keyed by
 file plus function name. A STALE entry (the function no longer calls a model)
-also fails, so the list shrinks when DEC-2 moves a step.
+also fails, so the list shrinks when a step moves.
 
 A model call is one of:
   * a call to ``acompletion_with_fallback`` or ``acompletion``,
@@ -17,12 +17,11 @@ Docstrings and comments do not count.
 
 Reasons:
   * "prose a person reads" and "real judgement": an LLM tier is right here.
-  * "moving in DEC-2": a pick that DEC-2 (task 2307) moves to the decision tier.
   * "fallback of <feature>": the old call stays as the shadow comparison and the
     fallback of a decide feature. The fence accepts it only when ``<feature>``
-    is registered in ``gateway/decide_features.py``. A DEC-2 step changes its
-    entry from "moving in DEC-2" to "fallback of projects.<feature>" when it
-    registers the feature.
+    is registered in ``gateway/decide_features.py``. A step that moves to the
+    decision tier takes this reason when it registers its feature. DEC-2
+    (task 2307) moved every pick this way.
   * "tier config": a module-level constant that names a tier. It picks no
     answer. Only the ``<module>`` scope may use it.
 """
@@ -59,17 +58,17 @@ _TIER = re.compile(r"^tier-(fast|balanced|powerful|code|reasoning|[0-9]+)$")
 T = "routes/tasks/"
 # (path relative to the gateway package or repo, function) -> reason.
 ALLOW: dict[tuple[str, str], str] = {
-    # --- DEC-2 (task 2307) moves these six picks. Each leaves the list. ---
-    (T + "ai.py", "_find_parent_task"): "moving in DEC-2",  # parent-step check
-    (T + "ai.py", "_llm_enrich"): "moving in DEC-2",  # enrich picks
+    # --- DEC-2 (task 2307): the old call stays as the fallback of each step. ---
+    (T + "ai.py", "_llm_parent_check"): "fallback of projects.parent_step",
+    (T + "ai.py", "_llm_enrich"): "fallback of projects.enrich",
     (T + "ai.py", "_llm_suggest_title"): "fallback of projects.vague_title",  # vague-title gate
     (T + "ai.py", "_llm_atomize"): "fallback of projects.atomize_dedup",  # atomize dedup
     (T + "capture_email.py", "_llm_detect_commitment"): "fallback of projects.commitment",
-    (T + "capture_email.py", "_llm_capture"): "moving in DEC-2",  # delegate pick
+    (T + "capture_email.py", "_llm_capture"): "fallback of projects.delegate_pick",
+    # Serves _llm_propose: the model call that writes the prose and, with no
+    # decide answer, the picks of project, assignee and type.
+    (T + "ai.py", "_ask_clarify_model"): "fallback of projects.propose_picks",
     # --- Prose a person reads, or real judgement. ---
-    # Serves _llm_propose: picks project, assignee and type. A Choice, so it moves.
-    # The SEVENTH DEC-2 step (DEC-2b).
-    (T + "ai.py", "_ask_clarify_model"): "moving in DEC-2",
     (T + "planning.py", "_llm_plan"): "real judgement",  # a plan from a brief
     (T + "resume_parse.py", "llm_extract_profile"): "real judgement",  # parse text
     # Ranks the day. calendar_decide.py runs my_day.day_plan in front of it.
@@ -82,7 +81,7 @@ ALLOW: dict[tuple[str, str], str] = {
     (T + "settings.py", "<module>"): "tier config",  # per-function default tiers
 }
 
-REASONS = {"prose a person reads", "real judgement", "moving in DEC-2", "tier config"}
+REASONS = {"prose a person reads", "real judgement", "tier config"}
 FALLBACK = "fallback of "
 
 
@@ -214,7 +213,7 @@ def test_no_stale_allow_list_entry() -> None:
     stale = sorted(set(ALLOW) - scan())
     assert not stale, (
         f"These allow-list entries no longer call a model: {stale}. "
-        "Delete them. The list shrinks when DEC-2 moves a step."
+        "Delete them. The list shrinks when a step moves."
     )
 
 
