@@ -7,6 +7,7 @@ because the holder's probe waits 30 s. The route answers 409 and writes
 nothing, and the same request sent again goes through.
 """
 
+# ruff: noqa: F811
 from __future__ import annotations
 
 import asyncio
