@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
+
 > **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
 > **Status (verified on the box, 2026-10-01 17:57 UTC):** 🟢 **Email sync is ON in production.**
 > The interim Microsoft app is installed (§10.2, D-EM-2). **§10 owns** Email for every organization.

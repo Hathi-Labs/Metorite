@@ -1,5 +1,7 @@
 # External agent access — Metorite as an MCP server
 
+> **Dated 2026-11-11, Aroh (D143 and D204.11).** Aroh is not a separate app. Task 2611 removes the Aroh seat kind from the Console. Read the Aroh text in this spec (line 5, D-EA-11, EA-16) as history.
+
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-16 (EA-6e and EA-6g are MERGED and live). Updated 2026-10-26 (MCP-G5: `list_tasks` takes `parent_task_id` and `include_descendants`). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
 **D-EA-11 is BUILT 2026-10-30 and not merged (branch `mt-8f6a0f39-aroh-first-party`, Metorite task 1109). It ships dark.** A first-party client signs a member in again with no consent click, and a new approval of it replaces the old connection (§10.7). The list `agent_first_party_client_ids` is empty by default, so nothing changes until an operator names a client. The fence is `tests/unit/test_agent_first_party.py`.
