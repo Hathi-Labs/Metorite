@@ -116,6 +116,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_MY_DAY_FEED",
       // WS-BRIEF BR-2c-2: My Day draws the brief card.
       "NEXT_PUBLIC_BRIEF_CARD",
+      // WS-PKG PKG-18a: My Day draws the Today band above the feed.
+      "NEXT_PUBLIC_TODAY_BAND",
       // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.
       "NEXT_PUBLIC_CHAT_FIRST",
       // WS-64 OP-1: the compact chrome of Projects (tool row, sheets, chips).

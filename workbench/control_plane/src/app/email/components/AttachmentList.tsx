@@ -35,9 +35,65 @@ function toFileEntry(att: Attachment): FileEntry {
   };
 }
 
+/** Runs one Try again. The busy flag holds while it runs and drops after, also
+ *  on a failure. The parent keeps "failed" then, so the same sentence shows. */
+export async function runRetry(
+  retry: () => Promise<unknown> | void,
+  setBusy: (busy: boolean) => void,
+): Promise<void> {
+  setBusy(true);
+  try {
+    await retry();
+  } catch {
+    // Nothing to do: the status stays "failed" and the slot says so again.
+  } finally {
+    setBusy(false);
+  }
+}
+
+/** The slot of a mail whose files could not load: what happened, and Try again. */
+export function FilesFailed({
+  busy = false,
+  onRetry,
+  className = "",
+}: {
+  busy?: boolean;
+  onRetry?: () => void;
+  className?: string;
+}) {
+  return (
+    <div className={className} data-message-files-failed="" role="group" aria-label="Attachments">
+      <div className="flex min-h-14 items-center gap-3 rounded-md border border-border px-3 py-2">
+        <Icon name="AlertTriangle" size={16} className="flex-shrink-0 text-destructive" />
+        <div className="min-w-0 flex-1 text-xs" role="status" aria-live="polite">
+          <div className="text-destructive">Could not load the files of this mail.</div>
+          <div className="text-muted-foreground">The mail service did not answer. Try again in a moment.</div>
+        </div>
+        {onRetry && (
+          <Button
+            variant="secondary"
+            size="none"
+            layout="flex items-center justify-center"
+            type="button"
+            onClick={onRetry}
+            disabled={busy}
+            aria-busy={busy}
+            className="flex-shrink-0 gap-1 px-3 py-1 text-xs"
+          >
+            {busy && <Icon name="Loader2" size={12} className="animate-spin" />}
+            {busy ? "Trying again…" : "Try again"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function AttachmentList({
   attachments,
   pending = false,
+  status,
+  onRetry,
   className = "",
 }: {
   attachments?: Attachment[];
@@ -45,8 +101,15 @@ export function AttachmentList({
    *  late list would push the body down while the member reads it. The shape
    *  of one chip holds the space until then (owner, 2026-11-06). */
   pending?: boolean;
+  /** "failed" when the gateway could not get the files from the provider.
+   *  An empty list alone says nothing: a mail with inline pictures only has
+   *  none (task 1868). */
+  status?: "ok" | "failed";
+  /** Fetches the files of this one message again. It settles when done. */
+  onRetry?: () => Promise<unknown> | void;
   className?: string;
 }) {
+  const [retrying, setRetrying] = useState(false);
   const [expanded, setExpanded] = useState(false);
   // The attachment currently open in the pop-up viewer (null = closed). Images,
   // PDFs and documents all open in the same ArtifactViewerModal — never a new
@@ -62,6 +125,15 @@ export function AttachmentList({
     return () => observer.disconnect();
   }, [rowEl]);
   if (!attachments || attachments.length === 0) {
+    if (status === "failed" && !pending) {
+      return (
+        <FilesFailed
+          className={className}
+          busy={retrying}
+          onRetry={onRetry ? () => void runRetry(onRetry, setRetrying) : undefined}
+        />
+      );
+    }
     if (!pending) return null;
     // The shape has the height of the closed list: one row of chips.
     return (

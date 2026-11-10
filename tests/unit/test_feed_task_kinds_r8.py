@@ -63,9 +63,7 @@ NOROW = f"kinds-norow-{TAG}@md3c.test"
 #: The UTC midnight of NOW's own date: the due times and the days away.
 MIDNIGHT = datetime.combine(NOW.astimezone(UTC).date(), time.min, tzinfo=UTC)
 TODAY = MIDNIGHT.date()
-#: My day starts at 01:00 UTC. A stored 0 would read 7 (`tasks.settings._load`,
-#: the rule of the state join), so the seed stores 1. "My day start" is the
-#: start of my current day, by `state.Day`.
+#: My day starts at 01:00 UTC. The seed stores 1 so that the day start is not midnight.
 DAY_START_HOUR = 1
 DAY_START = state.Day(ZoneInfo("UTC"), DAY_START_HOUR).day_start(NOW)
 
@@ -526,12 +524,13 @@ class TestTheDayStartRule:
     """Fix round 1: the provider's day start is the one rule of
     ``state._hours``, read inside the quiet read's own session."""
 
-    async def test_a_stored_0_reads_7(self, promoted, two_orgs, monkeypatch):  # noqa: F811
+    async def test_a_stored_0_stays_0(self, promoted, two_orgs, monkeypatch):  # noqa: F811
         from gateway.routes.projects import personal
 
         async with _as_member(promoted, promoted.org_b):
             quiet = await personal.my_quiet_tasks(_member(D0), limit=5, now=NOW)
-        assert quiet["day_start_hour"] == 7
+        # Task 1210: midnight is a valid day start. It no longer reads 7.
+        assert quiet["day_start_hour"] == 0
 
     async def test_no_row_seeds_from_the_people_schedule(
         self, promoted, two_orgs, monkeypatch,  # noqa: F811

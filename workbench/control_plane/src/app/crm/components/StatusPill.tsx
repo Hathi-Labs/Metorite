@@ -24,6 +24,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { orderStageList, stageAccent } from "../lib/board";
 import { pickable } from "../lib/emptyStages";
 import { useCrmModeValue } from "../lib/modeContext";
+import { stagesInPlaces } from "../lib/pipelines";
 import { STATUS_TYPE_LABELS } from "../lib/settings";
 import type { Status } from "../lib/types";
 
@@ -53,10 +54,12 @@ export default function StatusPill({
   // The mode comes from the page (`lib/modeContext.ts`, CRM-C2). Task #838:
   // the menu uses the board's order, so it matches the lanes.
   const mode = useCrmModeValue();
-  const sorted = useMemo(
-    () => pickable(orderStageList(entity, statuses, mode, places), status?.id),
-    [statuses, status?.id, entity, mode, places],
-  );
+  // CRM-M3: a deal offers the stages of its own pipeline, and its current stage.
+  // No places (a pipeline that lists none) offers every stage.
+  const sorted = useMemo(() => {
+    const ordered = pickable(orderStageList(entity, statuses, mode, places), status?.id);
+    return entity === "deals" ? stagesInPlaces(ordered, places, status?.id) : ordered;
+  }, [statuses, status?.id, entity, mode, places]);
   // The option the keyboard is on. Focus stays on the pill: the menu is
   // portalled outside the record sheet's focus trap, so moving DOM focus
   // into it would be pulled back. `aria-activedescendant` names the option

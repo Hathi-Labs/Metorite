@@ -6,7 +6,8 @@ bind each guide:
 * an ``open`` step names a live in-app path (``orchestrator.in_app_path``, the
   same check as ``show_in_app``, and the live pane set it holds);
 * a ``point`` step names an anchor of the shell manifests;
-* a ``do_tool`` is a chat tool that ``chat_parity.COVERED`` names;
+* a ``do_tool`` is a chat tool that ``chat_parity.COVERED`` or the tool row of
+  an app manifest names (CRM-M2a moved the CRM rows to ``app_manifests/crm.py``);
 * the ``feature`` of a guide equals the feature of its app's pane.
 
 The loader checks the shape (unknown keys, step kinds, counts). Each mutation
@@ -26,7 +27,9 @@ from pathlib import Path
 
 import pytest
 from acb_common.app_manifests import guide_manifest
+from acb_common.app_manifests.crm import CRM
 from acb_common.app_manifests.guide_manifest import Guide, GuideStep, load_guides
+from acb_common.app_manifests.knowledge import KNOWLEDGE
 from acb_common.app_manifests.shell_manifest import ShellManifestError, load_anchors
 from acb_skills.chat_parity import COVERED
 from orchestrator.in_app_path import is_in_app_path, pane_of
@@ -38,7 +41,15 @@ _INTERNAL_NAMES = re.compile(r"\bjev\b", re.I)
 
 
 def _covered_tools() -> set[str]:
-    return {v if isinstance(v, str) else v[0] for v in COVERED.values()}
+    """Each chat tool that reaches a UI action: a ``COVERED`` row of chat_parity,
+    or the tool row of an app manifest that holds its app's parity rows."""
+    tools = {v if isinstance(v, str) else v[0] for v in COVERED.values()}
+    for app in (CRM, KNOWLEDGE):
+        for row in app.routes:
+            if row.tool:
+                tools.add(row.tool)
+                tools.update(row.also)
+    return tools
 
 
 def _app_pane_feature(app: str) -> tuple[bool, str | None]:
@@ -63,7 +74,7 @@ def problems(
         elif g.feature != feature:
             out.append(f"{g.id}: feature {g.feature!r} does not match the pane's {feature!r}")
         if g.do_tool is not None and g.do_tool not in tools:
-            out.append(f"{g.id}: do_tool {g.do_tool!r} is not COVERED in chat_parity")
+            out.append(f"{g.id}: do_tool {g.do_tool!r} is not COVERED in chat_parity or an app manifest")
         texts = [g.title, *g.asks, *(s.say for s in g.steps)]
         if any(_INTERNAL_NAMES.search(t) for t in texts):
             out.append(f"{g.id}: the copy names an internal agent")

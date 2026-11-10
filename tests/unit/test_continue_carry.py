@@ -40,6 +40,7 @@ pytest.importorskip("sqlalchemy")
 
 import acb_graph.db as graph_db
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -346,6 +347,26 @@ def test_the_flag_off_gives_404(db, monkeypatch) -> None:
         got = _continue(db, sid, _user(ALICE, db.org_a))
         assert got.status_code == 404, (value, got.text)
     assert db.purged == []
+
+
+@_DB_GATE
+def test_a_failed_room_lookup_gives_503_not_404(db, monkeypatch) -> None:
+    """An outage and a refusal must not share an answer (WT-2 fix of WT-1).
+
+    A pool that cannot give a session makes the room lookup fail. The route
+    answers 503 (`RoomAccess.refusal_status`), so a client keeps the chat id.
+    Mutation: answer 404 for `resolve_failed` -> red.
+    """
+    sid = _held_chat(db)
+
+    def _down():
+        raise OperationalError("select 1", {}, Exception("pool is down"))
+
+    monkeypatch.setattr(graph_db, "_session_factory", _down)
+    before = _count(db, "SELECT count(*) FROM chat_session")
+    got = _continue(db, sid, _user(ALICE, db.org_a))
+    assert got.status_code == 503, got.text
+    assert _count(db, "SELECT count(*) FROM chat_session") == before
 
 
 @_DB_GATE

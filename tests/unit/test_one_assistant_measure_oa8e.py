@@ -105,7 +105,9 @@ def test_the_chats_sit_in_the_apps_where_a_member_would_be() -> None:
 def test_every_pack_has_a_turn_that_needs_it() -> None:
     needed = {c.arg for sc in WORK_SCENARIOS for t in sc.turns for c in t.checks
               if c.kind == "right_pack"}
-    assert needed == set(tool_packs.owner_packs(CRM)) | set(tool_packs.owner_packs(PROJECTS))
+    # `calendar-day` (CAL-1a) shares the Projects owner but holds the day
+    # planner, not Projects work. This work set has no turn for it.
+    assert needed == (set(tool_packs.owner_packs(CRM)) | set(tool_packs.owner_packs(PROJECTS))) - {"calendar-day"}
     kinds = {(s.mode, s.surface) for s in CRM_SCENARIOS}
     assert ("mirror", "crm") in kinds and ("native", "") in kinds
 
@@ -334,7 +336,7 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     assert {"crm-records", "projects", "projects-plan", "projects-structure",
             "projects-bulk", "projects-reminders", "projects-reports",
             "projects-authority"} <= slugs
-    assert len(tool_packs.owner_packs(PROJECTS)) == 7  # PJP-2 + ALN-4: was 5
+    assert len(tool_packs.owner_packs(PROJECTS)) == 8  # PJP-2 + ALN-4: was 5, CAL-1a: calendar-day
     # The email chats keep the email owner alone, as in OA-7h.
     assert set(run.pack_flag()["tool_packs"].split(",")) == set(tool_packs.owner_packs(EA))
     assert run.owners_of(scenario("read_invoice")) == (EA,)

@@ -63,6 +63,7 @@ from agent_edge import gateway_client, tools
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
 from tests.unit.test_mcp_edge_task_writes import _FakeRedis
 from tests.unit.test_mcp_edge_writes import _DB_GATE, _URL, _drop_database, _exec_sql_file
@@ -194,18 +195,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_mcpappdoor"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(_GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            _exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -465,7 +457,9 @@ class TestTheDoor:
             assert event.payload["via"] == VIA and event.payload["request_id"] is None
             assert set(event.payload) == {"organization_id", "connection_id", "member",
                                           "via", "app", "op", "class", "request_id",
-                                          "decision"}
+                                          "decision", "policy"}
+            # BR-7b: the policy is the scope of the door, from the manifest.
+            assert event.payload["policy"] == "knowledge:read"
 
     async def test_a_connection_without_personal_sees_no_me_page(self, live):
         """D-EA-4, §19.8. ``include_personal`` false: the member's ``me`` space

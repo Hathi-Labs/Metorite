@@ -19,6 +19,7 @@ dependencies = [
     "acb-skills",
     "acb-memory",
     "acb-auth",
+    "acb-playbook",
     "gateway",
     "orchestrator",
     "ingestion",
@@ -105,6 +106,7 @@ acb-audit     = { workspace = true }
 acb-skills     = { workspace = true }
 acb-memory     = { workspace = true }
 acb-auth       = { workspace = true }
+acb-playbook   = { workspace = true }
 gateway        = { workspace = true }
 orchestrator  = { workspace = true }
 ingestion     = { workspace = true }

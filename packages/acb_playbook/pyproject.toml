@@ -1,0 +1,14 @@
+[project]
+name = "acb-playbook"
+version = "0.0.1"
+description = "The orchestration playbook that Metorite ships to every organization (PB-1, D186)."
+requires-python = ">=3.12,<3.14"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["acb_playbook"]
+include = ["acb_playbook/content/**/*.md"]

@@ -25,7 +25,7 @@
  * CI-style check), not just from a component render.
  */
 
-import { buildAppSrcDoc } from "./ccBridge";
+import { buildAppSrcDoc, newBridgeNonce } from "./ccBridge";
 
 // ─── Scenario / result types (shared contract — do not rename or reshape) ─
 
@@ -501,6 +501,9 @@ export async function runScenario(
     iframe.srcdoc = buildAppSrcDoc(bundleHtml, {
       slug: opts?.slug ?? "test",
       mode: "draft",
+      // A nonce of its own: the page's live broker never holds it, so it
+      // never answers this frame (task 2433). This runner answers by source.
+      nonce: newBridgeNonce(),
     });
 
     const run = (async (): Promise<TestResult> => {

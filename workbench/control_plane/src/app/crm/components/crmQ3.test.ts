@@ -332,7 +332,7 @@ describe("CRM settings", () => {
     expect(html).toContain("Sales");
     expect(html).toContain("Renewals");
     expect(html).toContain("Renew now");
-    expect(html).toContain("not available yet");
+    expect(html).toContain("Stage editing for each pipeline comes in a later release");
     expect(html).toContain("Open in Zoho");
   });
 

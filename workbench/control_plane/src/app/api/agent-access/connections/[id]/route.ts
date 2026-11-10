@@ -8,6 +8,7 @@
  */
 import type { NextRequest, NextResponse } from "next/server";
 import { relayChange, relayRevoke } from "../relay";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
+  const refused = refuseUnsafePath([id]);
+  if (refused) return refused;
   return relayRevoke(req, "/agent-access/connections", id);
 }
 
@@ -24,5 +27,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
+  const refused = refuseUnsafePath([id]);
+  if (refused) return refused;
   return relayChange(req, id);
 }

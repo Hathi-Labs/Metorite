@@ -34,6 +34,7 @@ Run::
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -90,6 +91,10 @@ class _Gmail:
         self.late: dict[str, str] = {}
         self.filters_status = 200
         self.filters_body: dict[str, Any] = {}
+        # Raw bytes for the filters answer, in place of ``filters_body``.
+        self.filters_raw: bytes | None = None
+        # Raw bytes for any other path (task 2434), keyed by the path.
+        self.raw: dict[str, bytes] = {}
         self.n = 1
 
     def calls(self, method: str, path: str) -> int:
@@ -106,6 +111,9 @@ class _Gmail:
         if str(request.url) == TOKEN_URL:
             return httpx.Response(200, json={"access_token": "at-2"})
         path = request.url.path.removeprefix(API)
+        if path in self.raw:
+            self.seen.append((request.method, path, {}))
+            return httpx.Response(200, content=self.raw[path])
         if path == "/profile":
             return httpx.Response(200, json={"historyId": "1"})
         method = request.method
@@ -117,6 +125,8 @@ class _Gmail:
         if (method, path) == ("POST", "/labels"):
             return self._create_label(body)
         if (method, path) == ("GET", "/settings/filters"):
+            if self.filters_raw is not None:
+                return httpx.Response(self.filters_status, content=self.filters_raw)
             return httpx.Response(self.filters_status, json=self.filters_body)
         if (method, path) == ("GET", "/drafts"):
             return httpx.Response(200, json={"drafts": [], "resultSizeEstimate": 0})
@@ -754,3 +764,90 @@ async def test_list_filters_answers_empty_on_a_403(fake: _Gmail) -> None:
     fake.filters_body = {"error": {"code": 429}}
     with pytest.raises(GmailRateLimited):
         await _provider().list_filters()
+
+
+async def test_list_filters_answers_empty_on_an_empty_body(fake: _Gmail) -> None:
+    """Task 2268. Google answered 200 with an EMPTY body for the owner's
+    mailbox on 2026-11-08, and ``resp.json()`` raised "Expecting value", so
+    the rules screen logged ``email.rule_policies_provider_failed`` and showed
+    no Gmail filter. An empty or blank body means no filter, as ``{}`` does.
+    A body that is not empty and not JSON still raises, so a real fault still
+    reaches the log."""
+    for raw in (b"", b"  \r\n"):
+        fake.filters_raw, fake.seen = raw, []
+        assert await _provider().list_filters() == []
+        assert fake.requests() == [("GET", "/settings/filters")]
+
+    fake.filters_raw = b"<html>Service Unavailable</html>"
+    with pytest.raises(ValueError):
+        await _provider().list_filters()
+
+
+# ── an EMPTY 200 body on a list-style read (task 2434) ──────────────────────
+#
+# Google can answer 200 with no body. Each list-style read of the provider
+# then reads it as an empty list and does not raise. One test per read.
+
+
+def _blank(fake: _Gmail, path: str, raw: bytes = b"") -> GmailProvider:
+    fake.raw[path] = raw
+    return _provider()
+
+
+def _resp(content: bytes) -> httpx.Response:
+    return httpx.Response(200, content=content)
+
+
+@pytest.mark.parametrize("content", [b"", b"  \r\n", b"null", b"{}"])
+def test_json_or_empty_gives_an_empty_dict_for_no_item(content: bytes) -> None:
+    assert gmail_mod._json_or_empty(_resp(content)) == {}
+
+
+def test_json_or_empty_passes_a_dict_and_raises_on_a_bad_body() -> None:
+    assert gmail_mod._json_or_empty(_resp(b'{"labels": [1]}')) == {"labels": [1]}
+    with pytest.raises(ValueError):
+        gmail_mod._json_or_empty(_resp(b"<html>Service Unavailable</html>"))
+
+
+async def test_label_assignments_read_an_empty_body_as_none(
+    fake: _Gmail, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The restore goes on, and a warning names the skipped label (task 2434)."""
+    with caplog.at_level(logging.WARNING, logger=gmail_mod.__name__):
+        assert await _blank(fake, "/messages").fetch_label_assignments() == {}
+    assert "gmail.label_restore_empty_page" in caplog.text
+
+
+async def test_the_draft_lookup_reads_an_empty_body_as_no_draft(
+    fake: _Gmail,
+) -> None:
+    assert await _blank(fake, "/drafts")._draft_id_for("m-1", required=False) is None
+
+
+async def test_a_history_page_reads_an_empty_body_as_no_record(fake: _Gmail) -> None:
+    provider = _blank(fake, "/history")
+    client = await provider._get_client()
+    assert await provider._history_page(client, {"startHistoryId": "1"}) == {}
+
+
+async def test_the_label_map_raises_on_an_empty_body_and_stays_unset(
+    fake: _Gmail,
+) -> None:
+    """An empty labels answer is a fault: a mailbox always has system labels.
+    The map stays None, so the categories of a sync stay non-authoritative."""
+    provider = _blank(fake, "/labels")
+    with pytest.raises(ValueError):
+        await provider._label_name_id_map()
+    assert provider._label_ids_by_name is None
+
+
+async def test_seed_cursor_raises_on_an_empty_body(fake: _Gmail) -> None:
+    fake.raw["/profile"] = b""
+    with pytest.raises(ValueError):
+        await _provider().seed_cursor()
+
+
+async def test_an_import_raises_on_an_empty_first_page(fake: _Gmail) -> None:
+    provider = _blank(fake, "/messages")
+    with pytest.raises(ValueError):
+        _ = [b async for b in provider.import_batches(None)]

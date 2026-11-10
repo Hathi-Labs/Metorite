@@ -117,6 +117,8 @@ and the scale plan for all of them.
 - **No message to anyone but the member.** Reach never writes to a customer,
   a colleague or a group. An outward message to another person stays an
   Action Broker act with its own approval.
+  A post to a team channel is CH-TEAM's (`whatsapp_assistant_channel.md`
+  §19), and this spec adds nothing for it.
 - **No marketing template.** Every template is in the utility category.
 - **No SMS and no email channel in v1.** The member already has their own
   email digest (`email/digest.py`).
@@ -353,7 +355,7 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 | `created_at`, `sent_at`, `outcome_at` | Times |
 | `feedback` | `useful`, `not_here`, `muted` or null (§10) |
 
-**Amended 2026-11-06 (BR-5 slice 2b-1, owner).** `reach_outbox.feedback` rates a whole message. The rating of one card for one exception rule lives on `reach_signal_log` (`rule_id`, `feedback`, `feedback_at`, migration 348). `core_brief.md` §6 owns it. RE-6 reads it and adds no second table.
+**Amended 2026-11-06 (BR-5 slice 2b-1, owner).** `reach_outbox.feedback` rates a whole message. The rating of one card for one exception rule lives on `reach_signal_log` (`rule_id`, `feedback`, `feedback_at`, migration 350). `core_brief.md` §6 owns it. RE-6 reads it and adds no second table.
 
 **Indexes.** `(state, not_before)` for the workers. `(organization_id,
 member_email, created_at)` for the budget and the report. A unique index on

@@ -98,6 +98,7 @@ from acb_auth import UserContext, get_current_user
 # The shape, the caps and the lenient read live in ONE parser, which the
 # executor's per-turn block reads too (WS-63 PZ-2). This module keeps the
 # models, the write SQL and the routes.
+from acb_common import celebrations
 from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     ALIAS_MAX,
     ALIASES_MAX,
@@ -179,7 +180,7 @@ def _clean_learning(value: Any) -> bool:
 
 
 _CLEAN = {"learning": _clean_learning, "address": _clean_address, "style": _clean_style,
-          "apps": clean_app_prefs}
+          "apps": clean_app_prefs, "celebrations": celebrations.clean_celebrations}
 
 #: The keys that only Settings writes: a chat write of one is a 422.
 SETTINGS_ONLY_KEYS = frozenset({"learning", "apps"})
@@ -190,7 +191,7 @@ class ProfilePut(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: Literal["learning", "address", "style", "apps"]
+    key: Literal["learning", "address", "style", "apps", "celebrations"]
     value: Any
 
     @model_validator(mode="after")
@@ -637,7 +638,7 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
     op = last.get("op")
     if op == "put":
         key = last.get("key")
-        if key not in ("address", "style") or out.get(key) != last.get("after"):
+        if key not in ("address", "style", "celebrations") or out.get(key) != last.get("after"):
             return None, UNDO_CHANGED
         prior = last.get("prior")
         out[key] = prior if isinstance(prior, dict) else {}
@@ -789,6 +790,12 @@ async def get_assistant_profile(
     # Like ``enabled``, the key is not part of the stored shape.
     out["summaries_enabled"] = chat_summary_for(getattr(user, "organization_id", None))
     out["apps"] = apps
+    # PZ-43: Settings shows "Celebrations" only with the flag on. It holds
+    # the list that the picker offers, and no festival while the list is empty.
+    # With the flag off the answer has no such key, so its shape is as it was.
+    if celebrations.celebrations_for(getattr(user, "organization_id", None)):
+        out["celebrations_enabled"] = True
+        out["festival_catalogue"] = celebrations.catalogue()
     return out
 
 
@@ -873,7 +880,8 @@ async def get_assistant_profile_block(
         raise HTTPException(status_code=503, detail="unavailable",
                             headers=headers) from exc
     preferred, _zone, display = names[:3] if names else (None, None, None)
-    text = member_block(row[0] if row is not None else None, preferred, display)
+    text = member_block(row[0] if row is not None else None, preferred, display,
+                        getattr(user, "organization_id", None))
     return JSONResponse({"enabled": True, "text": text}, headers=headers)
 
 
@@ -978,6 +986,11 @@ async def put_assistant_profile(
     uid = _member(user)
     via = _via(x_profile_via)
     put = _validate(ProfilePut, body)
+    if (put.key == "celebrations" and not celebrations.is_clear(put.value)
+            and not celebrations.celebrations_for(getattr(user, "organization_id", None))):
+        # PZ-43: off for this org, so the member cannot SET it. A write that
+        # only clears stays open, so a saved value can still be deleted (§7).
+        raise _refuse("celebrations are not on for your organization")
     if via is not None and put.key in SETTINGS_ONLY_KEYS:
         raise _refuse(f"{put.key} is set in Settings, not from the chat")
     params = {"pkey": put.key, "pval": json.dumps(put.value)}

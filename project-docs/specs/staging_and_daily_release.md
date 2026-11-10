@@ -4,6 +4,8 @@
 
 **Status update, 2026-11-05:** the home box starts the daily release (D178, CIV-13, built). Its timer dispatches `deploy.yml` with `nightly=true` at 21:30 UTC. GitHub's cron is the backup (§4.1a).
 
+**Status update, 2026-11-07:** production releases three times a day, at 05:30, 13:30 and 21:30 UTC (D194, CIV-21, built). That is 11:00, 19:00 and 03:00 IST. Each slot has its own cron, timer line and window (§4.1b). The text below that says "once a day" is the record of the first clock.
+
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).
@@ -191,6 +193,31 @@ dispatches `deploy.yml` with `nightly=true`. The cron stays as the backup.
 - Two nightly runs can race, and the race is benign. The same sha is a no-op
   push, and `deploy-production` serialises the deploys.
 - `ci_velocity.md` §CIV-13 owns the detail.
+
+### 4.1b Three slots a day
+
+*Added 2026-11-07 (D194, CIV-21).* The owner moved production from one release
+a day to three. The slots are **05:30, 13:30 and 21:30 UTC** (11:00, 19:00 and
+03:00 IST). D194 supersedes the one hour of §4.1 and the "once a day" of D145.
+
+- `deploy.yml` has one cron for each slot. The home box's timer has one
+  `OnCalendar` line for each slot.
+- **Each slot has a window.** A window opens 30 min before its slot: 21:00 to
+  02:00, 05:00 to 10:00 and 13:00 to 18:00 UTC. The windows do not overlap. A
+  nightly run that reaches the release outside each window waits for the next
+  slot, and the run shows a "Release waits for the next slot" warning.
+- **A slot ships once.** A nightly run does not publish when another nightly
+  run published since the window of the current slot opened. That is the
+  latest of 05:00, 13:00 and 21:00 UTC that is not after now.
+- The box script dispatches only from 21:00 to 01:00, 05:00 to 09:00 and 13:00
+  to 17:00 UTC.
+- The names stay: the input `nightly`, the step id `once` and the unit
+  `metorite-nightly-release`. A plain dispatch and `RELEASE_HOLD` do not
+  change.
+- Fence: `tests/unit/test_daily_release.py` and
+  `tests/unit/test_nightly_release_box.py`. They fail when a slot loses its
+  cron, its window or its timer line, or when two windows overlap.
+- `ci_velocity.md` §CIV-21 owns the detail.
 
 ### 4.2 What the promotion picks
 
@@ -392,8 +419,8 @@ The owner said "go ahead with the development" on 2026-10-16. Phase 1 uses the
 | `deploy.yml`, the schedule | lint, then the unit tests as a **gate**, then `publish-release`, then the deploy of that exact commit | same |
 | `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. On a plain dispatch, `skip_tests` is the one way past the tests. A `nightly` dispatch (D178) is a nightly run, and it cannot skip them | same |
 | `RELEASE_HOLD=1` | a repository variable. A nightly run (the schedule or a `nightly` dispatch) moves nothing, and a `Release held` job says so. A plain dispatch still runs | same |
-| `release-window` (2026-10-29) | a nightly run that reaches the release outside 21:00 to 02:00 UTC moves nothing, and says so (§4.1a). Since D178, it also holds a nightly run when another one published that night. A plain dispatch still runs | same |
-| `scripts/home_server/nightly_release.sh` (D178) | the home box's timer dispatches `deploy.yml` with `nightly=true` at 21:30 UTC. It refuses outside 21:00 to 01:00 UTC | `tests/unit/test_nightly_release_box.py` |
+| `release-window` (2026-10-29) | a nightly run that reaches the release outside the window of each slot moves nothing, and says so (§4.1a, §4.1b). Since D178, it also holds a nightly run when another one published in that slot. A plain dispatch still runs | same |
+| `scripts/home_server/nightly_release.sh` (D178) | the home box's timer dispatches `deploy.yml` with `nightly=true` at 05:30, 13:30 and 21:30 UTC (D194). It refuses outside 21:00 to 01:00, 05:00 to 09:00 and 13:00 to 17:00 UTC | `tests/unit/test_nightly_release_box.py` |
 | `vps_apply.sh` | deploys `DEPLOY_REF` when a caller names it, else `origin/release`. It refuses a commit that is not on `main` | `tests/unit/test_deploy_target_ref.py` |
 | `vps-health.yml`, `delivery` | compares the box with `release`. It fails when `main` holds a commit that has waited 30 hours for a release | `test_daily_release.py` |
 

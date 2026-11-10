@@ -473,7 +473,7 @@ def _a_pending_row(monkeypatch) -> list[tuple[str, str | None]]:
     marks: list[tuple[str, str | None]] = []
     proposal = broker.propose("agent:x", "x.write", "t", {}, authority=broker.AuthorityTier.SUGGEST)
 
-    async def _execute(_p: Any) -> dict[str, Any]:
+    async def _execute(_p: Any, **_kw: Any) -> dict[str, Any]:
         return {"ok": True, "result": "written"}
 
     def _mark(_action_id: str, status: str, **kw: Any) -> int:
@@ -759,6 +759,34 @@ def test_the_mark_ends_when_a_handler_raises() -> None:
     assert asyncio.run(main()) is False
 
 
+def test_the_headless_turn_runs_marked_and_names_no_setter(monkeypatch) -> None:
+    """WS-AUTO AUTO-8a: the handler of ``auto.turn`` runs under the worker's
+    mark. Its round task copies the mark, so the runner of each round reads
+    it, and the loop of the worker stays unmarked. The module of the turn
+    names neither the setter nor the reader (``_SETTERS``, ``_READERS``)."""
+    from gateway.jobs import headless_turn as ht
+
+    from tests.unit import test_headless_turn as t
+
+    w = t.make_world(monkeypatch)
+    goal = w.goals.add()
+    runner = t.FakeRunner(w.meter)
+    monkeypatch.setattr(ht, "_DEFAULT", ht.HeadlessTurn(
+        runner=runner, meter=w.meter, candidates=w.checks))
+    payload = t._payload(goal)
+    claim = t._claim(payload)
+
+    async def main() -> bool:
+        await worker._call(lambda: ht.run_turn(t.ORG, payload, claim), worker._Attempt())
+        return no_person_present()
+
+    assert asyncio.run(main()) is False
+    assert [c["marked"] for c in runner.calls] == [True]
+    assert w.jobs.done == [claim.id]
+    named = _names_in(ast.parse(Path(ht.__file__).read_text(encoding="utf-8")))
+    assert not named & (_SETTER_NAMES | {"no_person_present"})
+
+
 # ── The injection fixture ───────────────────────────────────────────────────
 
 
@@ -971,10 +999,14 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: WS-STU B2c-2a adds the decision of an app request. It approves a Studio
 #: write that a member identity asked for, and Mira calls as the member. So a
 #: tool that posts to it would approve its own write.
+#: WS-55 EA-19c adds the box-token routes. A box token is a long-lived secret
+#: that acts as the member, so only a person makes, rotates or revokes one
+#: (``external_agent_access.md`` §10.9). A tool that names them would mint a
+#: secret with no person present.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
                     "/decisions/{}/answer", "/agent-runs/{}/outside-decision",
-                    "/requests/{}/decision")
+                    "/requests/{}/decision", "/agent-access/box-tokens")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1057,6 +1089,10 @@ def test_the_route_scan_reads_an_f_string() -> None:
     assert _routes_in(decision) == ["/requests/{}/decision"]
     assert _routes_in('u = f"/api/agent-access/requests/{rid}/decision"') == [
         "/requests/{}/decision"]
+    # WS-55 EA-19c: the box-token routes mint a secret that acts as the member.
+    assert _routes_in('u = "/agent-access/box-tokens/check"') == ["/agent-access/box-tokens"]
+    assert _routes_in('u = "/api/agent-access/box-tokens/revoke-all"') == [
+        "/agent-access/box-tokens"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

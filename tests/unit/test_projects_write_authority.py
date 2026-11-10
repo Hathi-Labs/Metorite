@@ -238,18 +238,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_op8auth"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -576,7 +567,9 @@ def test_the_new_doors_call_the_one_module() -> None:
     from gateway.routes.projects import move, personal, tasks, tree
 
     doors = {
-        tree.create_node: "assert_may_name_lead(db, user, parent_row, values.get(\"lead\"))",
+        # WS-39 TPL-1a: the create's body is `create_node_in`, the one creator
+        # of a node, which `POST /nodes` and the apply of a template call.
+        tree.create_node_in: "assert_may_name_lead(db, user, parent_row, values.get(\"lead\"))",
         tree.patch_node: "assert_may_change_lead(db, user, before, values)",
         tree.move_node: "assert_may_move_project(db, user, moved)",
         tasks.move_task_in: "assert_may_move_task(db, user, task)",
