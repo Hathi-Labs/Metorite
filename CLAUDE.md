@@ -87,11 +87,12 @@ reference tied to code. Do not put product specs in `docs/`.
   palette, bell or assistant rail. A team view is a filter, never a Center.
   `specs/navigation_shell.md` owns it, and `workbench/control_plane/AGENTS.md`
   rule 10 carries it to UI work.
-- **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
-  (`core`), everything live included. `specs/launch_surface.md` §4 is the
-  shape of record. `saas_multitenancy.md` §2.4b is the superseded D23/D24
-  record. Still binding: D19.3's hard cap, D32.5's three counts, the
-  entitlement seam.
+- **Pricing is SEAT TIERS with base pricing (D152, final: owner 2026-11-10, D204
+  point 9)**, plus AI credits. The flat ₹500 seat ends (D190.3) when PLN-0
+  merges. Until then the code sells the flat seat (`core`).
+  `specs/launch_surface.md` §4 is the old shape. The Billing project (epic
+  WS-PLN) builds the tiers. Still binding: D19.3's hard cap, D32.5's three
+  counts, the entitlement seam.
 - **Tenancy is a ROW, not a deployment.** `organization_id` + Postgres FORCE ROW
   LEVEL SECURITY, bound at the `get_db()` seam. We are **multi-tenant from
   customer #1**. "Silo" describes *placement* only. No phase accepts
