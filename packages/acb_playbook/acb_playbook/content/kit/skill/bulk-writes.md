@@ -18,7 +18,9 @@ For more rows, send more calls of 50 or less.
 - Read the result for each row. A row can fail while the others pass.
 - Retry only the failed rows, after you fix the cause.
 - A long call can stop early. The rows it did not try come back marked as not tried. Send them again.
-- Never use a bulk write to delete. Deletion needs a person.
+- Name each task once in a call. A task id that appears twice is refused.
+- Send a parent change as its own item, with no other field.
+- A bulk write cannot delete a task. Deletion needs a person and a separate tool.
 
 ## Before a large change
 
