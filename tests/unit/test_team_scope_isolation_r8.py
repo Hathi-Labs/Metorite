@@ -92,16 +92,28 @@ here so that nobody reads the file as wider than it is.
 * A holder of ``data:org:read`` reads every space of the tenant by design
   (D14). That is not a team rule, so no member here holds it.
 
-**The mutations (R7).** Each planted leak below turned the named tests red.
-Each was reverted.
+**The mutations (R7).** Each planted fault below turned the named tests red
+on 2026-11-11. Each was reverted. ``G`` is
+``apps/services/gateway/gateway/routes/projects``.
 
-* M1. ``core._MY_GROUPS_SQL``: drop the member filter, so each member is in
-  every group. Every class that reads as ``a``, ``b`` or ``nobody`` fails.
-* M2. ``search.search_tasks``: the visibility clause is ``TRUE``.
-  ``TestSearch`` and ``TestTheAssistant.test_find_tasks`` fail, and so does
-  the ``search_tasks`` case of ``TestTheMcpDoor``.
-* M3. ``core.mine_clause``: the WAITING arm drops its grant closure.
-  ``TestMyTasks`` fails for ``a`` and ``b``.
+* M1. ``G/core.py`` ``_MY_GROUPS_SQL``: no member filter, so each member is
+  in every group. 94 of 146 tests fail, in every class, for ``a``, ``b`` and
+  ``nobody``.
+* M2. ``G/search.py`` ``search_tasks``: the visibility clause is ``TRUE``.
+  15 tests fail: the two word tests of ``TestSearch``,
+  ``TestTheAssistant.test_find_tasks`` and ``TestTheMcpDoor.test_search_tasks``.
+* M3. ``G/core.py`` ``mine_clause``: the WAITING arm drops its grant
+  closure. ``TestMyTasks.test_the_inbox`` fails for ``a`` and ``b``. The list
+  over mine and the Overview also AND the visibility clause, so they stay
+  green.
+* M4. ``G/tasks.py`` ``get_task``: a hidden task answers a 404 text of its
+  own. ``TestADirectLinkIsNotFound.test_a_hidden_task``, the ``task_detail``
+  test of ``TestTheAssistant`` and the deleted-grant test of
+  ``TestTheNextRead`` fail. The MCP door stays green, because the edge never
+  sends a text of the gateway.
+* M5. ``G/core.py`` ``resolve_visibility``: the groups of a member are kept
+  in a cache. The test of ``TestTheNextRead`` for a member who leaves a team
+  fails.
 
 Run (a private ladder database, one R8 suite at a time)::
 
