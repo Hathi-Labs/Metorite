@@ -1,5 +1,7 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Line: 783 (STU-Q7).
+
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-08 · **Owner:** vjvarada
 > **Status:** 🔨 **In build.** §14 holds the state of each slice, and a built row starts with 🔨 **BUILT**. Every built slice is dark behind `STUDIO_ORGS`, which is empty on every box, and no org has the `studio` tool pack. The `/studio` pane (A1, E1) is live in the nav for the beta since 2026-11-05 (D179), and its routes still need `STUDIO_ORGS`. An org that the flag does not list sees a "not open yet" state. §15 holds the stages, and §20 holds the plan for apps that serve people outside the org. A slice never edits this line.
 > **Verified against code on 2026-11-08 at `4439b200f`** (main). A script checked that each of the 114 paths that §16 names exists on that commit.
