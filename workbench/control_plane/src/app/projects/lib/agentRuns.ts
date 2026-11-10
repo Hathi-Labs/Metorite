@@ -100,6 +100,8 @@ export interface AgentOption {
   label: string;
   description?: string | null;
   recommended?: boolean;
+  /** SW-43b. A costly choice: the card asks "Are you sure?" before it sends it. */
+  confirm?: boolean;
 }
 
 export interface AgentActivity {
@@ -633,6 +635,54 @@ export function cardQuestion(elicitation: AgentActivity): ElicitationQuestion {
       recommended: Boolean(o.recommended),
     })),
   };
+}
+
+/** SW-43b. The words of the second step, before a costly option goes out. */
+export const ARE_YOU_SURE = "Are you sure?";
+
+function pickedOf(answers: ElicitationAnswers): { selected?: string[]; freeform?: string } {
+  return answers.Question ?? Object.values(answers)[0] ?? {};
+}
+
+/**
+ * SW-43b. The labels of the picked options that carry `confirm: true`. The
+ * panel asks "Are you sure?" while this list is not empty, and sends nothing.
+ */
+export function confirmLabels(
+  elicitation: AgentActivity,
+  answers: ElicitationAnswers,
+): string[] {
+  const options = elicitation.signal_metadata?.options ?? [];
+  return (pickedOf(answers).selected ?? []).filter((label) =>
+    options.some((o) => o.label === label && o.confirm === true),
+  );
+}
+
+/** SW-43b. The body of a replace: the answer to swap, the new options and a fresh key. */
+export interface ReplaceBody {
+  answer_id: string;
+  selected?: string[];
+  body?: string;
+  idempotency_key: string;
+}
+
+export function replacePayload(
+  answerId: string,
+  elicitation: AgentActivity,
+  answers: ElicitationAnswers,
+  idempotencyKey: string = newIdempotencyKey(),
+): ReplaceBody | null {
+  const prompt = answerPayload(elicitation, answers, idempotencyKey);
+  if (!prompt.selected?.length && !prompt.body) return null;
+  const out: ReplaceBody = { answer_id: answerId, idempotency_key: idempotencyKey };
+  if (prompt.selected?.length) out.selected = prompt.selected;
+  if (prompt.body) out.body = prompt.body;
+  return out;
+}
+
+/** SW-43b. True when any option of the question needs the "Are you sure?" step. */
+export function hasConfirmOption(elicitation: AgentActivity | null | undefined): boolean {
+  return (elicitation?.signal_metadata?.options ?? []).some((o) => o.confirm === true);
 }
 
 /**

@@ -2729,6 +2729,7 @@ _OPTION_ID_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "string"}, _UNTRUSTED_SC
 _OPTION_SCHEMA = _object({
     "id": _OPTION_ID_SCHEMA, "label": _UNTRUSTED_SCHEMA,
     "description": _UNTRUSTED_OR_NULL, "recommended": {"type": "boolean"},
+    "confirm": {"type": "boolean"},
 })
 _OPTIONS_OR_NULL: dict[str, Any] = {"anyOf": [
     {"type": "array", "items": _OPTION_SCHEMA}, {"type": "null"}]}
@@ -2809,6 +2810,7 @@ def _option(raw: Any) -> dict[str, Any] | None:
         "label": untrusted(raw.get("label") or ""),
         "description": untrusted(description) if isinstance(description, str) else None,
         "recommended": _bool(raw.get("recommended")),
+        "confirm": _bool(raw.get("confirm")),
     }
 
 
@@ -7966,6 +7968,10 @@ _OPTIONS_INPUT: dict[str, Any] = {
                             "description": "What the choice means, if it is not clear."},
             "recommended": {"type": "boolean",
                             "description": "True for the choice you recommend."},
+            "confirm": {"type": "boolean",
+                        "description": "True for a costly choice: it stops machines or"
+                                       " sessions, deletes data or restarts a box. The"
+                                       " member must confirm it with \"Are you sure?\"."},
         },
         "required": ["id", "label"],
         "additionalProperties": False,
