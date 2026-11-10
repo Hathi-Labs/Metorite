@@ -1,6 +1,10 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration).** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386).**
+
+Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+
+**CRM-SIG, customer signals (§14), is specified, and nothing is built (2026-11-09, epic task 2430).**
 
 Every anchor below was re-read at `930839f2e`. §13 lists the few that moved.
 
@@ -31,6 +35,7 @@ This spec joins the parts in six steps. The steps are a Change history, chat par
 - Stuck-deal cards (CRM-M7).
 - Campaigns, the Apollo connection, public forms, consent and a thank-you mail (CRM-M8 to CRM-M12).
 - Proposals from the AI, and automations on the one workflow engine (CRM-M13, CRM-M14).
+- Customer signals: one customer card, a pre-call brief, deal risk, a renewal watch, battle cards, customer requests and repeated questions (CRM-SIG-1 to CRM-SIG-7, §14).
 
 **Non-goals.**
 
@@ -267,7 +272,7 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 
 **Build.**
 
-- A manifest of CRM UI actions, and a ratchet. New gaps fail. Old gaps burn down. `tests/unit/test_projects_ui_actions.py` is the model.
+- A manifest of CRM routes (CRM-M2a, built), and a ratchet. New gaps fail. Old gaps burn down. `tests/unit/test_projects_ui_actions.py` is the model.
 - Record tools: edit any field, change owner, and change owner in bulk.
 - Task tools: complete a task and set a due date. A delete asks on a card.
 - Config tools: stages, lost reasons, fields, record names, saved views, board card fields, rules (change and delete).
@@ -284,9 +289,39 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 5. A voice note on WhatsApp can update a deal and log the note, with one card.
 6. A chat turn on the live path loads each new tool. A test proves it.
 
-**Fence.** `tests/unit/test_crm_ui_actions.py` (planned), a ratchet like `test_projects_ui_actions.py`.
+**Fence.** `tests/unit/test_crm_ui_actions.py` (built in CRM-M2a), a ratchet like `test_projects_ui_actions.py`.
 
 **A trap from CRM-M1.** The views code logs each view change at the `own` level, a delete and an edit of a shared view too. D164 puts a delete at "always asks". So CRM-M2 must not take the ladder level of a card from these rows.
+
+### CRM-M2a. The route manifest and its ratchet (task 2047) — Wave 1
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD. **Depends on** nothing. **Status.** Built 2026-11-08, in review.
+
+**One owner.** `packages/acb_common/acb_common/app_manifests/crm.py` is the one route manifest of the CRM (D136.1). CRM-M2a builds it. It holds one row for each route of `gateway.routes.crm`, and every row is `off_door`. A row has a class. It names a chat tool, a planned slice of the table below, or a reason.
+
+MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of each row. It adds `crm` to `APPS`, builds `email.py` and adds the door fences. MCP-P2a does not build `crm.py` again.
+
+**The fence.** `tests/unit/test_crm_ui_actions.py` walks the live router and the CRM client files. It fails on a route with no row and on a row with no route. It fails on a client request with no row, and on a tool claim that the source of the tool does not bear out. The count of planned rows has a ceiling that only goes down.
+
+`chat_parity.py` holds no CRM row. It sends `/api/crm` to this manifest, as it does for Knowledge.
+
+**The door fences are a second test.** The Knowledge precedent holds: the router walk is `test_knowledge_chat_coverage.py`, and the door half is `test_app_door_coverage.py`. So the CRM door fences stay a second test, `test_crm_door_coverage.py` of MCP-P2a, on the same manifest. They do not merge into `test_crm_ui_actions.py`.
+
+**The planned slices.** A `planned` value in `crm.py` names one row of this table. The M2b row is built. A slice that ships moves its rows to a tool and lowers the ceiling in the same change.
+
+| Slice | The chat gets |
+|---|---|
+| CRM-M2b | Edit a record field, complete a task and set a due date. Built |
+| CRM-M2c | Create a deal, a contact and an organization. Delete a record and an activity. Undo a change from the change history |
+| CRM-M2d | Add and remove a contact of a deal. Edit a record of a custom module |
+| CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete |
+| CRM-M2f | Fields, sections, layout, field rules and the module catalogue |
+| CRM-M2g | Saved views, record names, labels, access and the settings |
+| CRM-M2h | Business rules and the open questions of the AI |
+| CRM-M2i | Mapping plans, field suggestions and the conversion mapping |
+| CRM-M2j | Rename a pipeline, add a stage and remove a stage |
+| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again |
+| CRM-M2l | The reads of the setup screens, the digests and the exports |
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 
@@ -343,12 +378,15 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 **Build.**
 
 1. A lead pipeline is a name and an ordered list of lead statuses. It reuses the shape of the deal pipeline.
+   - **Working default, not an owner decision.** A new lead pipeline holds at least one open status (type `open` or `ongoing`). When its list holds no won status or no lost status, the create adds the org's own. That is the first status of that type in lane order, because a lead has no default pipeline.
+   - For a lead, `won` means that the lead converted. Convert moves a lead to the first `won` status. `lost` means that the lead is lost or junk.
+   - A new status with no type is `won` when its whole name is "Won" or "Converted". It is `lost` when its whole name is "Lost" or "Junk". The owner may change this rule.
 2. Create, rename, reorder and delete a lead pipeline, in CRM settings, Stages.
 3. A lead picks its pipeline when it is made. A campaign or the lead source may choose it (E-41, #740).
 4. The Leads board shows one pipeline at a time, or all of them.
 5. Each lead pipeline names the deal pipeline it feeds. Convert uses it.
 6. Reports count leads and conversions for each lead pipeline.
-7. Check how the Zoho Campaigns module maps. A Mirror org may want its Zoho campaigns as lead pipelines after the switch.
+7. Check how the Zoho Campaigns module maps. A Mirror org may want its Zoho campaigns as lead pipelines after the switch. This item is research only. It adds no code.
 
 **Done when.**
 
@@ -357,8 +395,29 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 3. The Leads board shows one pipeline or all pipelines.
 4. The new tables are tenant-scoped with FORCE RLS, and a second-org read sees zero rows (R5, R8).
 5. The migration is expand/contract (R6). A lead with no pipeline stays on the default pipeline.
+6. Build item 4: the Leads board has a pipeline picker. It shows the leads of one lead pipeline, or the leads of all of them. A lead with no pipeline shows under the default list.
+7. Build item 6: the lead reports count the leads and the conversions of each lead pipeline. The leads with no pipeline count as one more row, the default list.
+8. Build item 7: a note on Metorite epic #477 maps each field of a Zoho campaign to a lead pipeline. It names each field with no home. No code changes.
 
-**Fence.** `tests/unit/test_crm_lead_pipelines.py` (planned).
+**Fence.** `tests/unit/test_crm_lead_pipelines.py` (R8) and `workbench/control_plane/src/app/crm/components/crmM4.test.ts`.
+
+**The order of the slices.** CRM-M4a (create) ships dark behind `CRM_PIPELINES_ORGS`, the flag of CRM-M3a. It closes done-when 1, 4 and 5. CRM-M4b (task 2045) adds the Leads board picker, a new lead that picks its pipeline, and a convert that reads the feed. It closes done-when 2, 3 and 6. Done-when 7 and 8 have no slice yet.
+
+CRM-M4b must give convert and the create one rule for the `won` status. Today convert takes the first `won` status in lane order, a hidden one too. The create adds the first visible one.
+
+#### Built as (CRM-M4a)
+
+- **The migration.** Migration 386 adds `crm_pipelines.kind` (`deal` or `lead`, default `deal`) and `crm_pipelines.feeds_pipeline_id`. It adds the table `crm_lead_pipeline_stages` and the nullable `crm_leads.pipeline_id`. Each CHECK goes in NOT VALID, and a guarded block validates it. Three triggers keep each link inside its org and of the right kind. A fourth trigger refuses each change of `kind` after the INSERT. It writes no row.
+- **One seam.** `POST /crm/pipelines` and its preview take `kind` and, for a lead pipeline, `feeds`. `feeds` is the name of a deal pipeline, and it resolves under row level security. A deal pipeline that names `feeds` gets 422. `PipelineKind` in `routes/crm/pipelines.py` holds the tables and the words of each kind.
+- **The feed rule.** No pick stores NULL, and NULL follows the org's default deal pipeline of that moment. A pick stores the id of that deal pipeline. The read-only list and the chat card say "the default deal pipeline (now <name>)" for NULL. The picker of the Settings dialog says "The default deal pipeline", so it reads whole on a phone. The line under the picker names that pipeline now. The chat card sends the id of the feed that it showed, so a rename before Apply gives 409 `plan_changed`. That refusal says if the feed or the statuses changed.
+- **The same rules.** A lead pipeline reuses a lead status by its name, and it refuses a hidden or gone status. It checks the plan, logs one `pipeline` row with the kind in "after", and has an Undo. The Undo removes each lead status that the create made, while no lead holds it.
+- **A status that a pipeline holds stays.** The Undo of a status create and `DELETE /crm/statuses/{kind}/{id}` refuse with 409 `in_use` while a pipeline of that kind holds the status. A pipeline holds it when the pipeline exists and an open change of that pipeline names the status. That change is its create (new or reused), a stage add or a take-out. A pipeline with no open change holds nothing, as on main. That covers a Zoho pipeline after the switch, and the default deal pipeline that a new stage joins. The refusal names each pipeline by its name now. It says "Undo the changes to the deal pipeline "X", newest first, and then undo this." This rule binds deal pipelines too.
+- **One lock order.** The pipeline create lock comes first, then a change-log row, then a status or pipeline row. Each Undo, each status delete, and each route that puts a stage in a pipeline or takes it out follow this order.
+- **A name for each kind.** A deal pipeline and a lead pipeline may share a name, so "Trade show" leads can feed "Trade show" deals. Two pipelines of one kind may not.
+- **The deal readers.** Each reader that means a deal pipeline names `core.DEAL_PIPELINE_SQL`. That covers the deal list, the board, a new or moved deal, a convert, the default, the reports, the switch and the sync. The Undo of a deal pipeline that a lead pipeline feeds refuses, and names that lead pipeline.
+- **Chat.** `crm_create_pipeline` takes `kind` and `feeds`. Its card says "lead pipeline" or "deal pipeline", lists each status with its type, and names the deal pipeline that it feeds. `crm_list_pipelines` lists the lead pipelines too.
+- **Settings.** The Native Lead statuses card has "New pipeline" for an admin, behind the same flag. It opens the one dialog in lead mode, with "Feeds deals into". With a lead pipeline, the card lists the default list and each lead pipeline to read. The default list counts as the first lead pipeline, as the default deal pipeline does. Status editing for each pipeline is a later slice.
+- **A lead with no pipeline.** `pipeline_id` stays NULL, and nothing writes it in CRM-M4a. The lead reads, moves and converts as before. The Leads board still shows every lead status, the new ones too, until CRM-M4b. A Mirror merge of two lead statuses keeps the place of the kept status in each lead pipeline.
 
 ### CRM-M5. Phases and All deals (#1433) — Wave 2
 
@@ -768,3 +827,294 @@ The tasks and notes gave these anchors. They differ at `930839f2e`.
 - `members.py:1366` is `get_member_access`, which holds no escalation rule. The `admin:access:manage` dependency that allows escalation is at `members.py:1419`.
 - `MAX_BATCH = 50` is in `apps/skills/skill-projects/skill_projects/writes.py:111`. `_ask_batch` is at line 2316.
 - `crm_platform.md` has no §20.21. Its last section is §20.20.
+
+---
+
+## 14. Customer signals (CRM-SIG, 2026-11-09)
+
+**Status: SPEC, nothing built.** The owner chose this theme on 2026-11-08 on task 2348: "Plan 4 and 2 first, then 6 and 8". It is theme 4 of the coverage check of the user stories under task 2258. Metorite: epic task 2430 in the CRM project. Verified against code on 2026-11-09 at `main` `0c5118d4c`.
+
+**Stories.** 1756 is deal risk, 1757 is the renewal and churn watch, and 1759 is the competitor watch. 1760 is customer health before a call. 1776 is a repeated support question, and 1777 is feedback to the roadmap.
+
+### 14.1 The answer
+
+The CRM holds the customer record. Other apps hold the rest: Email holds the mail, the task store holds tickets and tasks, and Calendar holds the calls. CRM-SIG joins them on one customer card, and adds rules that read the card. It adds no signal store, no second feed and no second judge.
+
+- One read, `customer_card`, joins a CRM company with its mail, tickets and tasks, as the viewer (CRM-SIG-1).
+- A Calendar entry with a customer guest gets a pre-call brief on My Day (CRM-SIG-2).
+- Code rules find a deal with no sponsor, a silent contact and a stalled deal. Each one is a reason on the one card of its deal (CRM-SIG-3).
+- The same rules, with unanswered mail and open tickets, watch each renewal in the next 90 days (CRM-SIG-4).
+- A competitor named in calls or mail gets a draft battle card in Knowledge (CRM-SIG-5).
+- A request from a call or a ticket becomes a customer request. A Goal or a decision not to build answers it (CRM-SIG-6).
+- A question that comes back becomes a draft help article or a fix task (CRM-SIG-7).
+
+### 14.2 Scope and non-goals
+
+**In scope.** The seven slices of §14.4.
+
+**Non-goals.**
+
+- **No score for a person.** A risk level belongs to a deal or an account, never to a rep. The rule of `project_alignment.md` holds here too.
+- **No message to a customer.** Every card goes to a member. A send to a customer stays an Action Broker act with its own card (D131.7, `ai_studio.md` O9).
+- **No second feed, judge or outbound seam.** My Day keeps the cards and `decide`, and Reach keeps delivery (D103).
+- **No copy of mail, tickets or tasks in a CRM table.** The card reads each one through its owning app (D105).
+- **No usage connector in v1.** Q-SIG-2 decides where usage comes from.
+- **No agent publish.** A battle card and a help article stay drafts until a member publishes them (D104).
+- **No web research for battle cards in v1.** WEB-3 of `web_research.md` comes later.
+
+### 14.3 The seams it reuses
+
+| Need | Seam | Where |
+|---|---|---|
+| Records, contacts and roles | The CRM reads, `crm_activities`, and the `role` column of `crm_deal_contacts` | `infra/postgres/144_crm.sql:370`. Zoho contact roles sync into it (migration 249) |
+| Mail | The Email app's own reads, as the viewer. A private mailbox stays private (D-EM-4). A shared mailbox counts only with a `read` grant | `email_app_master_plan.md`, `shared_mailbox.md` §4.4 |
+| Tickets and tasks | The one task store (D52 to D54). A ticket is a task in a queue project (E21, task 2202) | `pm_tasks` |
+| A link from a task to a CRM record | **Not built.** `pm_task_refs` allows only the kinds `pull_request`, `issue`, `commit`, `branch`, `comment`, `doc` and `url` (`infra/postgres/255_pm_task_refs.sql:46`). No table links `pm_tasks` to `crm_companies`. E21 builds the link, or a new `pm_task_refs` kind does. Either one is a migration (R1: the number is taken at build time) | None yet |
+| Doors for chat and agents | The app manifests of D136. CRM-M2a builds `app_manifests/crm.py` | `external_agent_access.md` §19 |
+| Cards | The My Day providers and the card catalogue. One entity gives one card | `my_day_feed.md` §4.5 and §5.5 |
+| Delivery | Reach classes, in `REACH_CLASS` of `reach/classes.py`. `proactive_reach.md` §4.4 names `meeting_prep_ready` as `interrupt`, and no code holds it yet | `proactive_reach.md` §4.2 and §4.4 |
+| Judge and sort | `decide` on `tier-decide` (D93, D100). Decide picks, templates speak, code acts | `packages/acb_llm/acb_llm/decide.py`, `my_day_feed.md` §10.2 |
+| Calendar | `calendar_entries` and `calendar_entry_attendees` (CE-4, migration 331). Google and Outlook entries come with CE-10 | `calendar_events_reminders.md` §3.3 and §8 |
+| Meeting brief | The live copilot's brief, `copilot_brief` (migration 127) | `routes/notes/copilot_context.py` |
+| Drafts in Knowledge | `propose_page` (KB-5a). The entity registry `kb_entities`, with aliases | `knowledge_base.md` §8.1, `knowledge_curation.md` §6.2 |
+| A decision not to build | `pm_decisions` (migration 332) | `project_alignment.md` §3.2 |
+| Proposals | "Needs your input" (D134), and the CRM sweep of CRM-M13 | `crm_platform.md` §20.17, §8 above |
+
+**E21 has no spec.** A slice that needs a ticket does not dispatch until E21 has one. A slice that needs the task-to-CRM link above shows its tickets and tasks as "Not connected" until the link exists.
+
+### 14.4 The slices
+
+Each slice follows the D145 loop and ships dark behind `CRM_SIGNALS_ORGS`, off by default. The name of the flag is a working default. The verification commands of §7 bind each slice.
+
+| Id | Task | What | Tier | Gate | Depends on | Fence |
+|---|---|---|---|---|---|---|
+| **CRM-SIG-1** | 2435 | One customer card | HIGH | AGENT-SAFE. May need a migration (R1) | CRM-M2a. Tickets and tasks wait on the task-to-CRM link (§14.3) and E21 (task 2202). Shared mail after task 733 | `tests/unit/test_crm_customer_card.py` (planned) |
+| **CRM-SIG-2** | 2436 | The pre-call brief | STANDARD | AGENT-SAFE. CE-10 has owner gates | CRM-SIG-1, CE-4 on for the org, CE-10 for Google and Outlook | `tests/unit/test_crm_precall_brief.py` (planned) |
+| **CRM-SIG-3** | 2437 | Deal risk: no sponsor, silent contact, stalled | STANDARD | AGENT-SAFE | CRM-M7 (task 1435), CRM-SIG-1 | `tests/unit/test_crm_deal_risk.py` (planned) |
+| **CRM-SIG-4** | 2438 | Renewal and churn watch | STANDARD | AGENT-SAFE. Unblocked by the answer to Q-SIG-1 (2026-11-08). May need a migration (R1) | CRM-SIG-3, CRM-M3, Q-SIG-1. The ticket reason waits on the task-to-CRM link and E21. Usage waits on Q-SIG-2 | `tests/unit/test_crm_churn_watch.py` (planned) |
+| **CRM-SIG-5** | 2439 | Competitor mentions and battle cards | HIGH | AGENT-SAFE. Unblocked by the answer to Q-SIG-4 (2026-11-08) | CRM-SIG-1, KB-5a, the entity registry, Q-SIG-4 | `tests/unit/test_crm_battle_cards.py` (planned) |
+| **CRM-SIG-6** | 2440 | Customer requests linked to the roadmap | HIGH | AGENT-SAFE. Unblocked by the answer to Q-SIG-3 (2026-11-08). May need a migration (R1) | CRM-SIG-1, the task-to-CRM link (§14.3), E21 (task 2202), Goals (D199), Q-SIG-3 | `tests/unit/test_crm_feedback_requests.py` (planned) |
+| **CRM-SIG-7** | 2441 | Repeated questions to an article or a fix task | STANDARD | AGENT-SAFE | CRM-SIG-6, KB-5a, task 733. Tickets wait on E21 (task 2202) | `tests/unit/test_support_question_clusters.py` (planned) |
+
+#### CRM-SIG-1. One customer card (task 2435)
+
+**Gate.** AGENT-SAFE. **HIGH tier**, because the read crosses apps and must keep the privacy of each one. It may need a migration for the task-to-CRM link of §14.3 (R1: the number is taken at build time).
+
+**Build.**
+
+- One gateway read, `customer_card`, in `routes/crm/`. For a company, it returns these sections:
+  - The company and its open deals, with stage, amount, close date and owner.
+  - Its contacts, with the role of each one on each deal.
+  - The last 5 activities.
+  - The mail threads of the last 30 days with the addresses of its contacts.
+  - Open tickets: the tasks of a queue project (E21) that link to the company or a contact.
+  - Open tasks that link to the company, its deals or its contacts.
+  - The next Calendar entry with a guest from the company.
+- **Not connected.** No task links to a CRM record today (§14.3). Until the link exists, the tickets and tasks sections say "Not connected". The deal, contact, activity, mail and Calendar sections ship first.
+- Each section calls the owning app's own read with the viewer's `UserContext`. A section shows only what the viewer can open. It never shows a count of what it hides.
+- A section that fails shows its reason, and the other sections still show.
+- A contact or a deal opens the card of its company. A contact with no company gets a card of that contact alone.
+- One read serves three places. They are the Overview tab of the one record card (`one_record_card.md`), a `recordCard` in chat (`chat_first_surface.md` §4) and a WhatsApp view (`whatsapp_assistant_channel.md` §13).
+- A chat tool `customer_card`, for chat parity, and a class A read op on the CRM manifest.
+- The context join of `proactive_reach.md` §4.5 calls this read for a CRM company. It builds no second join.
+
+**Done when.**
+
+1. A test company has 2 deals, 3 contacts and 4 threads. It gives one card with those sections. With no task-to-CRM link, the tickets and tasks sections say "Not connected".
+2. After the link exists, 2 linked tickets and 3 linked tasks show in their sections.
+3. A second member who cannot open the first member's private mailbox sees no thread line, and no count of threads.
+4. A member with a `read` grant on a shared mailbox sees its threads. A member without the grant does not.
+5. The card never shows a private task of a personal project.
+6. A member of a second org gets 404 (R5, R8).
+7. A section that raises still returns the other sections, with the reason.
+8. The slice adds no table and no column that holds mail, ticket or task text.
+
+**Fence.** `tests/unit/test_crm_customer_card.py` (planned), R8, with two members and a second org.
+
+#### CRM-SIG-2. The pre-call brief (task 2436)
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD. The card goes to the member only. Google and Outlook entries wait on CE-10, whose live flips are owner gates (`calendar_events_reminders.md` §8.3).
+
+**The trigger.** A Calendar entry of the member starts in the next 60 minutes, and it matches a customer in one of two ways:
+
+1. The entry holds a `crm_deal_id` or a `crm_contact_id`.
+2. A guest address in `calendar_entry_attendees` equals the email of a CRM contact.
+
+**Build.**
+
+- **A new kind.** No code holds `meeting_prep_ready` today. Only `proactive_reach.md` §4.4 names it. This slice adds it to `REACH_CLASS` in `reach/classes.py` as `interrupt`. It also adds its row to the card catalogue of `my_day_feed.md` §5.1, which owns the catalogue.
+- A My Day provider of the kind `meeting_prep_ready`. One entry gives one card. The why line is a template, for example "Call with Northwind at 15:00. 2 open deals, 1 open ticket."
+- The body is the customer card of CRM-SIG-1, cut to the brief. It shows open deals, the last contact, open tickets, mail that waits for an answer, open tasks and the last meeting note.
+- One short paragraph from a model is a text composition (`my_day_feed.md` MD-6c). It cites a source for each claim. It runs at most once for each entry, and it spends credits. With no credits, the card shows the template body only.
+- When a Notes meeting links to the entry, the same paragraph goes into its `copilot_brief` through `set_brief` (`routes/notes/copilot_context.py`). So the live copilot reads the same brief.
+
+**Done when.**
+
+1. An entry at 15:00 has a guest who is a CRM contact. It gives one card at 14:00, and no card before 14:00.
+2. An entry with no customer match gives no card.
+3. The card holds only what the member can open, by the rules of CRM-SIG-1.
+4. A cancelled entry clears its card.
+5. The model paragraph runs once for each entry. A refresh reads the stored paragraph.
+6. With no credits, the card shows the template body and no error.
+7. `tests/unit/test_reach_plan.py` passes with the new kind in `REACH_CLASS`.
+
+**Fence.** `tests/unit/test_crm_precall_brief.py` (planned), R8 for the guest match.
+
+#### CRM-SIG-3. Deal risk: no sponsor, silent contact, stalled (task 2437)
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD. No migration. The sponsor roles are one CRM setting.
+
+**The rules.** Code finds each reason, and no model does.
+
+| Reason | It fires when |
+|---|---|
+| **Stalled** | The deal passed its stage limit (`deal_quiet`) or its close date (`deal_close_passed`). Both are built (MD-3e). CRM-M7 builds their actions |
+| **No sponsor** | An open deal past the first stage of its pipeline has no linked contact with a sponsor role |
+| **Silent contact** | The main contact (`is_primary`) or a sponsor contact of an open deal sent no mail, and the deal logged no call, meeting or note with that contact, for 14 days |
+
+- **The sponsor roles.** The org names them in CRM settings. The working default is a role that holds "sponsor", "champion" or "decision maker", in any case.
+- **The level.** One reason is Low, two reasons are Medium, and three reasons are High. A passed close date with one more reason is High too. These are working defaults.
+- **The suggested step.** Each reason has one step from a fixed list. The steps are "Ask for an introduction to a sponsor", "Call the contact", "Set the next step" and "Move the close date". When a card has two reasons or more, `decide` picks the step to show first (a typed question on `tier-decide`). With `decide` off, the order of the list wins.
+- **One card.** A new kind, `deal_at_risk`, folds `deal_quiet` and `deal_close_passed` into its reasons when they fire on one deal (`my_day_feed.md` §4.5). This slice adds its row to `my_day_feed.md` §5.5, which owns the catalogue. The lead sees it on the CRM-M7 delay.
+- **The Reach class.** `deal_at_risk` goes into `REACH_CLASS` as `brief`. `deal_quiet` is `interrupt` there (`reach/classes.py:37`), so the fold could lower a class. It does not, because `reach_class` takes the strongest of the main kind and the folded kinds. A card that folds `deal_quiet` stays `interrupt`. A card with no folded `deal_quiet` is `brief`.
+- **Mail that the reader cannot see.** The rule reads only the mailboxes that the reader may open. So a "silent" reason can be wrong for that reader, and the card says "in the mail you can see".
+- **On the record.** The deal shows a risk chip with its reasons.
+
+**Done when.**
+
+1. A deal past its first stage with no sponsor contact gives one card. The reason is "No sponsor", and the step is "Ask for an introduction to a sponsor".
+2. A sponsor contact with no activity for 15 days adds the reason "Sponsor silent for 15 days". A new inbound mail from that contact clears it at the next refresh.
+3. A deal with three reasons shows the level High on one card, not three cards.
+4. A reason never quotes or counts mail from a mailbox that the reader cannot open.
+5. In a Mirror org, the rules read the roles that the sync wrote.
+6. No read, card or chat answer gives a risk level for a person.
+7. A test over `reach/classes.py` holds two facts. A `deal_at_risk` card that folds `deal_quiet` has the class `interrupt`. A `deal_at_risk` card with no fold has the class `brief`.
+
+**Fence.** `tests/unit/test_crm_deal_risk.py` (planned), R8.
+
+#### CRM-SIG-4. Renewal and churn watch (task 2438)
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD. The owner's answer to Q-SIG-1 **unblocks** it: where a renewal date lives (2026-11-08). Its ticket reason needs the task-to-CRM link of §14.3, which may need a migration (R1: the number is taken at build time).
+
+**Build.**
+
+- **A renewal.** With the recommendation of Q-SIG-1, a renewal is an open deal in a pipeline that the org marks as a renewal pipeline (CRM-M3, D166). Its close date is the renewal date.
+- **The watch list.** Each renewal in the next 90 days, with its owner, its level and its reasons. It is a saved view of All deals (CRM-M5), and a chat question: "Which renewals are at risk?"
+- **The reasons.** Code finds each one:
+  - A thread with a contact of the company waits for our answer, or our mail waits for theirs. These are the facts of `needs_reply` and `no_answer`, through the Email read.
+  - A ticket is open for more than 7 days. This reason needs E21 and the task-to-CRM link. Until then, the list says "Tickets: not connected".
+  - A contact is silent (CRM-SIG-3).
+  - No meeting with the company took place in 60 days.
+  - Usage dropped. This reason counts only when the org names a usage source (Q-SIG-2).
+- **The card.** `renewal_at_risk` goes to the owner 90, 60 and 30 days before the renewal, when the level is Medium or higher. Its Reach class is `brief`.
+
+**Done when.**
+
+1. A renewal in 80 days with a 10-day-old open ticket and an unanswered thread shows on the list. It has the level Medium, its owner and both reasons.
+2. A renewal in 120 days is not on the list.
+3. A renewal with no reason shows the level Low and gives no card.
+4. With no usage source, the list says "Usage: not connected" and computes the other reasons.
+5. With no task-to-CRM link, the list says "Tickets: not connected" and computes the other reasons.
+6. A member of another org sees nothing (R5, R8).
+
+**Fence.** `tests/unit/test_crm_churn_watch.py` (planned).
+
+#### CRM-SIG-5. Competitor mentions and battle cards (task 2439)
+
+**Gate.** AGENT-SAFE. **HIGH tier**, because a Knowledge page can quote mail, and mail is private (D-EM-4). **Unblocked** by the answer to Q-SIG-4, who reads a battle card (owner, 2026-11-08).
+
+**Build.**
+
+- **The competitors.** Each competitor is an entity in `kb_entities`, with its aliases. An admin adds the page type `competitor`, which `knowledge_curation.md` §6.1 allows. The CRM sweep of CRM-M13 may propose the list from notes.
+- **The sweep.** One run for each org each night, off-peak, with a credit cap. It reads new call and meeting notes (`crm_activities`, and Notes summaries when Notes is live). It also reads new mail threads with CRM contacts. Code matches the aliases first. `decide` reads only a matched sentence, and confirms that it names the competitor. The sweep treats all text as untrusted data (#1444).
+- **A mention.** Each confirmed mention becomes a fact on the competitor's entity, with its source, its deal and its date (`knowledge_curation.md` §10).
+- **The battle card.** It is the Knowledge page of the competitor. Mira drafts or updates it through `propose_page` (KB-5a): what customers say, the objections, the deals won and lost against it, and the sources. A member publishes it.
+- **The privacy rule.** A battle card quotes only a source that every reader of its space can open. A mention from a private mailbox is not on the page, and the page counts it nowhere. So the page shows no word, sender, subject or count from that mail. The owner of the mailbox sees a count of their own mentions on their own card, and can add a quote with one act.
+
+**Done when.**
+
+1. A test org has the competitor "Acme", and 6 call notes name it. After one sweep, the org has one draft page with 6 sources.
+2. A mention from a private mailbox changes nothing on the page: no word, no source and no count. Its owner sees it in the count of their own mentions.
+3. The page stays a draft until a member publishes it. No sweep publishes.
+4. A note where `decide` rejects the match adds no mention.
+5. The sweep runs at most once each day, and stops at its credit cap.
+
+**Fence.** `tests/unit/test_crm_battle_cards.py` (planned), with a private-mailbox case.
+
+#### CRM-SIG-6. Customer requests linked to the roadmap (task 2440)
+
+**Gate.** AGENT-SAFE. **HIGH tier.** It may need a migration for a new ref kind and for the task-to-CRM link of §14.3 (R1: the number is taken at build time). It quotes customers across apps. The owner's answer to Q-SIG-3 **unblocks** it: what a request is (2026-11-08).
+
+**Build.**
+
+- **A request.** With the recommendation of Q-SIG-3, a request is a task of the type "Request" in one org project, "Customer requests". That is the queue shape of E21, on the one task store.
+- **The classify step.** The nightly sweep reads new call notes and new tickets. `decide` puts each item into one class: question, feature request, defect or other (one typed question on `tier-decide`, D93). CRM-SIG-7 reuses this step.
+- **The match.** A feature request matches an open request through the one search seam (D105), over the requests project. A match adds a mention. No match proposes a new request.
+- **The card.** Each proposal is one card in "Needs your input" for the product lead. Nothing writes until the lead presses Add.
+- **A mention.** It names its source (a call note or a ticket), its CRM company and a quote of 200 characters at most. The quote comes only from a source that every member of the requests project can open. The audit picks the store: a new kind of `pm_task_refs` (next free migration number at build time, R1), or the existing `url` kind. Today no task links to a CRM company (§14.3), so the company of a mention needs that link.
+- **The answer.** The lead links a request to a Goal (D199) with a task link. Or the lead closes it as "Will not build", and a `pm_decisions` row keeps the reason.
+- **The views.** "Requests by Goal" and "Requests with no answer". The lead's Home shows the count of requests with no Goal and no decision.
+- **The loop back.** When a linked Goal closes, the owner of each company with a mention gets one card: "Northwind asked for this. It shipped." No message goes to the customer.
+
+**Done when.**
+
+1. 3 notes and 2 tickets ask for an export to Excel. One sweep proposes one request with 5 mentions, on one card.
+2. Nothing writes before the lead presses Add.
+3. A request linked to a Goal shows under that Goal. A request closed as "Will not build" has a `pm_decisions` row with the reason.
+4. "Requests with no answer" lists each request with no Goal link and no decision.
+5. No quote comes from a source that a member of the requests project cannot open.
+6. A member of another org sees nothing (R5, R8).
+
+**Fence.** `tests/unit/test_crm_feedback_requests.py` (planned), R8.
+
+#### CRM-SIG-7. Repeated questions to an article or a fix task (task 2441)
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD.
+
+**Build.**
+
+- **The sources.** Tickets (E21) and the threads of a support shared mailbox with a `read` grant (task 733). Later, the team inbox joins (O20, task 2424, in the open PR 1999). Until E21 has a spec, the slice reads the support mailbox only, and the card names the sources that it read. The slice needs no task-to-CRM link and no migration. The classify step of CRM-SIG-6 marks the questions.
+- **The cluster.** Questions of the last 30 days group through the one search seam. `decide` confirms that two questions ask the same thing. A group of 5 or more is a repeated question. Both numbers are working defaults.
+- **Knowledge first.** When a published page answers the question, the card offers "Link the article in replies". When no page answers it, Mira drafts one through `propose_page` (KB-5a), from the replies that staff sent, and the card offers "Review the draft".
+- **A defect.** When `decide` finds that the question comes from a product defect, the card also offers "Make a fix task". The task opens as a draft in a project that the lead picks.
+- **The card.** One card for each cluster, to the support lead: a member with `manage` on the support mailbox, or the owner of the queue project. Its Reach class is `brief`. "Not now" stops the same cluster for 30 days.
+
+**Done when.**
+
+1. 6 threads of the support mailbox in 20 days ask how to reset a printer. They give one card, with a draft article from the staff replies. After E21, 6 such tickets give the same card.
+2. 4 such threads give no card.
+3. A cluster that a published page answers offers the link, and drafts nothing.
+4. The draft stays a draft. A fix task writes only after the lead presses the button.
+5. A ticket from a queue project that the lead cannot open never joins a cluster for that lead.
+
+**Fence.** `tests/unit/test_support_question_clusters.py` (planned).
+
+### 14.5 Order
+
+CRM-SIG-1 comes first. Then CRM-SIG-2 and CRM-SIG-3 can go in parallel. CRM-SIG-4 follows CRM-SIG-3 and the answer to Q-SIG-1. CRM-SIG-5 follows CRM-SIG-1. CRM-SIG-6 and CRM-SIG-7 wait on E21 (task 2202). CRM-SIG-6 comes before CRM-SIG-7, because it builds the classify step.
+
+### 14.6 Questions for the owner
+
+The owner answered all four on 2026-11-08 and accepted each recommendation. The Recommendation column now holds the chosen answer.
+
+| ID | Question | Recommendation | Blocks |
+|---|---|---|---|
+| **Q-SIG-1** | Where does a renewal date live? | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). A deal in a renewal pipeline, with the close date as the renewal date (CRM-M3, D166). It needs no new column | CRM-SIG-4 |
+| **Q-SIG-2** | Where does customer usage come from? The CRM holds no usage data today | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Ship v1 with no usage. Later, read one number for each company each month from a connection (`ai_studio.md` O12, O13) or a Studio aggregate (C2b) | The usage reason of CRM-SIG-4 |
+| **Q-SIG-3** | Is a customer request a task in a "Customer requests" project? | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Yes. A request is a task in "Customer requests". It keeps the one task store, the E21 queue shape, and the words Goal, Epic and Task (D199) | CRM-SIG-6 |
+| **Q-SIG-4** | Who reads a battle card? | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). A "Sales" space that the sales group can read. Quotes come only from sources that every reader can open | CRM-SIG-5 |
+
+**Working defaults.** These are not owner decisions. The slice audit may change them.
+
+| ID | Default |
+|---|---|
+| W-SIG-1 | A pre-call card shows 60 minutes before the start. |
+| W-SIG-2 | A contact is silent after 14 days. |
+| W-SIG-3 | A sponsor role holds "sponsor", "champion" or "decision maker". |
+| W-SIG-4 | One reason is Low, two are Medium, three are High. |
+| W-SIG-5 | A repeated question is 5 or more in 30 days. |
+| W-SIG-6 | A renewal card shows 90, 60 and 30 days before the renewal. |
+
+### 14.7 Single owner
+
+This section owns CRM-SIG. `my_day_feed.md` keeps the card frame and the judge, and `proactive_reach.md` keeps delivery. `knowledge_base.md` keeps `propose_page`, and E21 (task 2202) keeps the ticket queue. Those documents link here and add nothing.

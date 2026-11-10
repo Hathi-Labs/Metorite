@@ -66,6 +66,7 @@ import {
   completionPercent,
 } from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
+import { ProjectUpdateLine } from "./ProjectUpdateLine";
 import { CATEGORY_LABEL, STATUS_CATEGORIES } from "@/lib/statusCategory";
 
 /** The order lanes read in: the one lifecycle order of `lib/statusCategory.ts`. */
@@ -479,6 +480,14 @@ export default function NodeDashboard({
           </Button>
         ) : null}
       </div>
+
+      {/* WS-39 LP-1a: the newest update of a project, from the same read as
+          the roll-up (`summary.latest_update`), so nothing moves when it
+          arrives. No key (the flag is off) and null (no update) draw nothing
+          and keep no space. */}
+      {(level === "project" || level === "subproject") && summary.latest_update ? (
+        <ProjectUpdateLine update={summary.latest_update} />
+      ) : null}
 
       {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
           neither 2 nor 3, so the last tile used to sit alone on its own row

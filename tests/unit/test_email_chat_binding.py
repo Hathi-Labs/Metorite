@@ -208,6 +208,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
             # A read that uses POST (EM-G11c1): the bulk card lists each
             # message. It writes nothing, so it is not in ``writes``.
             return {"summaries": []}
+        if path == "/email/metorite-files/resolve":
+            # Task 2491: the check of each workspace file before the card. A
+            # read, so it is not in ``writes``. Each file resolves.
+            return {"files": [], "refused": []}
         return await g.write("POST", path, body)
 
     async def _patch(path: str, body: Any) -> Any:

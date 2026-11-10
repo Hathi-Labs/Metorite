@@ -474,6 +474,7 @@ def _run_as(who: str, run_id: str, app: str = "tasks") -> None:
     bind_run_context(user=who, member_verified=True, app=app, run_id=run_id)
 
 
+@pytest.mark.usefixtures("no_copilot_cli_download")
 class TestTheCopilotPathCarriesTheRun:
     """🔴 H-181. Two first-party agents run on the Copilot SDK: task-manager
     and app-builder. apis-config moved to native MAF on 2026-10-03, and

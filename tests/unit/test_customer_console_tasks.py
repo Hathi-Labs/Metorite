@@ -2285,17 +2285,25 @@ class TestTheProviderCallDispatchesOnTheCapabilityVerb:
 class TestTheEndpointHasNoTenantCaller:
     """Clause 7. The hop is CP-11's, behind `ROUTER_SERVING_ENABLED`."""
 
-    @pytest.mark.parametrize("route", [
-        "/v1/audio/transcriptions",
-        "/v1/images/generations",
-        "/v1/audio/speech",
-    ])
+    # The tenant files that may post to each door. VOX-1
+    # (`projects_ai_chat.md` §31) gives the transcription door its one
+    # caller, `transcribe_on_console`. The two media doors have none yet.
+    CALLERS = {
+        "/v1/audio/transcriptions": [
+            "packages/acb_auth/acb_auth/console_resolve.py",
+        ],
+        "/v1/images/generations": [],
+        "/v1/audio/speech": [],
+    }
+
+    @pytest.mark.parametrize("route", sorted(CALLERS))
     def test_no_tenant_code_posts_to_the_serving_route(self, route):
         """D57.3's lesson: an endpoint nobody calls is CP-4's mistake. The
         caller slice follows, and until it does this stays true.
 
         §6A.10c clause 3 names "no tenant caller" for both media routes, so
-        all three doors carry the same claim.
+        both stay empty. The transcription door has exactly one caller, the
+        Console client of VOX-1, so a second path to the door fails here.
         """
         hits = []
         for base in ("apps", "packages", "workbench/control_plane/src"):
@@ -2307,8 +2315,8 @@ class TestTheEndpointHasNoTenantCaller:
                     continue
                 if route in path.read_text(
                         encoding="utf-8", errors="ignore"):
-                    hits.append(str(path.relative_to(ROOT)))
-        assert hits == []
+                    hits.append(path.relative_to(ROOT).as_posix())
+        assert sorted(hits) == self.CALLERS[route]
 
 
 def _count_all(db) -> int:

@@ -74,6 +74,7 @@ from gateway.routes.email.core import (
 )
 from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.quoting import strip_for_reading
+from gateway.routes.email.signature import resolve_signature
 from gateway.routes.email.transport.send import (
     SendEmailRequest,
     _as_uuid,
@@ -87,13 +88,13 @@ EXCERPT_CHARS = 600
 
 #: The mail a reply card answers: a mail of a mailbox of the caller. The
 #: owner join keeps a mail of another member out, as ``_reply_target`` does.
+#: The signature of the reply comes from the resolver (``_load_mail``, WS-17
+#: SG-2), never from a subselect here.
 REPLY_ROW_SQL = (
     "SELECT em.id::text AS id, em.account_id::text AS account_id, "
     "em.provider_message_id, em.thread_id, em.subject, em.from_address, "
     "em.to_addresses, em.cc_addresses, em.received_at, em.snippet, em.body_text, "
-    "em.folder, em.internet_message_id, ea.provider, "
-    "(SELECT s.signature FROM email_assistant_settings s "
-    " WHERE s.account_id = em.account_id) AS signature "
+    "em.folder, em.internet_message_id, ea.provider "
     "FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id "
     "WHERE em.id = CAST(:mid AS uuid) AND ea.user_id = :uid"
 )
@@ -406,7 +407,7 @@ async def _read_reply_to(db: Any, owner: str, row: Any) -> list[str]:
 class _Mail:
     """The parts of the original mail that a reply card needs."""
 
-    def __init__(self, row: Any, me: Any, reply_to: list[str]) -> None:
+    def __init__(self, row: Any, me: Any, reply_to: list[str], signature: str = "") -> None:
         frm = row.from_address if isinstance(row.from_address, dict) else (
             json.loads(row.from_address or "{}") if isinstance(row.from_address, str) else {})
         self.account_id = str(row.account_id)
@@ -426,7 +427,8 @@ class _Mail:
         body = strip_for_reading(row.body_text or "") or row.snippet or ""
         self.excerpt = " ".join(body.split())[:EXCERPT_CHARS]
         self.provider = str(getattr(row, "provider", "") or "")
-        self.signature = str(getattr(row, "signature", "") or "")
+        # The signature of a reply from the mailbox, from the resolver.
+        self.signature = signature or ""
         self.folder = str(getattr(row, "folder", "") or "").lower()
 
     def was_received(self) -> bool:
@@ -474,8 +476,11 @@ async def _load_mail(message_id: str, owner: str) -> _Mail:
     async with _tenant_session() as db:
         row = await _reply_row(db, message_id, owner)
         me = await resolve_self(db, str(row.account_id))
+        # WS-17 SG-2 (D-EM-66): the signature of a reply. While reply_mode is
+        # `full`, the default, it is the bytes of before.
+        signature = await resolve_signature(db, str(row.account_id), "reply")
         reply_to = await _read_reply_to(db, owner, row)
-    return _Mail(row, me, reply_to)
+    return _Mail(row, me, reply_to, signature)
 
 
 async def reply_recipients(
