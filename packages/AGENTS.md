@@ -60,6 +60,7 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - `base.py` holds the types and the readers. `build_call` is the one builder of a door call. `knowledge.py` holds the Knowledge rows, and `acb_skills/knowledge_manifest.py` re-exports them. Each A, B or C row names a door `op` or an `off_door` reason (AD-2), and an `App` with neither fails at import.
 - Fences: `tests/unit/test_app_door_coverage.py`, `tests/unit/test_knowledge_chat_coverage.py`.
 - `crm.py` holds the CRM rows: one for each route of `gateway.routes.crm`, all `off_door` until MCP-P2a sets the door ops (CRM-M2a, D136.1). `acb_skills/chat_parity.py` decides each `/api/crm` action from these rows. Fence: `tests/unit/test_crm_ui_actions.py`. A new CRM route needs a row, and the count of `planned` rows only goes down.
+- `projects.py` holds `PROJECTS_DOOR`, the door table of Projects (MCP-G24, D208, `external_agent_access.md` §19.16). It has one row for each row of `skill_projects/manifest.py`, with the same class and tool, and it adds the door op or the `off_door` reason. A new Projects route needs a row in both files. The table is not in `APPS`, so the door serves none of its ops yet. Fence: `tests/unit/test_projects_door_coverage.py`.
 
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.

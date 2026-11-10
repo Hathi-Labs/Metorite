@@ -6012,6 +6012,21 @@ Fence: `tests/unit/test_app_capability_parity.py` (new, task of WS-MKT) proves t
 
 Re-check this number at merge. The first merge wins a D-number.
 
+### D208 — A Projects act with no typed MCP tool reaches the MCP through the app door (2026-11-11)
+
+The owner chose option (b) in chat on 2026-11-09 (Metorite tasks 2520 and 2521). MCP-G24 records it. `external_agent_access.md` §19.16 holds the design.
+
+1. **One path for the rest of Projects.** A Projects act that no typed tool serves reaches the MCP through the app door of §19 (D136.2). Nobody builds one typed tool for each act. The typed tools of §9 stay, and `MCP_ROUTES` stays their allowlist (§19.3).
+2. **The door table.** `acb_common/app_manifests/projects.py` holds one row for each route of the Projects chat manifest. Each row has the class and the chat tool of that row. It adds the door half only: an `op`, or an `off_door` reason (AD-2). The chat manifest stays in `skill_projects` (AD-1), and the fence holds the two row for row. So the table is not a second list (D136.1).
+3. **No pair is in both sets (AD-3).** A row whose route is in `MCP_ROUTES` names no op. It says that a typed tool serves it.
+4. **The first acts.** Cycles, saved views, status editing and template apply get door ops. Import stays class X, because its routes need `admin:access:manage` (§19.11). Goals and teams have no route. A goal object is later work (task 977), and a team is a filter (D87).
+5. **The approval path.** Each class B or C op asks the member for each call (§19.5, D124.2). No op is a proposal, and no op sends. No op deletes a row for good, writes a grant, answers for a person, or reaches another person.
+6. **Dark.** The table is not in `app_manifests.APPS`, so the door serves no Projects op. A later slice registers it after MCP-P1b-2 builds the spend. That slice also decides how the Projects header of `door = "tools"` lists the ops. Until then, the table needs no flag.
+
+Fence: `tests/unit/test_projects_door_coverage.py`. MCP-G25 adds `tests/unit/test_mcp_projects_parity.py` on the same table.
+
+Re-check this number at merge. The first merge wins a D-number.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 

@@ -38,6 +38,8 @@ No caller spends a request yet. The spend on branch 0 is MCP-P1b-2. §19.13 hold
 
 §9.2 holds the new write limit and the plan document. §19.16 holds the Projects rule. §15 holds the slices. The order is task 2427, MCP-G28, then MCP-G26, MCP-G27, MCP-G29 and MCP-G3.
 
+**MCP-G24 is BUILT 2026-11-11 and not merged (branch `mcp-g24-door`, Metorite task 2520, D208). It ships dark.** `acb_common/app_manifests/projects.py` gives each of the 210 Projects routes a class and a door. 16 routes get a door op: cycles, saved views, status editing and template apply. The table is not in `app_manifests.APPS`, so the door serves none of them yet. Fence: `tests/unit/test_projects_door_coverage.py`. MCP-G25 is not built (§19.16).
+
 The write cap is now two settings, `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S`, with the defaults 120 and 600. So nothing changes until the owner sets them. A move refusal says why and what to do next. An agent's subtask with no `status_id` starts in the default status. No migration, and no new pair. The fence is `tests/unit/test_mcp_edge_bulk_updates.py`.
 
 **MCP-G9 is BUILT 2026-11-08 and not merged (branch `mt-45010748-g9-comment-edit`, Metorite task 843).** An agent changes or deletes a comment that its own client wrote, with `update_comment` and `delete_comment` (§9.2). Its own client means that the member wrote the comment and that `meta.via` equals the stamp of the connection (`AgentScope.actor_via`). Any other comment gets 403, and a comment outside the reach of the connection gets 404. Fix round 1 adds two refusals with the same 403: a comment that a person edited, and a comment of an agent run (§9.2, rules 1 and 2). Fix rounds 2 and 3 add rule 3, the last word: the same 403 refuses a comment after which someone else wrote a comment on the task. Each change writes one `system` row with the actor and the stamp, and with no text of the comment. A person's delete does not change. A person's edit now also sets `meta.person_edited`. The two pairs join `MCP_WRITE_ROUTES`, with no migration. They go live at the merge under `agent_access_writes_enabled`. Fence: `tests/unit/test_mcp_edge_comment_edit_r8.py`.
@@ -2611,7 +2613,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | MCP-G3 | **Metorite task 357. It stays the bulk tree create, and it is a case of `apply_plan` (MCP-G29).** It shares the batch path of MCP-G28 and builds after MCP-G29 | The tests of MCP-G28 and MCP-G29 cover it. It adds no second path | AGENT-SAFE. HIGH tier |
 | MCP-G22 | **SPECIFIED 2026-11-09, not built (Metorite task 2522).** **Reads that page.** `list_tasks` takes a keyset cursor, an `updated_since` filter and a choice of fields | `tests/unit/test_mcp_list_tasks_keyset.py` (new). A page walk misses no row and repeats none when a task changes between two pages | AGENT-SAFE. STANDARD tier |
 | MCP-G23 | **SPECIFIED 2026-11-09, not built (Metorite task 2523).** **The conformance run for Claude Code and Codex.** Each client runs one scripted session against the local stack. KIT-6 (Metorite task 2556, `orchestration_playbook.md`) extends the run to Copilot, Antigravity and Gemini CLI | The run passes for both clients and its log names each tool that it called | AGENT-SAFE. STANDARD tier |
-| MCP-G24 | **SPECIFIED 2026-11-09, not built (Metorite task 2520).** **Projects acts reach the MCP through the app-door manifest (§19.16).** Each Projects route of the chat manifest gets a route class in the manifest. The first acts: cycles, saved views, import, status editing, template apply, Goals and teams | Each listed act has a row with a class and an `op`, and a member can reach it through the door. `test_mcp_projects_parity.py` (new) passes | AGENT-SAFE. HIGH tier, because it adds a write surface |
+| MCP-G24 | **BUILT 2026-11-11, not merged (branch `mcp-g24-door`, Metorite task 2520, D208). Dark: the table is not in `APPS`.** **Projects acts reach the MCP through the app-door manifest (§19.16).** Each Projects route of the chat manifest gets a route class in the manifest. The first acts: cycles, saved views, import, status editing, template apply, Goals and teams | Each listed act has a row with a class and an `op`, and a member can reach it through the door. `test_mcp_projects_parity.py` (new) passes | AGENT-SAFE. HIGH tier, because it adds a write surface |
 | MCP-G25 | **SPECIFIED 2026-11-09, not built (Metorite task 2521).** **The parity fence (§19.16).** A Projects route that is in the chat manifest, and has no MCP tool and no stated off-door reason, fails the test | `tests/unit/test_mcp_projects_parity.py` (new). Add a route with no tool and no reason, and the test goes red | AGENT-SAFE. STANDARD tier |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
@@ -3470,7 +3472,7 @@ So the door extends the run of EA-12 and the typed request of EA3-40 (AD-5). It 
 - `base.py` holds the shared types `App`, `Route` and `Page`, and the readers `route_for`, `allowed`, `door_ops`, `door_routes` and `build_call`.
 - `knowledge.py` holds the Knowledge rows. `acb_skills/knowledge_manifest.py` stays as a re-export, so its readers do not change.
 - `crm.py` is new, and WS-CRM CRM-M2a builds it (`crm_conversational.md` §8). It holds one row for each route of the CRM router, and every row is `off_door`. MCP-P2a does not build it again. MCP-P2a sets the door op of each row. `email.py` is new in MCP-P2a.
-- The Projects manifest stays in `skill_projects`. Its door stays the typed tools of §9, and `MCP_ROUTES` stays its allowlist. MCP-G24 adds a second path for the routes that have no typed tool (§19.16).
+- The Projects manifest stays in `skill_projects`. Its door stays the typed tools of §9, and `MCP_ROUTES` stays its allowlist. MCP-G24 adds a second path for the routes that have no typed tool (§19.16). That path is `projects.py`, the door table of Projects (D208). It is not in `APPS` yet.
 
 Why a new home: `acb_auth` and the edge cannot import `acb_skills`, because its `__init__` imports the chat tools. They cannot import a skill package either.
 
@@ -4035,7 +4037,7 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 
 ### 19.16 Projects acts through the app door (MCP-G24, MCP-G25, 2026-11-09)
 
-**Status: SPECIFIED, not built.** The owner decided this in chat on 2026-11-09 (Metorite tasks 2520 and 2521).
+**Status: MCP-G24 is BUILT 2026-11-11 and not merged (branch `mcp-g24-door`, Metorite task 2520). It ships dark. Nobody has built MCP-G25 yet (task 2521).** The owner decided this in chat on 2026-11-09 (Metorite tasks 2520 and 2521). D208 records it.
 
 **The rule.** A Projects act that has no typed tool reaches the MCP through the app-door manifest of §19.3. CRM and Email use the same path. Nobody builds a typed tool for each act. The typed tools of §9 stay.
 
@@ -4057,5 +4059,19 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 5. Template apply.
 6. Goals.
 7. Teams.
+
+**What MCP-G24 built (2026-11-11).** `packages/acb_common/acb_common/app_manifests/projects.py` holds `PROJECTS_DOOR`. It has one row for each of the 210 routes of the chat manifest, with the class and the chat tool of that row. The chat manifest has 72 rows of class A, 65 of class B, 44 of class C and 29 of class X.
+
+- **16 door ops.** Cycles: `list_cycles`, `get_cycle`, `create_cycle`, `update_cycle`, `add_cycle_task`, `remove_cycle_task`, `start_cycle` and `close_cycle`. Saved views: `list_views`, `create_view` and `update_view`. Status editing: `get_status_set`, `create_status`, `update_status` and `set_status_set`. Template apply: `apply_template`. Four are class A, eight are class B and four are class C.
+- **Each change asks.** Each B or C op asks the member for each call (§19.5). No op is a proposal, and no op sends. Until MCP-P1b-2, AD-18 refuses each change.
+- **The typed tools keep their routes.** 44 rows name the reason `TYPED`, because their route is in `MCP_ROUTES` (AD-3). Two more rows of `MCP_ROUTES` are class X: the bytes of a file and the agent delete.
+- **Off the door.** Ten rows delete a row for good. Seven rows are a grant or an authority pin. Four rows reach another person. One row is the answer of a decision, and one is the bulk export. Two rows are the task delete, which the typed tool `delete_task` serves through the agent-delete route. One row is the count of a delete card, and one is the preview of a write. 94 rows wait for a later slice, with the reason `LATER`.
+- **Import stays class X.** Each of its six routes needs `admin:access:manage` (§19.11), and its upload is a file.
+- **Goals and teams have no route** in the Projects router on 2026-11-11. A goal object is later work (task 977, `research/linear_parity_2026-11.md` P2). A team is a filter (D87). The fence fails when a route with `/goal` or `/team` in its path comes, so that its author gives it a door op.
+- **Dark.** `PROJECTS_DOOR` is not in `app_manifests.APPS`. So `list_apps`, `describe_app`, branch 0 and the Studio catalog serve none of its ops. The header `PROJECTS` keeps `door = "tools"`.
+
+**What stays for a later slice.** Its own task registers the table, after MCP-P1b-2 builds the spend. That slice decides how the header of `door = "tools"` and the door ops show in `list_apps`. It also checks the pin rule of D-EA-12 on each route of an op. The door flag is then `agent_door_apps` with `projects` (AD-15).
+
+**The fence of MCP-G24.** `tests/unit/test_projects_door_coverage.py` walks the real Projects router. It fails on a route with no row, and on a row with no route. It fails on a row whose class or tool differs from the chat manifest. It fails on an op on a pair of `MCP_ROUTES`, on a route of §19.11, or on a delete for good. It also fails when the table joins `APPS`.
 
 **The fence (MCP-G25).** A Projects route that is in the chat manifest, and has no MCP tool and no stated off-door reason, fails `tests/unit/test_mcp_projects_parity.py` (new). §9.5 and its fence still hold the typed tools.
