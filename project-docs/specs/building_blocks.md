@@ -328,5 +328,7 @@ Each epic writes its owning spec in its first slice. Until then this table and t
 | WS-HX app harness (2757) | HX-n | a contribution point section of `package_host.md` (HX-0, task 2762) | Signals and delivery, setup items, the manifest |
 | WS-CH CRM sales harness (2758) | SLH-n | `crm_complete.md` (SLH-0, task 2770) | Signals and delivery, setup items |
 | WS-MIR CRM mirror and connectors (2790) | MIR-n | `crm_connectors.md` (MIR-0, task 2791) | Import and mapping, connections |
+| WS-MKT app marketplace (2818) | MKT-n | `app_marketplace.md` (MKT-0, task 2820) | The manifest, actions and the door, records and objects |
+| WS-OPS operations apps (2819) | OPM-n | `operations_apps.md` (OPM-0, task 2824) | Records and objects, products and prices, the task store, workflows, files |
 | SCALE (2566) | SC-n | `agent_coordination.md` and `dev_capacity.md` | none (process) |
 

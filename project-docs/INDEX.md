@@ -133,6 +133,8 @@ limitations). Do not add product specs to `docs/`.
 | Learning loop, WS-LL | Epic 2624, LL-0 to LL-13 (tasks 2625 to 2639) | `orchestration_playbook.md` §6c and §7a |
 | Agent kit, WS-KIT | Epic 2547 | `orchestration_playbook.md` §6a |
 | Delegation and hand-offs | Part of the playbook | `orchestration_playbook.md` §6b |
+| specs/app_marketplace.md | WS-MKT epic task 2818, MKT-0 task 2820 | package_host.md |
+| specs/operations_apps.md | WS-OPS epic task 2819, OPM-0 task 2824 | ai_studio.md (K3, K4) |
 
 An agent builds no slice of these epics before its spec is written, except the spec slice itself.
 
