@@ -26,7 +26,9 @@
  * Pure and DOM-guarded, so the node-env vitest holds it.
  */
 
+import { APP_REQUESTS_KEY } from "@/app/integrations/lib/appRequests";
 import { placementOf } from "@/lib/chatPlacement";
+import { invalidate } from "@/lib/dataCache";
 import { bareToolName } from "@/lib/toolSteps";
 
 /** The window event name. */
@@ -40,7 +42,8 @@ export type LiveApp =
   | "email"
   | "crm"
   | "knowledge"
-  | "artifacts";
+  | "artifacts"
+  | "studio";
 
 /**
  * Live apps that no assistant tool writes to, with the reason. The fence
@@ -64,9 +67,13 @@ const EMAIL_WRITES: ReadonlySet<string> = new Set([
   "set_sender_status", "categorize_senders", "send_digest", "sync_account", "resync_account",
 ]);
 
-/** CRM write tools (`agent-crm`). Each asks the member first. */
+/**
+ * CRM write tools (`agent-crm`). Each asks the member first. A new pipeline
+ * (CRM-M3a) wakes the pipeline read, so an open Deals board shows the switcher.
+ */
 const CRM_WRITES: ReadonlySet<string> = new Set([
   "create_lead", "update_deal_status", "log_activity", "convert_lead",
+  "crm_update_record", "crm_update_task", "crm_create_pipeline",
 ]);
 
 /** Knowledge write tools: a proposal lands in the review queue. */
@@ -75,6 +82,30 @@ const KNOWLEDGE_WRITES: ReadonlySet<string> = new Set(["propose_page", "propose_
 /** Tools that make a file in the chat's workspace, which Artifacts lists. */
 const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
   "write_artifact", "make_document", "make_report", "package_artifacts",
+]);
+
+/**
+ * The studio pack's write tools (`studio_tools.py`, the `studio` pack): they
+ * save and publish packages and skills, which the Studio library lists. The
+ * three record writes (STU-B2c-2b) add, change and delete a record of an app
+ * when a resend runs the approved change, so an open app re-reads. A first
+ * call only asks, and its re-read finds nothing new. The read tools (draft,
+ * validate, patch, outline, plan, describe, list_actions, package_get,
+ * record_list, skill_list, interview) change nothing stored.
+ */
+const STUDIO_WRITES: ReadonlySet<string> = new Set([
+  "studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
+  "studio_record_create", "studio_record_update", "studio_record_delete",
+]);
+
+/**
+ * The record writes of the studio pack (STU-B2c-2b). Each one ends a request of
+ * the approval store: an ask opens one, and a resend spends one. The cards of
+ * the chat (`components/studio/StudioToolCards.tsx`) and the list of
+ * Integrations read those requests under `APP_REQUESTS_KEY`.
+ */
+export const STUDIO_RECORD_WRITES: ReadonlySet<string> = new Set([
+  "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
 /** The assistant profile tools write the settings page, which no live app shows. */
@@ -94,6 +125,7 @@ export function appsForWrite(toolName: string): LiveApp[] {
   if (CRM_WRITES.has(bare)) return ["crm"];
   if (KNOWLEDGE_WRITES.has(bare)) return ["knowledge"];
   if (ARTIFACT_WRITES.has(bare)) return ["artifacts"];
+  if (STUDIO_WRITES.has(bare)) return ["studio"];
   if (PROFILE_WRITES.test(bare)) return [];
   if (placementOf(bare) === "write") return [...TASK_STORE];
   return [];
@@ -101,7 +133,7 @@ export function appsForWrite(toolName: string): LiveApp[] {
 
 /** Every app that some tool writes to. The fence walks this. */
 export const APPS_WITH_WRITE_TOOLS: readonly LiveApp[] = [
-  "projects", "tasks", "calendar", "email", "crm", "knowledge", "artifacts",
+  "projects", "tasks", "calendar", "email", "crm", "knowledge", "artifacts", "studio",
 ];
 
 // ── The announcement ────────────────────────────────────────────────────────
@@ -110,6 +142,11 @@ export const APPS_WITH_WRITE_TOOLS: readonly LiveApp[] = [
 export function announceAssistantWrite(toolName: string): LiveApp[] {
   const apps = appsForWrite(toolName);
   if (apps.length === 0) return apps;
+  // STU-B2c-2c: a record write of Mira changes a request of the approval store.
+  // A saved resend spends it, so drop the cached reads of the requests. Each
+  // card in the chat then reads its request again and shows Done with no
+  // control, and the list of Integrations drops the request.
+  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) invalidate(APP_REQUESTS_KEY);
   try {
     window.dispatchEvent(new CustomEvent(ASSISTANT_WROTE_EVENT, { detail: { apps, tool: bareToolName(toolName) } }));
   } catch {

@@ -20,6 +20,7 @@ import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   CHAT_LANDED_KEY,
   DOCK_DEFAULT,
   DOCK_MAX,
@@ -30,6 +31,9 @@ import {
   STALE_CHAT_MS,
   STRIP_TEXT_MAX,
   __resetAssistantForTests,
+  MAX_ASK_OUTCOMES,
+  askOutcome,
+  joinOnlyTakes,
   assistantState,
   barMayJoin,
   clampDockWidth,
@@ -40,6 +44,8 @@ import {
   currentAssistantFacts,
   dataText,
   dockFloats,
+  draftFor,
+  setAssistantSession,
   effectiveMode,
   navigateAct,
   modeOnOpen,
@@ -159,6 +165,80 @@ describe("the store", () => {
     expect(assistantState().ask).not.toBeNull();
     consumeAsk(ask!.seq);
     expect(assistantState().ask).toBeNull();
+  });
+
+  it("an open with words gives the seq of its ask, and the store keeps what became of it (STU-B2c-2c)", () => {
+    expect(openAssistant({ mode: "dock" })).toBeNull();
+    const seq = openAssistant({ text: "I approved the change", draft: "and a draft" });
+    expect(seq).toBe(assistantState().ask?.seq);
+    expect(seq).not.toBe(assistantState().draft?.seq);
+    expect(askOutcome(seq)).toBeNull();
+    consumeAsk(seq!, "sent");
+    expect(assistantState().ask).toBeNull();
+    expect(askOutcome(seq)).toBe("sent");
+    // A steer that the server refuses later: only the outcome changes.
+    consumeAsk(seq!, "kept");
+    expect(askOutcome(seq)).toBe("kept");
+    expect(askOutcome(null)).toBeNull();
+  });
+
+  it("an ask that no chat took is lost on a close, and when new words take its place", () => {
+    const first = openAssistant({ text: "one" });
+    const second = openAssistant({ text: "two" });
+    expect(askOutcome(first)).toBe("lost");
+    expect(askOutcome(second)).toBeNull();
+    closeAssistant();
+    expect(askOutcome(second)).toBe("lost");
+  });
+
+  it("a join-only open marks its ask, and a plain open does not (STU-B2c-2c fix round 1)", () => {
+    openAssistant({ text: "I approved the change on the card.", joinOnly: true, sessionId: "chat-1" });
+    expect(assistantState().ask).toMatchObject({ joinOnly: true });
+    expect(assistantState().sessionId).toBe("chat-1");
+    openAssistant({ text: "what is due today" });
+    expect(assistantState().ask && "joinOnly" in assistantState().ask!).toBe(false);
+    closeAssistant();
+  });
+
+  it("a join-only ask takes only the member's own private chat that is not archived, at any age", () => {
+    const old = { updatedAt: new Date(Date.now() - STALE_CHAT_MS * 10).toISOString(), messageCount: 9 };
+    expect(joinOnlyTakes({ ...old, isOwner: true, participantCount: 1 })).toBe(true);
+    expect(joinOnlyTakes({ ...old, participantCount: 1 })).toBe(true);
+    expect(joinOnlyTakes({ ...old, archivedAt: new Date().toISOString() })).toBe(false);
+    expect(joinOnlyTakes({ ...old, participantCount: 2 })).toBe(false);
+    expect(joinOnlyTakes({ ...old, isOwner: false })).toBe(false);
+    expect(joinOnlyTakes(null)).toBe(false);
+    expect(joinOnlyTakes(undefined)).toBe(false);
+  });
+
+  it("the dock never opens a fresh chat for a join-only ask: it joins or marks the ask lost", () => {
+    // Mutation: drop the join-only branch -> an archived chat or a room opens
+    // a new chat, and the card says Sent -> red.
+    const dock = read("lib/shell/AssistantDock.tsx").replace(/\r\n/g, "\n");
+    const effect = dock.slice(dock.indexOf("const ask = st.ask;"), dock.indexOf("openAssistant({ fresh: true });"));
+    expect(effect).toMatch(
+      /if \(ask\.joinOnly\) \{\s*if \(joinOnlyTakes\(cur\)\) setDecided\(\{ seq: ask\.seq, sessionId: st\.sessionId \}\);\s*else consumeAsk\(ask\.seq, "lost"\);\s*return;\s*\}/,
+    );
+    // The store marks it lost, and the card reads that.
+    const seq = openAssistant({ text: "I approved it", joinOnly: true });
+    consumeAsk(seq!, "lost");
+    expect(askOutcome(seq)).toBe("lost");
+    expect(assistantState().ask).toBeNull();
+  });
+
+  it("the store keeps at most MAX_ASK_OUTCOMES outcomes, the newest", () => {
+    expect(MAX_ASK_OUTCOMES).toBeGreaterThanOrEqual(500);
+    const seqs: number[] = [];
+    for (let i = 0; i < MAX_ASK_OUTCOMES + 5; i++) {
+      const s = openAssistant({ text: `ask ${i}` });
+      seqs.push(s!);
+      consumeAsk(s!, "sent");
+    }
+    expect(askOutcome(seqs[0])).toBeNull();
+    expect(askOutcome(seqs[4])).toBeNull();
+    expect(askOutcome(seqs[5])).toBe("sent");
+    expect(askOutcome(seqs[seqs.length - 1])).toBe("sent");
+    closeAssistant();
   });
 
   it("keeps a draft apart from an ask: the member checks it and sends it", () => {
@@ -508,8 +588,17 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
     expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
     const dock = read("lib/shell/AssistantDock.tsx");
-    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toContain("const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
     expect(dock).toMatch(/onNavigate: \(\{ path, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+  });
+
+  it("the guide line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind the guide flag", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("find_guide");
+    expect(GUIDE_PERSONA_LINE).toContain("call find_guide");
+    expect(GUIDE_PERSONA_LINE).toContain("Never invent a button.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;");
+    expect(dock).toContain("const guideOn = useGuideAllowed();");
   });
 
   it("beside the side panel, the page moves with the chat", () => {
@@ -663,11 +752,23 @@ describe("the source keeps the flag's two sides apart", () => {
     // The typed words of the field keep the typed mark (WS-63 D-PZ-37).
     const chat = read("components/AgentChat.tsx");
     expect(chat).toContain(
-      "if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {",
+      "const sent = submitText(autoSend.text, askTyped ? { typed: true, onKept } : { onKept });",
     );
     expect(chat).toMatch(
-      /boxMarkRef\.current = filled\(boxMarkRef\.current, askTyped\);\s*setInput\(\(prev\) => mergeCappedText\(prev, autoSend\.text\)\);/,
+      /if \(!sent\) \{\s*boxMarkRef\.current = filled\(boxMarkRef\.current, askTyped\);\s*setInput\(\(prev\) => mergeCappedText\(prev, autoSend\.text\)\);\s*\}/,
     );
+  });
+
+  it("the chat tells the store what became of an ask: sent, or kept in the box (STU-B2c-2c)", () => {
+    // A card says "Sent to the chat" only after a send. The effect reports
+    // the answer of submitText, and a steer that the server refuses later
+    // reports kept. Mutation: report "sent" always -> red.
+    const chat = read("components/AgentChat.tsx").replace(/\r\n/g, "\n");
+    expect(chat).toContain('const onKept = () => onAutoSendConsumed?.(seq, "kept");');
+    expect(chat).toContain('onAutoSendConsumed?.(seq, sent ? "sent" : "kept");');
+    expect(chat).toContain('if (out.kind === "refused") opts?.onKept?.();');
+    // The dock hands the store's own function to the chat.
+    expect(read("lib/shell/AssistantDock.tsx")).toContain("onAutoSendConsumed={consumeAsk}");
   });
 
   it("a finished-run toast opens its chat in place, as the side panel", () => {
@@ -686,7 +787,7 @@ describe("the source keeps the flag's two sides apart", () => {
     const shell = read("components/AppShell.tsx");
     expect(shell).toMatch(/\{chatOn && \(\s*<button[\s\S]{0,400}?openAssistant\(\{ mode: "full" \}\)/);
     expect(shell).toMatch(/data-ask-tab=""[\s\S]{0,600}?<NavBadge count=\{tabBadge\.count\}/);
-    expect(shell).toContain("{!isChatPage && !chatOn && tabBadge && (");
+    expect(shell).toContain("{!chatsTab && !chatOn && tabBadge && (");
   });
 
   it("a file card in the assistant opens the chat's own viewer, never a side panel nothing draws", () => {
@@ -952,7 +1053,11 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
   it("the shell opens it once, from the rule, and marks the session", () => {
     const src = read("lib/shell/ChatNudge.tsx");
     expect(src).toContain("const settled = landingSettled({");
-    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
+    // BUD-1: the hello waits on its own facts after `settled`, and both opens
+    // share the ONE decision (no second effect).
+    expect(src).toMatch(/if \(!settled\) return;[\s\S]*decided\.current = true;/);
+    expect(src).toContain("helloOpens({ guideAllowed, fresh, hasChats, guideActive })");
+    expect(src.match(/decided\.current = true;/g)?.length).toBe(1);
     expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
     expect(src).toContain('openAssistant({ mode: "full" });');
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
@@ -1020,7 +1125,10 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
   it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
     const src = dock();
     expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";');
-    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
+    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(3);
+    // Task 1717: the chat switcher shows a title, so it is 44 px tall and never 44 px wide.
+    expect(src).toContain("className={phoneTapTall}");
+    expect(src).toContain('const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";');
     expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
     expect(src).toMatch(/label: "This chat's files"/);
     expect(src).toContain("moreActs={moreActs}");
@@ -1084,5 +1192,38 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
     // The rule itself is pure: no fetch, no cache, no feed import.
     const rule = read("lib/starterPills.ts");
     expect(rule).not.toMatch(/\bfetch\(|useCachedResource|from "@\//);
+  });
+});
+
+describe("a draft that asks for a new chat (BETA-1 fix, owner report of the lost brief)", () => {
+  it("is held while the old chat is on screen, and goes to the new chat", () => {
+    setAssistantSession("old-chat");
+    openAssistant({ draft: "Build me an app: loans", fresh: true });
+    const draft = assistantState().draft;
+    expect(draft?.after).toBe("old-chat");
+    // The mounted chat reads the draft in its own effect. It gets none.
+    expect(draftFor(draft, "old-chat")).toBeNull();
+    // The fresh switch moves the dock to the new chat. That chat gets the brief.
+    expect(draftFor(draft, "new-chat")?.text).toBe("Build me an app: loans");
+  });
+
+  it("a draft with no fresh request goes to the chat on screen, as before", () => {
+    setAssistantSession("old-chat");
+    openAssistant({ draft: "find the BQ quote" });
+    expect(assistantState().draft?.after).toBeUndefined();
+    expect(draftFor(assistantState().draft, "old-chat")?.text).toBe("find the BQ quote");
+  });
+
+  it("holds the draft while no chat is chosen yet", () => {
+    setAssistantSession(null);
+    openAssistant({ draft: "x", fresh: true });
+    expect(draftFor(assistantState().draft, null)).toBeNull();
+    expect(draftFor(assistantState().draft, "first")?.text).toBe("x");
+  });
+
+  it("the dock reads the draft only through draftFor", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("draftFor(st.draft, active.id)?.text");
+    expect(dock).not.toContain("st.draft?.text");
   });
 });

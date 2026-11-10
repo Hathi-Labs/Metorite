@@ -10,7 +10,11 @@
 import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The hello's chips go to the tour by the router (WS-BUD BUD-1). The static
+// render has no app router.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { TEMPLATE_REGISTRY } from "./genUITemplates";
 import { classicMarkup } from "@/lib/theme/classicMarkup";
@@ -61,6 +65,7 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   report: { title: "Report", subtitle: "Q3", summary: "**Good**", kpis: [{ label: "Rev", value: 10 }],
     sections: [{ heading: "H", text: "t", bullets: ["x"] }, { heading: "V", visual: { kind: "table", columns: gridCols, rows: gridRows.map((r) => r.cells) } }] },
   reminderCard: { reminderId: "r1", title: "Call", when: "2026-11-01T09:00:00Z", zone: "Asia/Kolkata", state: "scheduled", kind: "action" },
+  buddyHello: { chips: [{ id: "tour", label: "Show me around" }] },
 };
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);

@@ -1471,14 +1471,21 @@ async def _batch_row(
     return _BatchRow(index, title, item, new)
 
 
-def _first_lane(statuses: list[dict[str, Any]]) -> str:
-    """The lane a task with no status lands in: the first by position, never
-    triage (``core.load_default_status``)."""
-    lanes = [s for s in statuses if s.get("category") != "triage"]
-    if lanes and all(s.get("position") is not None for s in lanes):
-        lanes.sort(key=lambda s: (int(s["position"]), str(s.get("name") or "")))
-    # With no position on the rows, the route's own order stands.
-    return str(lanes[0].get("name") or "") if lanes else ""
+def _first_lane(statuses: list[dict[str, Any]]) -> str | None:
+    """The lane a task with no status lands in, as ``core.load_default_status``
+    picks it: the first OPEN lane in the route's own order (stage, position,
+    name). Triage, Done and Cancelled never take a new task.
+
+    ``""`` when the read gave no rows, so the card says "the first lane".
+    ``None`` when the set holds no open lane, so the card says so and names
+    no lane (task 1792).
+    """
+    if not statuses:
+        return ""
+    for s in statuses:
+        if s.get("category") not in ("triage", "done", "cancelled"):
+            return str(s.get("name") or "")
+    return None
 
 
 def _day_words(value: str) -> str:
@@ -1566,13 +1573,15 @@ def _recent_note(row: dict[str, Any]) -> str:
 
 
 def _describe(
-    p: _BatchRow, names: dict[str, str], first_lane: str
+    p: _BatchRow, names: dict[str, str], first_lane: str | None
 ) -> None:
     """Fill the row's facts and its confirmation line."""
     payload = p.new.payload
     due = str(payload.get("due_at") or "")
     if "status_id" in payload or "parent_task_id" in payload:
         lane = p.new.status_label
+    elif first_lane is None:
+        lane = "no open status in this project, so the create is refused"
     else:
         lane = f"{first_lane} (the first lane)" if first_lane else "the first lane"
     # `_parent_lane_label` fences the lane name itself. Fence a bare name

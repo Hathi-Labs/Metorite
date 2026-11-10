@@ -30,7 +30,7 @@ Run (a private ladder database, one R8 suite at a time)::
   hold the filter, so ONE of them removed leaves the test green on purpose.
   ``test_r8_a_finished_run_and_a_working_run_do_not_show``.
 * R3. ``reads.py`` ``waiting_agent_requests``: reverse the rows.
-  ``test_r8_the_list_is_newest_first``.
+  ``test_r8_the_list_is_oldest_first``.
 * R4. ``reads.py`` ``waiting_agent_requests``: call ``post`` on the approval route.
   ``test_r8_the_read_writes_nothing``.
 """
@@ -147,14 +147,15 @@ async def test_r8_a_finished_run_and_a_working_run_do_not_show(_runs_on, monkeyp
     assert "OP6E done" not in out and "OP6E busy" not in out, out
 
 
-async def test_r8_the_list_is_newest_first(_runs_on, monkeypatch) -> None:
+async def test_r8_the_list_is_oldest_first(_runs_on, monkeypatch) -> None:
     wd = _runs_on
     old = _task(wd, wd.team, CREATOR, "OP6E old")
     new = _task(wd, wd.team, CREATOR, "OP6E new")
     _seed(wd, old, CREATOR, minutes=300, archive=False, body="Which lane?")
     _seed(wd, new, CREATOR, minutes=2)
     out = await _list(wd, monkeypatch, CREATOR)
-    assert out.index("OP6E new") < out.index("OP6E old"), out
+    # CIV-14k: the oldest question comes first, because it waited longest.
+    assert out.index("OP6E old") < out.index("OP6E new"), out
     assert "asks a question" in out and "5 hours ago" in out and "2 minutes ago" in out
 
 

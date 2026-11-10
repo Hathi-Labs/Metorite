@@ -94,6 +94,12 @@ jobs:
       - name: Routing eval of the one assistant (scripted)
         run: uv run python -m evals.routing.run --scripted
 
+      # WS-VOX VOX-5 (projects_ai_chat.md §31.5): the image-need set. A scripted
+      # model answers each case through the real orchestrator run, with
+      # IMAGE_ANALYSIS_ORGS on. No model, no network.
+      - name: Image-need eval of the one assistant (scripted)
+        run: uv run python -m evals.image_need.run --scripted
+
       # WS-KG KG-1 (company_context.md §12): the retrieval eval of
       # GET /search/company. This job has no database, so it checks that the
       # synthetic set is whole (50 questions, 10 for each source, every gold

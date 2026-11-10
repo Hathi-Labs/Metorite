@@ -210,16 +210,23 @@ def test_the_table_list_is_discovered_not_empty() -> None:
 
 
 def test_the_skill_tools_are_all_renamed() -> None:
-    """S9 moved the 29 tools all at once (H-151). None keeps the old prefix."""
+    """S9 moved the 29 tools all at once (CAL-2 added two, CAL-3 four more, CAL-4 two more: 37) (H-151). None keeps the old prefix."""
     tools = _skill_tools()
-    assert len(tools) == 29, sorted(tools)
+    assert len(tools) == 37, sorted(tools)
     assert all(name.startswith("my_tasks_") for name in tools), sorted(tools)
 
 
 def test_the_alias_map_names_only_old_tool_names() -> None:
     """The alias file may spell `gtd_<tool>` only for the 29 old tool names,
     so it cannot become a place where a table name hides."""
-    old_names = {"gtd_" + n.removeprefix("my_tasks_") for n in _skill_tools()}
+    # CAL-2 (task 1676) added two tools that were never `gtd_*`.
+    # CAL-3 (task 1677) added four more, the day rule tools.
+    # CAL-4 (task 1678) added two more, the day flows.
+    new_tools = {"my_tasks_get_calendar_settings", "my_tasks_update_calendar_settings",
+                 "my_tasks_list_day_rules", "my_tasks_add_day_rule",
+                 "my_tasks_edit_day_rule", "my_tasks_delete_day_rule",
+                 "my_tasks_start_my_day", "my_tasks_close_my_day"}
+    old_names = {"gtd_" + n.removeprefix("my_tasks_") for n in _skill_tools() - new_tools}
     used = set(_TOKEN.findall(_read(LEGACY_ALIAS_FILE)))
     assert used == old_names, sorted(used ^ old_names)
 

@@ -47,9 +47,20 @@ longer (a float with an exponent) or refuses (a NUL, a lone surrogate).
 ``test_studio_skills_r8.py`` stores a body of exactly the limit, so the two
 limits stay in step.
 
-**The text columns.** The store refuses a name or a description with a NUL
-or a lone surrogate, and it matches the whole slug (``fullmatch``). So no
-value reaches a statement that Postgres refuses, and no refusal echoes it.
+**Hidden characters (WS-STU F1b).** A model reads a skill as instructions,
+so the store refuses a character that no person sees: in the name, in the
+description, and in each string and each key of the body, at any depth. The
+one rule is ``acb_skills.hidden_text``, and the store keeps no list of code
+points. The refusal is one sentence that names the path and the position,
+never the text: "body.instructions: This text holds a hidden character at
+position 12 (U+200B). Remove it." The store refuses, and it never strips,
+because a strip would change what the owner saved. ``check_body`` runs the
+walk after the size check, so the walk reads at most :data:`MAX_BODY_BYTES`.
+
+**The text columns.** The store refuses a name or a description with a NUL,
+a lone surrogate or a hidden character, and it matches the whole slug
+(``fullmatch``). So no value reaches a statement that Postgres refuses, and
+no refusal echoes it.
 
 **State.** :func:`set_state` writes one of :data:`STATES`. F1 holds no
 transition table. F2 and J1 own the rules of a move. A caller that decides a
@@ -69,6 +80,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from sqlalchemy import text
 
 #: The four states, as the CHECK ``studio_skills_state`` holds them.
@@ -209,7 +221,9 @@ def _skill_id(skill_id: object) -> str:
 
 def _text(value: object, field: str, *, limit: int, required: bool) -> str:
     """A text column as Postgres takes it. Postgres refuses a NUL, and a lone
-    surrogate has no UTF-8 form. Each refusal names the field, never the value."""
+    surrogate has no UTF-8 form. A hidden character can carry a second text
+    into a prompt (``acb_skills.hidden_text``). Each refusal names the field,
+    never the value."""
     if not isinstance(value, str):
         raise SkillStoreError(f"{field} must be a string")
     if "\x00" in value:
@@ -218,6 +232,9 @@ def _text(value: object, field: str, *, limit: int, required: bool) -> str:
         value.encode("utf-8")
     except UnicodeEncodeError:
         raise SkillStoreError(f"{field} must not hold a lone surrogate") from None
+    hidden = hidden_problem(value, field)
+    if hidden is not None:
+        raise SkillStoreError(hidden)
     if required and not value.strip():
         raise SkillStoreError(f"{field} must not be empty")
     if len(value) > limit:
@@ -259,7 +276,8 @@ def check_body(body: object) -> str:
     strings. The JSON text holds at most :data:`MAX_BODY_BYTES` bytes.
     No string holds a NUL or a lone surrogate. A float is finite, below
     :data:`MAX_FLOAT`, and JSON writes it with no exponent. Then the text
-    has the length of the jsonb text that the CHECK measures.
+    has the length of the jsonb text that the CHECK measures. Last, no
+    string and no key holds a hidden character (``body_hidden_problem``).
     """
     if not isinstance(body, Mapping):
         raise SkillStoreError("body must be an object")
@@ -286,6 +304,10 @@ def check_body(body: object) -> str:
         raise SkillStoreError("body must not hold a lone surrogate") from exc
     if size > MAX_BODY_BYTES:
         raise SkillStoreError(f"body holds at most {MAX_BODY_BYTES} bytes of JSON")
+    # After the size check, so the walk reads at most MAX_BODY_BYTES of text.
+    hidden = body_hidden_problem(body)
+    if hidden is not None:
+        raise SkillStoreError(hidden)
     return encoded
 
 

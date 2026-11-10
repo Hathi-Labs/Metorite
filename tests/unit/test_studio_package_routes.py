@@ -124,7 +124,8 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
     w = SimpleNamespace(
         packages={}, versions=[], objects={}, org=None, log=[], sessions=0, audits=[],
         sync_calls=[], sync_error=None, catalog_fail=False, catalog_ids=["x"],
-        publish_catalogs=[], version_reads=[], clock=datetime(2026, 11, 3, tzinfo=UTC))
+        publish_catalogs=[], version_reads=[], expected=[],
+        clock=datetime(2026, 11, 3, tzinfo=UTC))
 
     def tick() -> datetime:
         w.clock += timedelta(seconds=1)
@@ -166,11 +167,12 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
             "live_version": None, "created": now, "updated": now}
         return _package(w.packages[pid])
 
-    async def update_manifest(db, member, pid, manifest):
+    async def update_manifest(db, member, pid, manifest, *, expected_hash=None):
         row = db.mine(member, pid)
         store.check_manifest(manifest)
         if row is None:
             return None
+        store._expect(row["manifest"], expected_hash)  # the real compare of the store
         if row["manifest"]["id"] != manifest["id"]:
             raise store.PackageStoreError(store.ID_FIXED, [
                 store.ManifestError(path="$.id", message=store.ID_FIXED)])
@@ -178,13 +180,15 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
         row["updated"] = tick()
         return _package(row)
 
-    async def publish_version(db, member, pid, notes, *, catalog):
+    async def publish_version(db, member, pid, notes, *, catalog, expected_hash=None):
         w.log.append("publish")
         w.publish_catalogs.append(dict(catalog))
+        w.expected.append(expected_hash)
         row = db.mine(member, pid)
         if row is None:
             return None
         note = store._notes(notes)
+        store._expect(row["manifest"], expected_hash)
         encoded = store._check_publishable(row["manifest"], catalog)
         number = 1 + max((v["version"] for v in w.versions if v["app"] == pid), default=0)
         entry = {"app": pid, "version": number, "manifest": copy.deepcopy(row["manifest"]),
@@ -201,6 +205,12 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
                        and (before is None or v["version"] < before)),
                       key=lambda v: -v["version"])
         return [_version(pid, v, manifest=False) for v in rows[:limit]]
+
+    async def get_version(db, member, pid, version):
+        if db.mine(member, pid) is None:
+            return None
+        found = [v for v in w.versions if v["app"] == pid and v["version"] == version]
+        return _version(pid, found[0]) if found else None
 
     async def sync_objects(db, actor, *, package_id, objects):
         w.log.append("sync")
@@ -236,7 +246,8 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
     monkeypatch.setattr(actions, "catalog_rows", catalog_rows)
     for name, fn in (("get_package", get_package), ("list_summaries", list_summaries),
                      ("create_package", create_package), ("update_manifest", update_manifest),
-                     ("publish_version", publish_version), ("list_versions", list_versions)):
+                     ("publish_version", publish_version), ("list_versions", list_versions),
+                     ("get_version", get_version)):
         monkeypatch.setattr(store, name, fn)
     monkeypatch.setattr(objects_store, "sync_objects", sync_objects)
     monkeypatch.setattr(objects_store, "list_objects", list_objects)
@@ -251,7 +262,7 @@ def _client(world: Any, org: str | None = ORG, email: str = ANA) -> TestClient:
     def _user() -> UserContext:
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
@@ -273,6 +284,13 @@ def _create(c: TestClient, manifest: dict[str, Any] | None = None) -> str:
     r = c.post("/studio/packages", json=manifest or _manifest())
     assert r.status_code == 201, r.text
     return str(r.json()["package"]["id"])
+
+
+def _done(manifest: dict[str, Any]) -> dict[str, Any]:
+    """What a draft save stores: the manifest with the record actions of its objects (STU-G3c)."""
+    from acb_skills.studio_tools import complete_record_actions
+
+    return complete_record_actions(manifest)[0]
 
 
 _JSON = {"content-type": "application/json"}
@@ -461,6 +479,27 @@ def test_a_get_returns_the_manifest_and_the_object_rows(world):
     assert got["objects"][0]["rules"] == []
 
 
+def test_a_get_gives_the_hash_of_the_draft_that_a_save_needs(world):
+    """STU-G3a fix 1 (the IDE puts ``based_on`` in the page facts). The GET answer holds
+    ``manifest_hash``: the one hash of the stored draft. A save changes it, and the list holds none.
+
+    Mutation 1: drop ``manifest_hash`` from ``_package_out``. This test turns red.
+    Mutation 2: hash the request body and not the stored draft. The second assert turns red.
+    """
+    from acb_common.studio_manifest import manifest_hash
+
+    c = _client(world)
+    pid = _create(c)
+    first = c.get(f"/studio/packages/{pid}").json()["package"]
+    assert first["manifest_hash"] == manifest_hash(first["manifest"])
+    changed = _manifest()
+    changed["name"] = "Renamed"
+    assert c.put(f"/studio/packages/{pid}/draft?based_on={first['manifest_hash']}", json=changed).status_code == 200
+    second = c.get(f"/studio/packages/{pid}").json()["package"]
+    assert second["manifest_hash"] == manifest_hash(_done(changed)) != first["manifest_hash"]
+    assert all("manifest_hash" not in p for p in c.get("/studio/packages").json()["packages"])
+
+
 @pytest.mark.parametrize("org,email", [(ORG, BEN), (OTHER, ANA)])
 def test_a_package_of_another_member_or_org_is_404_on_each_route(world, org, email):
     theirs = _create(_client(world, org=org, email=email))
@@ -503,7 +542,7 @@ def test_a_draft_save_replaces_the_manifest_and_writes_no_object(world):
                                  {"id": "find", "uses": "object:visit.list"}])
     r = c.put(f"/studio/packages/{pid}/draft", json=changed)
     assert r.status_code == 200, r.text
-    assert world.packages[pid]["manifest"] == changed
+    assert world.packages[pid]["manifest"] == _done(changed)
     assert world.sync_calls == [] and world.objects == {} and world.versions == []
     # A draft save writes no audit row.
     assert len(world.audits) == 1
@@ -800,6 +839,46 @@ def test_a_cursor_does_not_open_the_versions_of_a_stranger(world, monkeypatch):
     assert (r.status_code, r.json()) == (404, NOT_FOUND)
 
 
+def test_one_version_reads_with_its_manifest_and_hash(world):
+    from acb_common.studio_manifest import manifest_hash
+
+    c = _client(world)
+    pid = _create(c)
+    c.post(f"/studio/packages/{pid}/versions", json={"notes": "first"})
+    r = c.get(f"/studio/packages/{pid}/versions/1")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["version"]["version"] == 1 and got["version"]["notes"] == "first"
+    assert got["version"]["manifest"]["id"] == "visits"
+    assert got["manifest_hash"] == manifest_hash(got["version"]["manifest"])
+    assert world.log.count("publish") == 1  # the read published and synced nothing
+
+
+def test_a_missing_version_and_a_stranger_get_404(world, monkeypatch):
+    pid = _create(_client(world))
+    _client(world).post(f"/studio/packages/{pid}/versions", json={})
+    assert _client(world).get(f"/studio/packages/{pid}/versions/2").status_code == 404
+    for c in (_client(world, email=BEN), _client(world, org=OTHER)):
+        r = c.get(f"/studio/packages/{pid}/versions/1")
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert _client(world).get(f"/studio/packages/{uuid.uuid4()}/versions/1").status_code == 404
+    monkeypatch.setattr(get_settings(), "studio_orgs", "")
+    r = _client(world).get(f"/studio/packages/{pid}/versions/1")
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+
+
+@pytest.mark.parametrize("bad", ["0", "x", "1.5", "-1", str(2**31), "9" * 40])
+def test_a_bad_version_is_422_and_reads_nothing(world, bad):
+    c = _client(world)
+    pid = _create(c)
+    opened = world.sessions
+    r = c.get(f"/studio/packages/{pid}/versions/{bad}")
+    assert r.status_code in (404, 422), r.text
+    if r.status_code == 422:
+        assert r.json()["detail"]["errors"][0]["path"] == "version"
+        assert world.sessions == opened
+
+
 # ── The fences (R7) ────────────────────────────────────────────────────────
 
 
@@ -818,9 +897,12 @@ def _handlers(tree: ast.Module) -> list[ast.AsyncFunctionDef]:
     return out
 
 
-def test_there_are_six_handlers():
+def test_there_are_ten_handlers():
+    """A5 holds six, A5c-1 adds the delete preview and the delete, WS-PKG PKG-8b
+    adds the org and group install, and G5 adds one version read."""
     names = sorted(h.name for h in _handlers(_tree()))
-    assert names == ["create_package", "get_package", "list_packages", "list_versions",
+    assert names == ["create_package", "delete_package", "delete_preview", "get_package",
+                     "get_version", "install_package", "list_packages", "list_versions",
                      "publish", "save_draft"]
 
 
@@ -974,3 +1056,115 @@ def test_the_r8_suite_is_named_in_the_ci_skip_guard():
     assert block, "the --must-run argument list is missing"
     assert re.search(r"^[ \t]+tests/unit/test_studio_package_routes_r8\.py(?: \\)?$",
                      block.group(1), re.M)
+
+
+# ── The expected hash of a draft (G1c review round 1, P1) ─────────────────
+
+
+def _h(manifest: dict[str, Any]) -> str:
+    from acb_common.studio_manifest import manifest_hash
+
+    return manifest_hash(manifest)
+
+
+def _two_fields() -> dict[str, Any]:
+    return _manifest(objects=[{"name": "visit", "fields": [*_FIELDS, {"key": "n", "type": "text"}]}])
+
+
+def test_a_publish_passes_its_based_on_to_the_store(world):
+    """Mutation: drop ``expected_hash`` from the call of ``publish_version`` -> red."""
+    c = _client(world)
+    pid = _create(c)
+    r = c.post(f"/studio/packages/{pid}/versions", json={"based_on": _h(_manifest()).upper()})
+    assert r.status_code == 201, r.text
+    assert world.expected == [_h(_manifest())]
+    assert c.post(f"/studio/packages/{pid}/versions", json={}).status_code == 201
+    assert world.expected[-1] is None
+
+
+def test_a_publish_with_a_stale_based_on_is_409_draft_changed_and_writes_nothing(world):
+    c = _client(world)
+    pid = _create(c)
+    assert c.put(f"/studio/packages/{pid}/draft", json=_two_fields()).status_code == 200
+    r = c.post(f"/studio/packages/{pid}/versions", json={"based_on": _h(_manifest())})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"code": packages.DRAFT_CHANGED,
+                                  "message": store.DRAFT_CHANGED_TEXT}
+    assert world.versions == [] and world.sync_calls == [] and world.audits[1:] == []
+
+
+def test_a_draft_save_with_a_stale_based_on_is_409_and_keeps_the_draft(world):
+    """Mutation: drop ``expected_hash`` from the call of ``update_manifest`` -> red."""
+    c = _client(world)
+    pid = _create(c)
+    first = _h(_manifest())
+    assert c.put(f"/studio/packages/{pid}/draft?based_on={first}",
+                 json=_two_fields()).status_code == 200
+    r = c.put(f"/studio/packages/{pid}/draft?based_on={first}", json=_manifest())
+    assert r.status_code == 409 and r.json()["detail"]["code"] == packages.DRAFT_CHANGED, r.text
+    assert world.packages[pid]["manifest"] == _done(_two_fields())
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "g" * 64, "a" * 65])
+def test_a_based_on_that_is_not_a_hash_is_422_on_both_routes(world, bad):
+    c = _client(world)
+    pid = _create(c)
+    put = c.put(f"/studio/packages/{pid}/draft", params={"based_on": bad}, json=_two_fields())
+    pub = c.post(f"/studio/packages/{pid}/versions", json={"based_on": bad})
+    assert put.status_code == 422 and pub.status_code == 422, (put.text, pub.text)
+    # The draft save takes it as a query parameter, and the publish in its body.
+    assert put.json()["detail"]["errors"] == [{"path": "?based_on", "message": packages.BAD_HASH}]
+    assert pub.json()["detail"]["errors"] == [{"path": "$.based_on", "message": packages.BAD_HASH}]
+    assert world.versions == [] and world.packages[pid]["manifest"] == _manifest()
+
+
+def test_the_store_compares_the_hash_under_its_row_lock() -> None:
+    """The compare comes after the locked read in both writers, so no write
+    lands between the compare and the write."""
+    import inspect
+
+    for fn in (store.publish_version, store.update_manifest):
+        src = inspect.getsource(fn)
+        assert src.index("for_update=True") < src.index("_expect(current.manifest, expected_hash)")
+
+
+# ── Record actions on a draft save (STU-G3c) ───────────────────────────────
+
+
+def test_a_draft_save_gives_a_new_object_its_record_actions(world):
+    """The IDE saves a manifest with a new object and no action. The server adds the five.
+
+    Mutation 1: drop the ``complete_record_actions`` call from ``save_draft``. This test goes red.
+    """
+    c = _client(world)
+    pid = _create(c)
+    grown = _manifest(objects=[{"name": "visit", "fields": _FIELDS},
+                               {"name": "site", "fields": [{"key": "city", "type": "text"}]}])
+    r = c.put(f"/studio/packages/{pid}/draft", json=grown)
+    assert r.status_code == 200, r.text
+    uses = {a["uses"] for a in world.packages[pid]["manifest"]["actions"]}
+    assert {f"object:site.{v}" for v in ("list", "get", "create", "update", "delete")} <= uses
+    added = r.json()["record_actions"]["added"]
+    assert added and r.json()["record_actions"]["skipped"] == []
+    # The answer holds the hash of what was stored, so the next save can name it.
+    assert r.json()["package"]["manifest_hash"] == _h(world.packages[pid]["manifest"])
+
+
+def test_a_second_draft_save_of_the_same_manifest_adds_nothing(world):
+    """Mira's save and the IDE's save meet: a complete manifest passes unchanged (idempotent)."""
+    c = _client(world)
+    pid = _create(c)
+    first = c.put(f"/studio/packages/{pid}/draft", json=_manifest()).json()
+    again = c.put(f"/studio/packages/{pid}/draft", json=first["package"]["manifest"]).json()
+    assert again["record_actions"] == {"added": [], "skipped": []}
+    assert again["package"]["manifest_hash"] == first["package"]["manifest_hash"]
+
+
+def test_a_stale_hash_is_checked_against_the_stored_draft_not_the_completed_one(world):
+    """The addition happens to the body. The hash compare reads the stored draft only."""
+    c = _client(world)
+    pid = _create(c)
+    h0 = _h(world.packages[pid]["manifest"])
+    assert c.put(f"/studio/packages/{pid}/draft?based_on={h0}", json=_two_fields()).status_code == 200
+    r = c.put(f"/studio/packages/{pid}/draft?based_on={h0}", json=_two_fields())
+    assert r.status_code == 409 and r.json()["detail"]["code"] == packages.DRAFT_CHANGED

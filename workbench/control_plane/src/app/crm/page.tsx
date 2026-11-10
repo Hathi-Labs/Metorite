@@ -30,6 +30,7 @@ import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
+import { CARD_PAGE_ATTR } from "@/components/CardPanel";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -149,6 +150,8 @@ import {
   useFieldDefs,
   useFieldLayout,
   useOwners,
+  useLeadPipelines,
+  usePipelineCreate,
   usePipelines,
   useSyncStatus,
 } from "./lib/useCrmMode";
@@ -225,6 +228,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
   // has no pipelines route: then there is one implicit pipeline and no picker.
   const { pipelines, loading: pipelinesLoading } = usePipelines(true);
+  // CRM-M3a: "New pipeline" for an admin of a Native CRM on the flag.
+  const pipelineCreate = usePipelineCreate(ctx.isAdmin && ctx.mode === "native");
+  // CRM-M4a: the lead pipelines of a Native CRM, for the Lead statuses card
+  // of CRM settings. No other tab reads them yet.
+  const { pipelines: leadPipelines } = useLeadPipelines(
+    ctx.mode === "native" && view.tab === "settings",
+  );
   const [remembered, setRemembered] = useState<string | null>(() => readRemembered());
   /** The pipeline a request filters by, or null for "no filter". */
   const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
@@ -317,6 +327,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
    *  request before the view changes, and a held request left the rail dead
    *  (`lib/history.ts`). */
   const go = useCallback((next: CrmView) => pushView(viewHref(next)), []);
+  // A click on the board or the list while a card is open shows that record in
+  // the same card. It replaces the URL, so Back closes the card, as a step of
+  // `j` or `k` does (ORC-1, D181).
+  const cardOpen = view.record !== null || view.moduleRecord !== null;
+  const openInCard = useCallback(
+    (next: CrmView) => (cardOpen ? replaceView : pushView)(viewHref(next)),
+    [cardOpen],
+  );
 
   // A link that carries only `?view=<id>` opens that view (CRM-Q8).
   const search = searchParams.toString();
@@ -534,8 +552,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       ? (store.record as { pipeline_id?: string | null } | null)?.pipeline_id ?? null
       : null;
   const recordPlaces = useMemo(
-    () => placesOf(pipelines, recordPipeline ?? pipelineId),
-    [pipelines, recordPipeline, pipelineId],
+    // A deal with no pipeline is in the default one, not in the board's (CRM-M3).
+    () => placesOf(pipelines, view.record?.entity === "deals" ? recordPipeline : pipelineId),
+    [pipelines, recordPipeline, pipelineId, view.record?.entity],
   );
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view, ctx.mode, places)
@@ -639,7 +658,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
-    const result = await store.convertLead(converting.id, body);
+    const result = await store.convertLead(
+      converting.id,
+      // The deal joins the pipeline on screen (CRM-M3). None: the default one.
+      pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+    );
     const dealId = result?.deal.id ?? null;
     setConverting(null);
     // CRM-C6a: say which lead values the conversion mapping did not copy.
@@ -862,7 +885,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   return (
     // CRM-C2: the list, the reports and the status pill read the mode here.
     <CrmModeContext.Provider value={ctx.mode}>
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+    <div
+      {...{ [CARD_PAGE_ATTR]: "" }}
+      className="flex h-full w-full flex-col overflow-hidden bg-background"
+    >
       {/* ═══ The app's title bar (AGENTS.md rule 11, CRM-U1) ═══
           The rail toggle, the name and the scope, the New verb, then the
           tools at the right end. On a phone `AppTopBar` draws the compact
@@ -1073,7 +1099,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 const lane = lanes.find((l) => l.rows.some((row) => row.id === id));
                 const param = view.tab === "leads" ? "lead" : "deal";
                 setCameFrom({ param, lane: lane?.status.id ?? null });
-                go(openRecord(view, param, id));
+                openInCard(openRecord(view, param, id));
               }}
               // The deals board pages a lane; the leads board reads by list.
               onMore={view.tab === "deals" ? (id) => void store.loadLaneMore(id) : undefined}
@@ -1087,7 +1113,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               label={moduleLabel(modules, view.module)}
               view={view}
               onChange={go}
-              onOpen={(id) => openAlone(openModuleRecord(view, view.module!, id))}
+              selectedId={view.moduleRecord?.id ?? null}
+              onOpen={(id) => {
+                setCameFrom(null);
+                openInCard(openModuleRecord(view, view.module!, id));
+              }}
               reloadToken={moduleReload}
               actions={viewActions}
               isAdmin={ctx.isAdmin}
@@ -1122,8 +1152,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
               rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
               pipelines={pipelines}
+              leadPipelines={leadPipelines}
               pipelineId={pipelineId}
               showAdminCards={ctx.isAdmin}
+              pipelineCreate={ctx.isAdmin && pipelineCreate}
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}
@@ -1165,115 +1197,120 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}
+                selectedId={view.record?.id ?? null}
                 onOpen={(id) => {
                   // `j` and `k` walk the rows of this list (CRM-X4 item 5).
                   setCameFrom({ param: PARAM_FOR[listEntity], lane: null });
-                  go(openRecord(view, PARAM_FOR[listEntity], id));
+                  openInCard(openRecord(view, PARAM_FOR[listEntity], id));
                 }}
               />
             )
           )}
           </CrmBoundary>
         </main>
-      </div>
 
-      {view.record && (
-        <RecordSheet
-          entity={view.record.entity}
-          labels={labels}
-          record={store.record}
-          statuses={statusesFor(view.record.entity)}
-          places={recordPlaces}
-          timeline={store.timeline}
-          dealContacts={store.dealContacts}
-          saving={store.saving}
-          onClose={() => {
-            // The convert and move dialogs open OVER the sheet, and each one
-            // is its own `Modal`. Both hear one Escape, so the sheet keeps
-            // still while a dialog above it is up: that key, or a click on
-            // that dialog, closes the dialog and not the record.
-            if (converting || pendingMove) return;
-            setCameFrom(null);
-            setCallAsk(null);
-            go(closeRecord(view));
-          }}
-          tab={view.recordTab ?? "overview"}
-          // A tab replaces the URL, so Back still closes the sheet.
-          onTab={(tab) =>
-            replaceView(viewHref(selectRecordTab(view, tab)))
-          }
-          // No step while a dialog is open over the sheet.
-          order={converting || pendingMove ? null : recordOrder()}
-          // The step replaces the URL too: Back closes the sheet, and does not
-          // walk back through every record the keys passed.
-          onStep={(id) =>
-            replaceView(viewHref(openRecord(view, view.record!.param, id)))
-          }
-          onPatch={(body) =>
-            store.patchRecord(view.record!.entity, view.record!.id, body)
-          }
-          onMoveStatus={(statusId) => {
-            const target = statusesFor(view.record!.entity).find(
-              (s) => s.id === statusId
-            );
-            if (!target) return;
-            if (view.record!.entity === "deals") {
-              moveDeal(
-                {
-                  dealId: view.record!.id,
-                  fromStatusId: (store.record?.status_id as string) ?? null,
-                  toStatusId: statusId,
-                },
-                target
-              );
-            } else {
-              store.patchRecord(view.record!.entity, view.record!.id, {
-                status_id: statusId,
-              });
+        {/* The record card (ORC-1, D181): one mount, here in the row. At the
+            side stop it is a column beside `<main>`. At the full stop and on
+            a phone it stands over the page, and it keeps its state. */}
+        {view.record && (
+          <RecordSheet
+            entity={view.record.entity}
+            id={view.record.id}
+            labels={labels}
+            record={store.record}
+            statuses={statusesFor(view.record.entity)}
+            places={recordPlaces}
+            timeline={store.timeline}
+            dealContacts={store.dealContacts}
+            saving={store.saving}
+            onClose={() => {
+              // The convert and move dialogs open OVER the sheet, and each one
+              // is its own `Modal`. Both hear one Escape, so the sheet keeps
+              // still while a dialog above it is up: that key, or a click on
+              // that dialog, closes the dialog and not the record.
+              if (converting || pendingMove) return;
+              setCameFrom(null);
+              setCallAsk(null);
+              go(closeRecord(view));
+            }}
+            tab={view.recordTab ?? "overview"}
+            // A tab replaces the URL, so Back still closes the sheet.
+            onTab={(tab) =>
+              replaceView(viewHref(selectRecordTab(view, tab)))
             }
-          }}
-          onLog={(body) =>
-            store.logActivity(view.record!.entity, view.record!.id, body)
-          }
-          onToggleTask={(activityId, completed) =>
-            store.toggleTask(
-              activityId,
-              completed,
-              view.record!.entity,
-              view.record!.id
-            )
-          }
-          onConvert={() => {
-            store.loadDirectories();
-            setConverting(store.record as unknown as Lead);
-          }}
-          onSetPrimary={(contactId) =>
-            store.setPrimaryContact(view.record!.id, contactId)
-          }
-          onDetach={(contactId) =>
-            store.detachContact(view.record!.id, contactId)
-          }
-          onOpenContact={(contactId) => openAlone(openRecord(view, "contact", contactId))}
-          related={store.related}
-          // `log-call` asked for THIS record. Another record opens on Note.
-          callRequest={callAsk && callAsk.id === view.record.id ? callAsk.n : 0}
-          onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
-          onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
-        />
-      )}
+            // No step while a dialog is open over the sheet.
+            order={converting || pendingMove ? null : recordOrder()}
+            // The step replaces the URL too: Back closes the sheet, and does not
+            // walk back through every record the keys passed.
+            onStep={(id) =>
+              replaceView(viewHref(openRecord(view, view.record!.param, id)))
+            }
+            onPatch={(body) =>
+              store.patchRecord(view.record!.entity, view.record!.id, body)
+            }
+            onMoveStatus={(statusId) => {
+              const target = statusesFor(view.record!.entity).find(
+                (s) => s.id === statusId
+              );
+              if (!target) return;
+              if (view.record!.entity === "deals") {
+                moveDeal(
+                  {
+                    dealId: view.record!.id,
+                    fromStatusId: (store.record?.status_id as string) ?? null,
+                    toStatusId: statusId,
+                  },
+                  target
+                );
+              } else {
+                store.patchRecord(view.record!.entity, view.record!.id, {
+                  status_id: statusId,
+                });
+              }
+            }}
+            onLog={(body) =>
+              store.logActivity(view.record!.entity, view.record!.id, body)
+            }
+            onToggleTask={(activityId, completed) =>
+              store.toggleTask(
+                activityId,
+                completed,
+                view.record!.entity,
+                view.record!.id
+              )
+            }
+            onConvert={() => {
+              store.loadDirectories();
+              setConverting(store.record as unknown as Lead);
+            }}
+            onSetPrimary={(contactId) =>
+              store.setPrimaryContact(view.record!.id, contactId)
+            }
+            onDetach={(contactId) =>
+              store.detachContact(view.record!.id, contactId)
+            }
+            onOpenContact={(contactId) => openAlone(openRecord(view, "contact", contactId))}
+            related={store.related}
+            // `log-call` asked for THIS record. Another record opens on Note.
+            callRequest={callAsk && callAsk.id === view.record.id ? callAsk.n : 0}
+            onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
+            onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
+          />
+        )}
 
-      {view.moduleRecord && (
-        // A generic record (CRM-Q6b), on the same record page shell.
-        <ModuleRecordSheet
-          module={view.moduleRecord.module}
-          id={view.moduleRecord.id}
-          tab={view.recordTab ?? "overview"}
-          // A tab replaces the URL, so Back still closes the sheet (#914 idiom).
-          onTab={(tab) => replaceView(viewHref(selectRecordTab(view, tab)))}
-          onClose={() => go(closeRecord(view))}
-          onOpenLink={openLink}
-        />
-      )}
+        {view.moduleRecord && (
+          // A generic record (CRM-Q6b), on the same record page shell.
+          <ModuleRecordSheet
+            module={view.moduleRecord.module}
+            id={view.moduleRecord.id}
+            tab={view.recordTab ?? "overview"}
+            // A tab replaces the URL, so Back still closes the sheet (#914 idiom).
+            onTab={(tab) => replaceView(viewHref(selectRecordTab(view, tab)))}
+            onClose={() => go(closeRecord(view))}
+            onOpenLink={openLink}
+          />
+        )}
+      </div>
 
       <ShellJob
         id="new-lead"
@@ -1305,7 +1342,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onClose={() => setCreating(null)}
           onCreate={async (body) => {
             const entity = creating;
-            const id = await store.createRecord(entity, body);
+            // A new deal joins the pipeline on screen (CRM-M3). None: the default one.
+            const id = await store.createRecord(
+              entity,
+              entity === "deals" && pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+            );
             // The 422 rule (CRM-C4b): a refused save keeps the form open, with
             // the typed values and the message beside its field.
             if (!id) return;

@@ -37,6 +37,7 @@ import {
   processPastFrom,
   readAutoRunSwitch,
   readDraftSwitch,
+  saveAutoRunDefault,
   PROCESS_PAST_MAX_SPAN_DAYS,
   SORT_POLL_MS,
   readSortEstimate,
@@ -52,7 +53,7 @@ import {
   type RulesStepApi,
   type SortEstimate,
 } from "./onboarding";
-import type { AssistantSettings, EmailAccount } from "./types";
+import type { AssistantSettings, AssistantSettingsSave, EmailAccount } from "./types";
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -247,6 +248,8 @@ describe("the drafting switch (item 10, D-EM-6)", () => {
     expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
     const saved = calls[1][1] as Record<string, unknown>;
     expect(saved).toEqual({ ...SETTINGS, draft_replies: true });
+    // Task 2305: a save of the drafting switch records no Auto-run choice.
+    expect("auto_run_choice" in saved).toBe(false);
     for (const k of Object.keys(SETTINGS)) {
       if (k !== "draft_replies") expect(saved[k], k).toEqual((SETTINGS as unknown as Record<string, unknown>)[k]);
     }
@@ -301,7 +304,14 @@ describe("the Auto-run switch (WS-17 EM-G11c2, G2)", () => {
     const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false });
     await setAutoRun(api, "acc-1", true);
     expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
-    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: true });
+    // Task 2305: the member's own act carries the marker of the choice.
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: true, auto_run_choice: true });
+  });
+
+  it("a move to OFF is a choice too, and sends the marker (task 2305)", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: true });
+    await setAutoRun(api, "acc-1", false);
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: false, auto_run_choice: true });
   });
 
   it("draws the stored value, and only a stored true reads ON", async () => {
@@ -333,6 +343,66 @@ describe("the Auto-run switch (WS-17 EM-G11c2, G2)", () => {
   });
 });
 
+describe("the Auto-run switch starts ON with no stored choice (task 2267)", () => {
+  const NO_CHOICE = { ...SETTINGS, auto_run: false, auto_run_chosen: false } as AssistantSettings;
+
+  it("no stored choice: the switch starts ON, and loading saves nothing", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: true, unsaved: true });
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+  });
+
+  it("Done saves auto_run: true through the existing save", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(true);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "getAssistantSettings", "saveAssistantSettings"]);
+    expect((calls[2][1] as AssistantSettings).auto_run).toBe(true);
+    // Task 2305: Done is the member's act, so the server stamps the choice.
+    expect((calls[2][1] as AssistantSettingsSave).auto_run_choice).toBe(true);
+  });
+
+  it("OFF before Done: the move saves false, and Done then saves nothing new", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    await setAutoRun(api, "acc-1", false);
+    expect((calls[1][1] as AssistantSettings).auto_run).toBe(false);
+    // The step now holds { ready, on: false } with no `unsaved` mark.
+    const before = calls.length;
+    expect(await saveAutoRunDefault(api, "acc-1", { state: "ready", on: false })).toBe(false);
+    expect(calls).toHaveLength(before);
+  });
+
+  it("a stored false shows OFF, and Done saves nothing new", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false, auto_run_chosen: true } as AssistantSettings);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(sw).toEqual({ state: "ready", on: false });
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(false);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+  });
+
+  it("a stored true shows ON and Done saves nothing", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: true, auto_run_chosen: true } as AssistantSettings);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(sw).toEqual({ state: "ready", on: true });
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("only Done saves the default: Skip does not, and a failed save keeps the step open", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src.match(/saveAutoRunDefault\(/g)).toHaveLength(1);
+    expect(src).toContain("onSkip={() => void finish()}");
+    expect(src).toMatch(/if \(saveDefault\) \{[\s\S]*?await saveAutoRunDefault\(RULES_API, account\.id, autoRun\);[\s\S]*?\}\s*const updated/);
+  });
+
+  it("the ON title and body read right for the default", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true, unsaved: true } });
+    expect(out).toContain(">Your AI rules are on<");
+    expect(out).toMatch(/role="switch"[^>]*aria-checked="true"[\s\S]*Run my rules on new mail/);
+    expect(RULES_STEP_COPY.autoRunOffBody).toMatch(/sort no new mail/);
+  });
+});
+
 describe("Done (item 11)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -357,7 +427,7 @@ describe("Done (item 11)", () => {
     const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
     expect(src).toContain("finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),");
     expect(src).toContain("onSkip={() => void finish()}");
-    expect(src).toContain("onDone={() => void finish()}");
+    expect(src).toContain("onDone={() => void finish(true)}");
     expect(src).toMatch(
       /const updated = await RULES_API\.finishOnboarding\(account\.id\);\s*setFinished\(true\);\s*onFinished\(updated\);/,
     );

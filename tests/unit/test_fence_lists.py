@@ -135,6 +135,19 @@ def test_a_path_skip_is_an_if_on_the_job_never_a_trigger_filter(job, area):
     assert "always()" not in cond
 
 
+def test_the_unit_shards_follow_the_changes_job_and_the_aggregate_is_never_skipped():
+    # CIV-3. The shards run a selection. A FAILED `changes` job must not skip
+    # them (a skip counts as a pass), and the required aggregate stays `always()`.
+    jobs = _jobs()
+    assert "changes" in jobs["test"]["needs"]
+    cond = jobs["test"]["if"]
+    assert "!cancelled()" in cond and "always()" not in cond
+    assert "needs.changes.outputs.full" not in cond, "the shards decide inside, not by an if"
+    assert jobs["unit-tests"]["if"] == "always()"
+    assert jobs["unit-tests"]["name"] == "Unit tests"
+    assert "paths" not in (yaml.safe_load(_PR_CHECK.read_text(encoding="utf-8"))[True]["pull_request"] or {})
+
+
 def test_the_frontend_unit_job_is_never_skipped_by_path():
     # Its tests read files across the whole repo.
     assert "if" not in _jobs()["frontend"]
@@ -158,7 +171,91 @@ def test_the_visual_review_line_runs_in_a_required_job():
     assert not any(s.get("name", "").startswith("Visual review") for s in _jobs()["changes"]["steps"])
 
 
+def test_the_visual_review_line_reads_the_live_body_first():
+    """CIV-8. A rerun replays the first EVENT, so the event body alone made a
+    missing line cost a push and a whole run. The step reads the live body."""
+    step = _step("frontend", "Visual review line")
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert "${{" not in step["run"]
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}"' in step["run"]
+    assert "gh run rerun <run id> --failed" in step["run"]
+
+
 _BASH = shutil.which("bash")
+
+
+def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: bool = True,
+                       touch_frontend: bool = True, event: bool = True):
+    """Run the step's script in a tiny repo, with a `gh` shim for the live body."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                              check=True, env={**os.environ, "GIT_AUTHOR_NAME": "t",
+                              "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                              "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("a", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    target = repo / ("workbench/control_plane/src/x.ts" if touch_frontend else "docs/x.md")
+    target.parent.mkdir(parents=True)
+    target.write_text("x", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "change")
+    ev = tmp_path / "event.json"
+    ev.write_text(json.dumps({"pull_request": {"number": 77, "body": event_body,
+                                               "base": {"sha": base}}}), encoding="utf-8")
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text("#!/usr/bin/env bash\n" + (
+        f"printf '%s' {json.dumps(live)}\n" if live is not None
+        else "echo '{\"message\":\"Bad credentials\"}'\nexit 1\n"), encoding="utf-8")
+    gh.chmod(0o755)
+    env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r"}
+    env.pop("GH_TOKEN", None)
+    if token:
+        env["GH_TOKEN"] = "t"
+    if event:
+        env["GITHUB_EVENT_PATH"] = str(ev)
+    else:
+        env["GITHUB_EVENT_PATH"] = str(tmp_path / "missing.json")
+    run = _step("frontend", "Visual review line")["run"]
+    return subprocess.run(["bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+
+
+_LINE = "Visual review: no UI change"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt", reason="needs a POSIX bash")
+@pytest.mark.parametrize("kw,code,says", [
+    # the live body names the review, the event body does not: pass (the fix)
+    (dict(event_body="x", live=_LINE), 0, "live body"),
+    # the live body lost the line after the event had it: the live body wins
+    (dict(event_body=_LINE, live="no line"), 1, "no line of its body"),
+    # the API fails: the event body decides, a line in it passes
+    (dict(event_body=_LINE, live=None), 0, "event is checked"),
+    # the API fails and the event body has no line: fail closed
+    (dict(event_body="x", live=None), 1, "no line of its body"),
+    # no token (a fork PR or the local CI): the event body decides
+    (dict(event_body="x", live=_LINE, token=False), 1, "no line of its body"),
+    # an empty live body is a body: it has no line
+    (dict(event_body=_LINE, live=""), 1, "no line of its body"),
+    # a PR that changes nothing under the control plane needs no line
+    (dict(event_body="x", live="x", touch_frontend=False), 0, "no change under"),
+    # no event file (the local CI): nothing to check
+    (dict(event_body="x", live="x", event=False), 0, "no pull request event"),
+])
+def test_the_visual_review_line_step_behaves(tmp_path, kw, code, says):
+    got = _run_visual_review(tmp_path, **kw)
+    assert got.returncode == code, got.stdout + got.stderr
+    assert says in got.stdout + got.stderr, got.stdout + got.stderr
+
+
 
 
 @pytest.mark.skipif(_BASH is None or os.name == "nt", reason="needs a POSIX bash")

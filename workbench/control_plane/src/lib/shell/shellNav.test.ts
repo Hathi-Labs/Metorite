@@ -10,6 +10,7 @@ import {
   ASSISTANT_LINK,
   CHANGE_LAYOUT_ITEM,
   MY_ACCESS,
+  TAKE_TOUR_ITEM,
   TEAM_GROUPS,
   HOME_PANE,
   accountLinks,
@@ -30,7 +31,7 @@ describe("the sidebar holds places to work, by team", () => {
       ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
-      ["studio", ["/chat"]],
+      ["studio", ["/chat", "/studio"]],
       ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });
@@ -71,6 +72,7 @@ describe("the sidebar holds places to work, by team", () => {
     expect(TEAM_GROUPS.map((g) => g.label)).toEqual([
       "Personal Center",
       "Across teams",
+      "Apps",
       "AI Studio",
       "Admin",
     ]);
@@ -203,6 +205,23 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
     expect(g.flatMap((x) => x.items)).not.toContainEqual(CHANGE_LAYOUT_ITEM);
   });
 
+  it("GD-5a: Take the tour follows Change my layout only with the guide's switch on", () => {
+    const on = rows(accountMenu(member, { layout: true, switcher: false, others: 0, tour: true }));
+    expect(on.find(([id]) => id === "settings")).toEqual([
+      "settings",
+      ["/settings/appearance", "colour-mode", "change-layout", "take-tour"],
+    ]);
+    expect(TAKE_TOUR_ITEM).toMatchObject({ kind: "action", id: "take-tour", label: "Take the tour" });
+    // Off, or not said: no row.
+    for (const tour of [false, undefined]) {
+      const g = accountMenu(member, { layout: true, switcher: false, others: 0, tour });
+      expect(g.flatMap((x) => x.items)).not.toContainEqual(TAKE_TOUR_ITEM);
+    }
+    // An admin gets the same row as a member: it is for every member.
+    const admin = accountMenu(visibleSections(ALL, true), { layout: true, switcher: false, others: 0, tour: true });
+    expect(admin.flatMap((x) => x.items)).toContainEqual(TAKE_TOUR_ITEM);
+  });
+
   it("with no sections (the shell nav off, or an unresolved viewer): no You, and Settings is the colour mode", () => {
     expect(rows(accountMenu([], { layout: false, switcher: true, others: 1 }))).toEqual([
       ["current", ["current"]],
@@ -278,7 +297,7 @@ describe("All apps lists every app the member holds, never a preference", () => 
       ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
-      ["studio", ["/chat"]],
+      ["studio", ["/chat", "/studio"]],
       ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });

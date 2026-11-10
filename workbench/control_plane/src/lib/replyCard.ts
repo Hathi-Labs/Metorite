@@ -116,6 +116,53 @@ export interface ReplyForm {
    * to the record of THIS card, so the act can take it.
    */
   requestId?: string;
+  /**
+   * §18.11, a new mail only: the card that this card replaces, as the
+   * gateway linked it. The card takes that card's slot, in its tab.
+   */
+  revises?: string;
+  /** §18.11, a new mail only: the draft number, 2 or more ("Draft 2"). */
+  draft?: number;
+  /**
+   * §18.11 fix round 5, a new mail only: the SAME card, shown again because
+   * the revise of a chat message did not run. It takes its slot back, with
+   * the member's edits, and says why.
+   */
+  reopened?: true;
+  /**
+   * §18.11 rule 7, a new mail only: the people that start unticked because
+   * the member unticked them on the draft before, by lower case. The gateway
+   * starts them unticked (`ticked`) and names them, on every path: a slot, no
+   * slot, a remount and a replay. The card says so, and one tick brings each
+   * person back. A name that is not a person of the card, or that starts
+   * ticked, is dropped.
+   */
+  unticked?: string[];
+}
+
+/** The kept unticks of a new-mail form (§18.11 rule 7): each a person of the
+ *  card who starts unticked, by lower case, once. Anything else is dropped. */
+function untickedNames(value: unknown, all: ReplyRecipients, ticked: ReplyForm["ticked"] | undefined): { unticked?: string[] } {
+  if (!Array.isArray(value) || !ticked) return {};
+  const have = new Set(lower([...all.to, ...all.cc, ...(all.bcc ?? [])]));
+  const start = ticked.reply_all;
+  const on = new Set(lower([...start.to, ...start.cc, ...(start.bcc ?? [])]));
+  const out: string[] = [];
+  for (const v of value) {
+    if (typeof v !== "string") continue;
+    const a = v.trim().toLowerCase();
+    if (have.has(a) && !on.has(a) && !out.includes(a)) out.push(a);
+  }
+  return out.length ? { unticked: out } : {};
+}
+
+/** The link of a redraft (§18.11): a card id that the gateway minted, and a
+ *  draft number from 2 to 99. Anything else is no link. */
+function linkOf(value: Record<string, unknown>): { revises?: string; draft?: number } {
+  const { revises, draft } = value;
+  if (typeof revises !== "string" || !/^[0-9a-f]{32}$/.test(revises)) return {};
+  if (typeof draft !== "number" || !Number.isInteger(draft) || draft < 2 || draft > 99) return {};
+  return { revises, draft };
 }
 
 /** The ticked people of each choice, by lower case. */
@@ -202,6 +249,9 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...(ticked ? { ticked } : {}),
     ...marksOf(v.marks, replyAll),
     ...(requestId ? { requestId } : {}),
+    ...(isNew ? linkOf(v) : {}),
+    ...(isNew && v.reopened === true ? { reopened: true as const } : {}),
+    ...(isNew ? untickedNames(v.unticked, replyAll, ticked ?? undefined) : {}),
   };
 }
 
@@ -661,12 +711,42 @@ export const NUDGE_TEXT = "Tell me in the chat below.";
 export const NUDGE_CHIPS: readonly string[] = ["make it shorter", "make it more formal"];
 
 /**
- * The nudge line once the member changed the subject or the text (fix round
- * 1, P1). A request in the chat closes this card, and the assistant writes a
- * new card from ITS draft: the member's edits do not go with the request yet
- * (slice 3 carries them). So the line says so, and the chips hide.
+ * The nudge line once the member changed the subject or the text. A request
+ * in the chat closes this card, and since §18.11 it carries the member's
+ * version (`lib/redraftCard.ts`), so the assistant writes the new card from
+ * the member's edits. The line says so, and the chips stay. (Fix round 1 of
+ * §18.10 hid the chips, because the edits did not go then.)
  */
-export const NUDGE_EDITED = "A request in the chat starts again from the assistant's draft. Save draft keeps your version.";
+export const NUDGE_EDITED = "Your edits go with a request in the chat. Save draft keeps your version.";
+
+/**
+ * The same line when no run is live, as after a Stop (§18.11 fix round 4). Only
+ * a steer carries the member's version. A plain send starts a new run and
+ * carries none, so a new card starts from the assistant's words, and a person
+ * the member unticked starts ticked. The card shows no chips in this state,
+ * because a chip would lead the member to lose the edits.
+ */
+export const NUDGE_EDITED_AT_REST = "A request in the chat starts again from the assistant's draft. Save draft keeps your version.";
+
+/** The member's edits of a new-mail form. The queue keeps them by card key. */
+export interface NewMailEdits {
+  subject: string;
+  body: string;
+  ticks: ReplyTicks;
+  fileTicks: string[];
+  /**
+   * §18.11 fix round 6: the form of a card that came back started with no
+   * kept edits. A later mount of it, as after a change of tab, still asks
+   * the member to check the people and the text.
+   */
+  startedBare?: true;
+}
+
+/** True when the people the member left ticked differ from the card's start. */
+export function newMailTicksMoved(form: ReplyForm, ticks: ReplyTicks): boolean {
+  const start = startTicks(form).reply_all;
+  return start.length !== ticks.reply_all.length || start.some((a) => !ticks.reply_all.includes(a));
+}
 
 /** True when the member changed the subject or the text of the card. */
 export function newMailEdited(form: ReplyForm, subject: string, body: string): boolean {

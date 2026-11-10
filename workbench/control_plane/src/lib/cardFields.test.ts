@@ -46,6 +46,26 @@ describe("the map", () => {
     expect(fieldSpec("tags_add")).toMatchObject({ label: "Add tags", kind: "tag" });
     expect(fieldSpec("some_new_key").label).toBe("Some new key");
   });
+
+  // MCP-P1b-1 re-review P1. A key from agent data may name a member of
+  // `Object.prototype`. The map lookup read the prototype chain, so the spec
+  // was a function with no label, and the card threw on `.trim()`.
+  // Mutation caught: read CARD_FIELDS with a bare index again.
+  it.each(["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf"])(
+    "reads the key %s as words, never as a member of Object.prototype",
+    (key) => {
+      const spec = fieldSpec(key);
+      expect(typeof spec.label).toBe("string");
+      expect(spec.label.trim().length).toBeGreaterThan(0);
+      expect(spec.kind).toBeUndefined();
+      expect(typeof fieldSpec(`field ${key}`).label).toBe("string");
+      expect(cardKey(key)).toBe(key);
+    },
+  );
+
+  it("reads `__proto__` as the word Proto", () => {
+    expect(fieldSpec("__proto__").label).toBe("Proto");
+  });
 });
 
 describe("a value", () => {

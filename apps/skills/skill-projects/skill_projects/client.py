@@ -87,13 +87,9 @@ def internal_token() -> str:
         from acb_common import get_settings
 
         settings = get_settings()
-        return (
-            getattr(settings, "gateway_internal_token", "")
-            or getattr(settings, "litellm_master_key", "")
-            or "sk-local"
-        )
+        return (getattr(settings, "gateway_internal_token", "") or "").strip()
     except Exception:
-        return os.environ.get("LITELLM_MASTER_KEY", "sk-local")
+        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
 
 
 def headers() -> dict[str, str]:
@@ -166,7 +162,8 @@ async def request(
         raise GatewayRefusal(why, fixable=False, route=_template(method, path))
     # Both refusals come BEFORE the client exists: the manifest's, and the
     # no-acting-user one `headers()` raises. A refused call builds nothing.
-    sent = headers()
+    # The caller's headers go first, so the identity headers win (IMG-2 review).
+    sent = {**(kwargs.pop("headers", None) or {}), **headers()}
     if "files" in kwargs:
         # A multipart body sets its own Content-Type, with the boundary. The
         # JSON header would break the upload (WS-64 OP-6c).
@@ -210,9 +207,17 @@ async def post_file(
     return resp.json() if resp.content else {}
 
 
-async def patch(path: str, payload: dict[str, Any], params: dict[str, Any] | None = None) -> Any:
-    """A PATCH. ``params`` is the query string (``include_subtasks``, WS-46 P6)."""
-    return (await request("PATCH", path, json=payload, params=params or {})).json()
+async def patch(
+    path: str,
+    payload: dict[str, Any],
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    """A PATCH. ``params`` is the query string (``include_subtasks``, WS-46 P6).
+    ``headers`` adds to the usual ones, for ``If-Match`` (IMG-2)."""
+    return (
+        await request("PATCH", path, json=payload, params=params or {}, headers=headers)
+    ).json()
 
 
 async def put(path: str, payload: dict[str, Any] | None = None) -> Any:

@@ -19,6 +19,7 @@ Schema export is ``studio_manifest.schema.json`` beside this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -51,6 +52,7 @@ from acb_common.studio_fields import (
     NAME_PATTERN,
     FieldError,
     FieldSpec,
+    lines_problem,
     parse_field_spec,
     validate_field_spec,
 )
@@ -225,6 +227,9 @@ class FieldDef(_Strict):
     to: str | None = None
     #: The field gets a row in the index side table of C1 (`studio_record_hot`).
     hot: bool = False
+    #: C13. A lines relation: the field of the object `to` that names this one.
+    #: `studio_fields.lines_problem` holds the rule of the object it names.
+    lines: str | None = None
 
 
 class ObjectDef(_Strict):
@@ -778,6 +783,41 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
+    _check_lines(m, out)
+
+
+def _parsed_fields(o: ObjectDef) -> list[FieldSpec] | None:
+    """The fields of *o*, or None when one does not parse. Its own refusal is
+    in the list already."""
+    try:
+        return [parse_field_spec(f.model_dump()) for f in o.fields]
+    except FieldError:
+        return None
+
+
+def _check_lines(m: Manifest, out: list[ManifestError]) -> None:
+    """Each lines relation (C13) names an object of this app whose field points
+    back, and each object is the lines of one parent at most. The rule is
+    `studio_fields.lines_problem`, which the store runs too."""
+    parsed = {o.name: _parsed_fields(o) for o in m.objects}
+    owners: dict[str, str] = {}
+    for oi, o in enumerate(m.objects):
+        for fi, f in enumerate(o.fields):
+            if f.lines is None or f.type != "relation" or not isinstance(f.to, str):
+                continue
+            path = f"$.objects[{oi}].fields[{fi}].lines"
+            spec = next((s for s in parsed[o.name] or () if s.key == f.key), None)
+            if spec is None or spec.lines is None or (f.to in parsed and parsed[f.to] is None):
+                continue  # a field refusal is in the list already
+            problem = lines_problem(o.name, spec, f.to if f.to in parsed else None,
+                                    parsed.get(f.to))
+            if problem is None and f.to in owners:
+                problem = (f"`{f.to}` is the lines of `{owners[f.to]}` already. "
+                           "An object is the lines of one parent.")
+            if problem is not None:
+                out.append(_err(path, problem))
+            else:
+                owners[f.to] = o.name
 
 
 def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
@@ -949,6 +989,39 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
             seen.add((e.path, e.message))
             unique.append(e)
     return sorted(unique, key=lambda e: e.path)
+
+
+def _canonical(value: Any) -> Any:
+    """*value* with each zero float written as ``0.0``. A ``jsonb`` number is a
+    numeric, and a numeric has no sign of zero, so the store keeps ``-0.0`` as
+    ``0.0`` (G1c review round 2). An int stays an int."""
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
+    if isinstance(value, dict):
+        return {k: _canonical(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def manifest_hash(manifest: Any) -> str:
+    """The SHA-256 of the canonical JSON of *manifest*: sorted keys, no space,
+    each zero float as ``0.0``, UTF-8. Pure, and it never raises (STU-G1c).
+
+    THE one hash of a draft. The package store compares it under its row lock
+    (``packages_store.publish_version`` and ``update_manifest``), and the chat
+    tools send it as ``based_on`` and key the approval of a plan on it.
+
+    The hash of a manifest that the store took equals the hash of the stored
+    manifest. The store keeps a manifest as ``jsonb``, which changes two
+    things: it orders the keys in its own way, and it drops the sign of a
+    zero. The sorted keys and the written zero cover both. A float keeps its
+    shortest decimal text, and the store refuses an exponent, a NaN and a
+    float of 10^15 or more (``packages_store.first_bad_value``). Fences: the
+    R8 tests a and g of ``test_studio_chat_build_r8.py``."""
+    text = json.dumps(_canonical(manifest), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=repr)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def validate_shell_manifests(directory: Path | None = None) -> list[ManifestError]:

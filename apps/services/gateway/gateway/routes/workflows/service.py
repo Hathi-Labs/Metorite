@@ -104,8 +104,10 @@ from gateway.routes.workflows.engine.handlers import (
 )
 from gateway.routes.workflows.engine.runner import execute_workflow
 from gateway.routes.workflows.tools import (
+    NOTIFY_ACTIVITY,
     NOTIFY_WHATSAPP,
     execute_tool,
+    notify_activity,
     notify_owner_whatsapp,
 )
 from sqlalchemy import text
@@ -497,6 +499,10 @@ def _tool_runner(workflow_id: str, organization_id: str | None) -> Any:
     arguments never name the member."""
 
     async def _run(action: str, args: dict[str, Any], actor: str) -> dict[str, Any]:
+        if action == NOTIFY_ACTIVITY and organization_id:
+            # The feed is keyed for each tenant (H-201c): the run's org,
+            # never the ambient value, which a scheduled run does not have.
+            return await notify_activity(args, actor, organization_id=organization_id)
         if action != NOTIFY_WHATSAPP:
             return await execute_tool(action, args, actor)
         if not workflow_id:
@@ -796,6 +802,7 @@ async def record_skipped_run(
         run_id=run_id,
         status="cancelled",
         reason=reason[:160],
+        organization_id=organization_id,
     )
     return run_id
 
@@ -826,6 +833,7 @@ async def _execute_run(
         user=started_by or None,
         phase="start",
         run_id=run_id,
+        organization_id=organization_id,
     )
     _hub_emit(run_id, {"event": "run", "status": "running"})
 
@@ -927,6 +935,7 @@ async def _execute_run(
             phase="end",
             run_id=run_id,
             status=status,
+            organization_id=organization_id,
         )
         try:
             await evaluate_automation_health(
@@ -1159,6 +1168,7 @@ async def evaluate_automation_health(
         status="auto_disabled",
         reason=reason,
         consecutive_failures=AUTO_DISABLE_AFTER,
+        organization_id=organization_id,
     )
     return True
 
@@ -1521,6 +1531,7 @@ async def resume_run(
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
     workflow_id = str(snapshot.get("workflow_id") or run.workflow_id)
     workflow_name = str(snapshot.get("workflow_name") or run.workflow_name)
+    run_org = getattr(run, "organization_id", None)
     if blind:
         _log.warning("workflows.resume_refused", run_id=run_id, nodes=blind)
         publish_workflow_activity(
@@ -1531,9 +1542,9 @@ async def resume_run(
             run_id=run_id,
             status="cancelled",
             reason=_RESUME_REFUSED,
+            organization_id=str(run_org) if run_org else organization_id,
         )
         return {"ok": False, "error": _RESUME_REFUSED, "run_id": run_id, "node_id": gate_node}
-    run_org = getattr(run, "organization_id", None)
     _HUBS[run_id] = RunHub()
     _ACTIVE_TOTAL += 1
     _ACTIVE_BY_WORKFLOW[workflow_id] = _ACTIVE_BY_WORKFLOW.get(workflow_id, 0) + 1

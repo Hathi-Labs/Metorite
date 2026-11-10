@@ -414,13 +414,21 @@ def _sanitize_messages_for_provider(
     1. Assistant messages with *neither* valid content nor valid tool_calls
        → dropped.
     2. Assistant messages with tool_calls but null/empty content → content
-       set to "" (all providers — null content violates the OpenAI spec).
+       set to None for an Anthropic-shaped provider, where litellm turns ""
+       into a visible placeholder (task 1787). Any other provider, and the
+       Router hop with no provider, keeps "".
     3. Tool messages with null/empty content → content set to "[tool result]".
     4. Malformed tool-call items (missing ``function`` / ``name``) → stripped.
     """
     if not messages:
         return messages
 
+    # None only for a provider we KNOW is Anthropic-shaped. An unknown or empty
+    # provider (the Router hop) keeps "": DeepSeek, Groq and Together refuse
+    # null beside tool_calls, and the Router re-applies the rule per step.
+    from acb_llm.message_hygiene import is_anthropic_shaped
+
+    null_ok = is_anthropic_shaped(provider)
     cleaned: list[dict[str, Any]] = []
     for m in messages:
         role = m.get("role", "")
@@ -477,7 +485,10 @@ def _sanitize_messages_for_provider(
             ):
                 if not isinstance(m, dict):
                     m = dict(m)
-                m["content"] = ""
+                # litellm turns "" into the sentence "[System: Empty message
+                # content sanitised ...]" for Anthropic, so only an
+                # Anthropic-shaped provider gets None.
+                m["content"] = None if null_ok else ""
 
         elif role == "tool":
             # Tool messages must have non-empty string content.
@@ -487,7 +498,11 @@ def _sanitize_messages_for_provider(
 
         cleaned.append(m)
 
-    return cleaned
+    # ONE shared pass (task 1787): no "" content, no empty text block, and no
+    # litellm placeholder line in a stored turn. See acb_llm.message_hygiene.
+    from acb_llm.message_hygiene import clean_model_messages
+
+    return clean_model_messages(cleaned, null_content_ok=null_ok)
 
 
 # ── Secret-stripping patterns for upstream error surfacing ─────────────────
@@ -825,7 +840,11 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     provider = ensure_model_registered(model)
 
     # Sanitize messages for providers with strict validation (e.g. DeepSeek).
-    messages = _sanitize_messages_for_provider(messages, provider or model)
+    # litellm names the provider ("anthropic", "bedrock", "vertex_ai"), so pass
+    # the model too: a Claude model on Bedrock is Anthropic-shaped.
+    messages = _sanitize_messages_for_provider(
+        messages, f"{provider or ''} {model}",
+    )
 
     # Context-window guard (single-agent chat audit C1/CX1): fit prompt +
     # completion into the model's window BEFORE cache annotation, so an

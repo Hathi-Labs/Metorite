@@ -37,7 +37,8 @@ import Button from "@/components/ui/Button";
 import { openAssistant } from "./assistant";
 import { shellChatOn } from "./chatFlag";
 import { fillPageFilter, pageFilterName } from "./pageFilter";
-import { buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
+import { installJobs, usePackageManifest } from "./packageManifest";
+import { addInstallJobs, buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
 
 interface FindItem {
   kind: string;
@@ -171,7 +172,13 @@ export function useBarResults({
   // member's features as well as the pane.
   const { access } = useAccess();
   const features = access.features;
-  const items = useMemo(() => buildItems(panes, undefined, features), [panes, features]);
+  // PKG-6: the jobs an install gives. Empty with the package host off.
+  const manifest = usePackageManifest();
+  const installJobList = useMemo(() => installJobs(manifest, features), [manifest, features]);
+  const items = useMemo(
+    () => addInstallJobs(buildItems(panes, undefined, features), installJobList),
+    [panes, features, installJobList],
+  );
 
   // Tier 1: ask the apps, once the member pauses. A late answer for words the
   // member has since changed is dropped, never shown.

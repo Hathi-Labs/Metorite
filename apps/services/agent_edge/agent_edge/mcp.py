@@ -42,6 +42,11 @@ gives the answer, and no later check runs:
    (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
    gets a tool error, and no 403.
 
+**The read-only door (SW-34b).** ``POST /mcp/readonly`` runs the same checks
+in the same order. Right after check 6 it narrows the caller's scopes to the
+read scopes (``bearer.read_only``). Check 8 and each method then read the
+narrowed scopes, so a write tool gets the 403 of check 8 there.
+
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
 ``-32603`` for a 503, and ``-32600`` for every other case.
@@ -62,7 +67,7 @@ from acb_common import get_logger
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from agent_edge import bearer, prompts, tools
+from agent_edge import bearer, prompts, resources, tools
 
 _log = get_logger("agent_edge.mcp")
 
@@ -95,12 +100,17 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
 SERVED_METHODS = frozenset({"initialize", "ping", "tools/list", "tools/call",
-                            "prompts/list", "prompts/get"})
+                            "prompts/list", "prompts/get",
+                            "resources/list", "resources/templates/list",
+                            "resources/read"})
 
 #: The ``capabilities`` of ``initialize``, whatever the flags and the scopes
 #: (EA-6e, §9.6). ``prompts/list`` gives an empty list when the prompt hides.
+#: SW-34a adds ``resources``: no subscribe and no change notice. The list is
+#: empty for an organization off ``agent_resources_orgs``.
 CAPABILITIES: dict[str, Any] = {"tools": {"listChanged": False},
-                                "prompts": {"listChanged": False}}
+                                "prompts": {"listChanged": False},
+                                "resources": {"subscribe": False, "listChanged": False}}
 
 SERVER_INFO = {"name": "metorite", "title": "Metorite", "version": "0.1.0"}
 
@@ -131,14 +141,14 @@ _ASKED_WORK = (
     " server. That work needs a task too. Before the first edit, find it with"
     " search_tasks, or make it with create_task. Then claim it and follow"
     " steps 4 to 6. A session that only reads or answers needs no task."
-    " Before you release a task, add a comment with what is done, what is"
-    " left and the next step."
+    " Before you release a task, comment what is done, what is left and the"
+    " next step."
 )
 
 #: The routine of §12 (EA-6e, EA3-39). It shows on the same test as the
 #: prompt ``work_on_task``: the writes flag and ``projects:write``.
 _ROUTINE_INSTRUCTIONS = (
-    " To work on a task that you already know, read it with get_task and call"
+    " To work on a known task, read it with get_task and call"
     " claim_task. Report"
     " progress with add_comment, and call add_task_reference for each branch"
     " and each pull request. Put the url that get_task gives in the"
@@ -146,10 +156,10 @@ _ROUTINE_INSTRUCTIONS = (
     " name. When the pull request opens, call"
     " set_task_status with a status of the category in_progress whose name"
     " says review. Move the task to done only after the merge, and not when"
-    " GitHub already did. The prompt work_on_task gives the full steps."
+    " GitHub already did. See prompt work_on_task."
     # MCP-G1. The tools of the project tree and of a move between projects.
-    " To make a space, a project or a subproject, call create_project. Change"
-    " one with update_project. To move tasks to another project, call"
+    " To make or change a space, project or subproject, call create_project or"
+    " update_project. To move tasks to another project, call"
     " preview_move_tasks, show the person what the move drops, and then call"
     " move_tasks with its preview_id."
 )
@@ -169,7 +179,7 @@ _PROTOCOL_RUNS_ON = (
     " it again. Take the next row. A run of another connection, such as one"
     " on another machine, is never yours, and my_work does not list it."
     "{terminals}"
-    " Take only a row that my_work lists."
+    " Take only a row that my_work lists.{answer}"
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
     " 5. Post a thought with post_agent_activity at least once a minute."
@@ -220,13 +230,12 @@ _RUN_INSTRUCTIONS = (
     " Only one AI session may hold a task. Never work on a held task: a task"
     " whose held_by is not stale. The one exception is a my_work row with the"
     " reason held_by_you, because its run is of your own connection and its"
-    " session went quiet. A waiting run of another connection or another"
-    " machine is never yours."
+    " session went quiet."
     # MCP-G15 fix round 1. The rule of the code: the gateway takes a write of
     # the same member and the same client stamp (`may_end_run`), whichever
     # connection sends it. So the agent keeps the rule above itself.
     " Metorite still takes a write on any run of your member and your client,"
-    " from any machine. So do not write on such a run."
+    " from any machine. So do not write on a run of another session."
     " Outside my_work, use list_tasks with unheld true. Call"
     " claim_task first. While you work,"
     " the thought that you send at least once a minute is the"
@@ -243,6 +252,14 @@ _RUN_INSTRUCTIONS = (
 )
 
 
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The last sentence of the
+#: instructions on every connection. On a write connection it sits after the
+#: cut of Claude Code at 4096 characters, so it moves no sentence before the
+#: cut. There the prompt and the ``get_task_context`` description carry it.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+_IMAGE_INSTRUCTIONS = " " + prompts.IMAGE_RULE
+
+
 def instructions(scopes: Iterable[str] = ()) -> str:
     """The ``instructions`` of ``initialize``.
 
@@ -251,19 +268,23 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     ``projects:write`` on the connection. So a read-only connection names no
     write tool. The agent-run part shows only when ``tools/list`` shows the
     run writes: the runs flag too. The protocol of EA-15c (§12.4) comes first
-    in the routine, in its form for the runs flag.
+    in the routine, in its form for the runs flag. The image sentence of
+    IMG-3 comes last.
     """
     held = frozenset(scopes)
     text = _INSTRUCTIONS + prompts.BRIEF_RULE
     if not prompts.offered(held):
-        return text
+        return text + _IMAGE_INSTRUCTIONS
     runs = agent_oauth.runs_enabled()
-    protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()) if runs \
+    protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
+        "{answer}", prompts.answer_pointer()) if runs \
         else _PROTOCOL_RUNS_OFF
     text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     if runs:
         text += _RUN_INSTRUCTIONS
-    return text
+        if agent_oauth.answer_change_enabled():
+            text += prompts.ANSWER_RULE
+    return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.
 ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -272,6 +293,20 @@ ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 def path() -> str:
     """The path of the resource, ``/mcp`` by default."""
     return urlsplit(agent_oauth.resource()).path or "/mcp"
+
+
+#: SW-34b. The last segment of the read-only door, below :func:`path`.
+READONLY_SEGMENT = "readonly"
+
+
+def readonly_path() -> str:
+    """The read-only door, ``/mcp/readonly`` by default (SW-34b).
+
+    The same token works here and on :func:`path`, because the audience is
+    the resource of :func:`path`. The path is the mode: each call here runs
+    with its scopes narrowed to the read scopes (``bearer.read_only``).
+    """
+    return f"{path().rstrip('/')}/{READONLY_SEGMENT}"
 
 
 def resource_metadata_url() -> str:
@@ -420,6 +455,24 @@ def _session_of(request: Request, caller: bearer.Caller,
 
 async def endpoint(request: Request) -> Response:
     """``/mcp``. Checks 2 to 8 of §9.6, in order, then the method."""
+    return await _serve(request, read_only=False)
+
+
+async def readonly_endpoint(request: Request) -> Response:
+    """``/mcp/readonly`` (SW-34b). The same checks, in the same order, with
+    the caller's scopes narrowed to the read scopes right after check 6.
+
+    So ``tools/list`` shows only reads, and check 8 answers 403
+    ``insufficient_scope`` for each write tool. The prompt, the resources
+    and the instructions read the same narrowed scopes. The path can only
+    narrow a token, never widen it. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``.
+    """
+    return await _serve(request, read_only=True)
+
+
+async def _serve(request: Request, *, read_only: bool) -> Response:
+    """Checks 2 to 8 of §9.6, in order, then the method."""
     key = agent_signing.signing_key()
     if key is None:
         return http_error(503, INTERNAL_ERROR, "The server is not ready.",
@@ -451,12 +504,20 @@ async def endpoint(request: Request) -> Response:
     try:
         if len(authorizations) > 1:
             raise bearer.BearerRefused(401, sent=True, reason="two_tokens")
-        caller = await bearer.authenticate(authorizations[0] if authorizations else None)
+        # EA-19b: the client address that uvicorn read from the proxy, never
+        # `X-Real-IP`, which a client could set. Only a box token reads it.
+        caller = await bearer.authenticate(
+            authorizations[0] if authorizations else None,
+            request.client.host if request.client else None)
     except bearer.BearerRefused as refused:
         if refused.status == 503:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
                               {"Retry-After": str(bearer.OUTAGE_RETRY_AFTER_S)})
         return challenge_401(sent=refused.sent)
+    if read_only:
+        # SW-34b: the one narrowing of the read-only door. Every later check
+        # reads `caller.scopes`, so no second scope rule exists.
+        caller = bearer.read_only(caller)
 
     method = message.get("method") if kind != "response" else None
     # 7. The version, and 7b. the session (SW-7).
@@ -484,6 +545,27 @@ async def endpoint(request: Request) -> Response:
         return Response(status_code=202)
     return await _dispatch(message["id"], str(method), params, tool, caller, key,
                            session)
+
+
+async def _resources_method(request_id: Any, method: str, params: dict[str, Any],
+                            caller: bearer.Caller, ctx: tools.Context) -> Response:
+    """The three resource methods of SW-34a (``agent_edge.resources``)."""
+    org = caller.lookup.organization_id
+    if method == "resources/list":
+        return _result(request_id, {"resources": resources.listed(caller.scopes, org)})
+    if method == "resources/templates/list":
+        return _result(request_id, {"resourceTemplates": resources.templates(
+            caller.scopes, org)})
+    try:
+        result = await resources.read(ctx, params)
+    except resources.ResourceBadParams as refused:
+        return _rpc_error(request_id, INVALID_PARAMS, str(refused))
+    except resources.ResourceNotFound as refused:
+        return _rpc_error(request_id, resources.NOT_FOUND, str(refused))
+    except tools.GatewayUnauthorized:
+        return challenge_401(sent=True)
+    _log.info("agent_edge.resource_read", connection_id=caller.lookup.connection_id)
+    return _result(request_id, result)
 
 
 async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
@@ -519,6 +601,10 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
         return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
+    if method.startswith("resources/"):
+        return await _resources_method(
+            request_id, method, params, caller,
+            tools.Context(caller=caller, key=key, session=session))
     if method == "prompts/get":
         try:
             result = prompts.get(caller.scopes, params)
@@ -537,6 +623,16 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
+    # IMG-3: the result of `get_attachment` can hold an image part
+    # (`tools.image_result`). It goes out as it is, with no second wrap.
+    # MCP-G10: a refusal that names a wait also sends `Retry-After`, where the
+    # transport allows it. The answer stays HTTP 200 with `isError: true`.
+    wait = None
+    if result.get("isError"):
+        wait = (result.get("structuredContent") or {}).get("retry_after")
+    if isinstance(wait, int):
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
+                            headers={"Retry-After": str(wait)})
     return _result(request_id, result)
 
 
@@ -546,6 +642,7 @@ __all__ = [
     "LEGACY_VERSION",
     "MAX_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
+    "READONLY_SEGMENT",
     "ROUTE_METHODS",
     "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
@@ -553,5 +650,7 @@ __all__ = [
     "challenge_403",
     "endpoint",
     "path",
+    "readonly_endpoint",
+    "readonly_path",
     "resource_metadata_url",
 ]

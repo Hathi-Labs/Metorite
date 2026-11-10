@@ -25,9 +25,11 @@ on:
     # wedges the merge. So filter inside the workflow if you must, never at the
     # trigger.
     #
-    # The cost is stated rather than hidden: a docs-only PR now runs the full
-    # ~5 minute suite. That is the price of the checks meaning something at the
-    # merge button, and it is cheaper than one un-mergeable PR.
+    # The cost is stated rather than hidden: the workflow starts for every PR,
+    # and (CIV-3) the unit shards run only the tests that the diff can affect.
+    # A docs-only PR still reports every required check. That is the price of
+    # the checks meaning something at the merge button, and it is cheaper than
+    # one un-mergeable PR.
   # ── NO `push` trigger, on purpose (2026-10-16) ──────────────────────────
   #
   # A push run created a SKIPPED twin of the required check "Unit tests" on
@@ -70,16 +72,40 @@ jobs:
   # Fence: tests/unit/test_fence_lists.py.
   changes:
     name: "Changed areas"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     outputs:
       frontend: ${{ steps.diff.outputs.frontend }}
       operator: ${{ steps.diff.outputs.operator }}
       database: ${{ steps.diff.outputs.database }}
       caddy: ${{ steps.diff.outputs.caddy }}
+      # CIV-3. The unit tests that this diff can affect (affected_tests.py
+      # --gate). `full` is `false` ONLY when the selector ran and found no
+      # reason for a full run. The list is one line of space-separated paths
+      # in a job output, not an artifact. A typical list is 2-20 KB and the
+      # limit is 1 MB. The 6 shards and the guard need no download step, and
+      # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
+      full: ${{ steps.gate.outputs.full }}
+      files: ${{ steps.gate.outputs.files }}
+      # CIV-17. The unit shards this selection needs, a JSON list: `[]` for
+      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
+      # run. The `test` matrix reads it. Empty here means `changes` failed.
+      shards: ${{ steps.gate.outputs.shards }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # This step sits BEFORE `diff`, because the fence reads the LAST step
+      # for the area outputs. Plain python3, no uv: both scripts use the
+      # standard library only. A selector error, or no JSON at all, gives
+      # `full=true`.
+      - id: gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          python3 scripts/ci_unit_guard.py gate-output --json gate.json \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
 
       - id: diff
         env:
@@ -96,7 +122,9 @@ jobs:
           all=false; echo "$files" | grep -qE '^\.github/' && all=true
           hit() { $all && echo true || { echo "$files" | grep -qE "$1" && echo true || echo false; }; }
           {
-            echo "frontend=$(hit '^workbench/control_plane/')"
+            # CIV-24 (D203). `frontend` ignores the `all` switch: a change to CI alone
+            # does not run the browser suite. e2e-nightly.yml runs it on main.
+            echo "frontend=$(echo "$files" | grep -qE '^workbench/control_plane/' && echo true || echo false)"
             echo "operator=$(hit '^workbench/operator_console/')"
             echo "database=$(hit '^(infra/|scripts/|deploy/)')"
             echo "caddy=$(hit '^deploy/hostinger/caddy/')"
@@ -104,13 +132,23 @@ jobs:
 
   lint:
     name: "Lint"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
     permissions:
       contents: read
       pull-requests: read
     steps:
       - uses: actions/checkout@v5
+
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -171,6 +209,13 @@ jobs:
       # it exits 0 outside a repo. R7 — the rule names its fence.
       - name: worktree-notice stale-rules hook (blocking)
         run: node .claude/hooks/worktree-notice.test.mjs
+
+      # stop-children.mjs runs at every Stop (CIV-16). It walks up to the
+      # claude process and leaves the MCP servers off its list. A wrong root
+      # lists nothing, or tells the agent to kill its own MCP servers. Both
+      # failures are silent. R7 — the rule names its fence.
+      - name: stop-children cleanup hook (blocking)
+        run: node .claude/hooks/stop-children.test.mjs
 
       # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
       #
@@ -250,16 +295,33 @@ jobs:
   # Refresh the timings when the split drifts (one shard much longer than the
   # rest): download the `test-durations` artifact of a green run and commit it
   # as `.test_durations`.
+  #
+  # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
+  # exports `needs.changes.outputs.full` and `.files`. The shard selects only
+  # when `changes` succeeded AND `full` is the text `false`. Any other state
+  # (`true`, empty, or a failed `changes` job) runs the whole tree as before. `!cancelled()` starts the shards even when
+  # `changes` failed. Without it a failed `changes` would skip them, and
+  # `unit-tests` would then read a skipped dependency. A selection NEVER
+  # reaches pytest as an empty list, because pytest then collects everything.
   test:
-    name: "Unit tests (shard ${{ matrix.shard }}/6)"
+    name: "Unit tests (shard ${{ matrix.shard }})"
+    # CIV-23 (D201). The unit shards stay on ubuntu-24.04: on the box they ran 40+ min against 14 on
+    # hosted, with a quiet box. Fence: tests/unit/test_box_runner_routing.py.
+    # The other jobs but e2e and backup-restore may reach the box.
     runs-on: ubuntu-24.04
+    needs: changes
+    # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
+    # GitHub fails a matrix with no values, so the `if:`
+    # skips the job before the matrix is read. A failed `changes` job leaves
+    # `shards` empty text, and the matrix then falls back to all six shards.
+    if: ${{ !cancelled() && needs.changes.outputs.shards != '[]' }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
     # next round.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
@@ -275,8 +337,9 @@ jobs:
           POSTGRES_PASSWORD: cc
           POSTGRES_DB: cc_platform
         ports:
-          - 5433:5432
+          - 5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U cc"
           --health-interval 5s
           --health-timeout 5s
@@ -298,16 +361,22 @@ jobs:
           POSTGRES_PASSWORD: acb
           POSTGRES_DB: acb_tenant
         ports:
-          - 5434:5432
+          - 5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U acb"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
+      # CIV-23 (D201). The ports in these two DSNs are PLACEHOLDERS that match
+      # deploy.yml's `r8-suite` (fixed ports, the fence compares them). The
+      # first step overrides both DSNs through GITHUB_ENV with the host port
+      # that Docker picked, because the box runners share ONE Docker daemon.
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
-      # This step runs the WHOLE tests/unit/ directory. Setting DATABASE_URL
+      # A full run of this job covers the WHOLE tests/unit/ directory, and a
+      # selection run covers part of it. Setting DATABASE_URL
       # here would arm test_tenant_coverage.py's two DB-gated tests, which fail
       # BY CONSTRUCTION against a freshly-replayed ladder:
       #   * test_live_catalog_has_column_force_and_policy wants FORCE-RLS
@@ -322,6 +391,24 @@ jobs:
       TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
     steps:
       - uses: actions/checkout@v5
+
+      - name: Point the tests at the service containers
+        env:
+          CC_PORT: ${{ job.services.platform-postgres.ports['5432'] }}
+          TENANT_PORT: ${{ job.services.tenant-postgres.ports['5432'] }}
+        run: |
+          echo "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform" >> "$GITHUB_ENV"
+          echo "TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant" >> "$GITHUB_ENV"
+
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -384,13 +471,58 @@ jobs:
       #     round. 18 of 70 red runs on 15-19 Oct were flakes or infra.
       #   * The process fences run in the Lint job. They are skipped here, or
       #     they would still block.
-      - name: Run unit tests (this shard)
+      # CIV-3. `mode` is `full`, `selection` or `empty`. Only the exact text
+      # `false` in `full` selects, and only after a successful `changes` job.
+      # The process fences leave the list.
+      - name: Pick this shard's tests
+        id: pick
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
-          uv run python -m pytest tests/unit/ -v -rs --reruns 1 \
+          python3 scripts/ci_unit_guard.py select --full "$FULL" --files "$FILES"             --changes-result "$CHANGES" \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
+
+      # An `empty` selection skips this step, because pytest with no paths
+      # collects the whole tree. With fewer tests than shards, a group can
+      # come up empty and pytest exits 5. That passes on a selection and
+      # fails on a full run.
+      - name: Run unit tests (this shard)
+        if: steps.pick.outputs.mode != 'empty'
+        env:
+          # SHARD_ names only. The tests start scripts with this env, and
+          # scripts/vps_pull.sh reads a variable named MODE.
+          # Fence: test_ci_unit_guard.py.
+          SHARD_MODE: ${{ steps.pick.outputs.mode }}
+          SHARD_TARGETS: ${{ steps.pick.outputs.paths }}
+        run: |
+          set -f
+          [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
+          rc=0
+          # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
+          # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
+          # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
+          # prints the stack of every thread when one test runs over 900 s. It kills
+          # nothing, and no test takes more than 260 s.
+          uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
-            --splits 6 --group ${{ matrix.shard }} \
+            --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
-            -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml
+            -o faulthandler_timeout=900 \
+            --basetemp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pytest" \
+            -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
+          if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
+            echo "this shard drew no test from the selection"
+            rc=0
+          fi
+          exit "$rc"
+
+      # The guard in `unit-tests` fails when it finds no report. A skipped or
+      # empty shard writes a zero-test one.
+      - name: Write an empty report when no test ran
+        if: ${{ !cancelled() && steps.pick.outputs.mode != 'full' }}
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-${{ matrix.shard }}.xml
 
       - name: Keep this shard's report
         if: always()
@@ -421,28 +553,58 @@ jobs:
   # Fence: tests/unit/test_ci_unit_guard.py.
   unit-tests:
     name: "Unit tests"
-    runs-on: ubuntu-24.04
-    needs: test
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
-    # it. A skipped required check counts as satisfied.
+    # it. A skipped required check counts as satisfied (#1077).
     if: always()
     steps:
+      # CIV-17. `test` is `skipped` ONLY for an empty selection: `changes`
+      # succeeded and said `shards` is `[]`. Any other skip (a cancelled run, a
+      # failed `changes` job) stays red here. This is the #1077 trap.
       - name: Every shard passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CHANGES: ${{ needs.changes.result }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
         run: |
-          echo "shards: ${{ needs.test.result }}"
-          [ "${{ needs.test.result }}" = "success" ] || exit 1
+          echo "shards: $TEST (selection list: $SHARDS)"
+          if [ "$TEST" = "skipped" ] && [ "$CHANGES" = "success" ] && [ "$SHARDS" = "[]" ]; then
+            echo "empty selection: no shard was needed"
+            exit 0
+          fi
+          [ "$TEST" = "success" ] || exit 1
 
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.shards != '[]'
         with:
           pattern: junit-shard-*
           path: junit
           merge-multiple: true
 
+      # An empty selection ran no shard, so no report exists. Write a zero-test
+      # one, and the check below then has a report to read.
+      - name: Empty selection report
+        if: needs.changes.outputs.shards == '[]'
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-0.xml
+
+      # CIV-3. On a selection run only the must-run files in the selection
+      # have to run. `--only-selected` takes the selected paths, and an empty
+      # list checks none. Anything but a successful `changes` job with
+      # `full` equal to `false` checks the whole list. Every must-run path has
+      # to exist in the tree on any run.
       - name: The R8 suites ran, and no fence skipped
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
-          python3 scripts/ci_unit_guard.py check --junit junit \
+          set -f
+          ONLY=""
+          if [ "$FULL" = "false" ] && [ "$CHANGES" = "success" ]; then ONLY="--only-selected $FILES"; fi
+          python3 scripts/ci_unit_guard.py check --junit junit $ONLY \
             --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
             --disarmed "TENANT_LADDER_DATABASE_URL unset" \
             --never-skip \
@@ -465,8 +627,11 @@ jobs:
               tests/unit/test_customer_console_billing_reads.py \
               tests/unit/test_customer_console_billing_checkout.py \
               tests/unit/test_customer_console_tasks.py \
+              tests/unit/test_customer_console_stt_assemblyai.py \
               tests/unit/test_customer_console_catalog.py \
               tests/unit/test_customer_console_decide.py \
+              tests/unit/test_customer_console_try_voice.py \
+              tests/unit/test_catalog_health_r8.py \
               tests/unit/test_customer_console_embed.py \
               tests/unit/test_customer_console_aroh_app.py \
               tests/unit/test_operator_identity.py \
@@ -498,6 +663,7 @@ jobs:
               tests/unit/test_user_settings_per_org_r8.py \
               tests/unit/test_auth_me_shell_r8.py \
               tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_member_of_org_read.py \
               tests/unit/test_h6_rbac_rekey.py \
               tests/unit/test_email_otp_token.py \
               tests/unit/test_invited_member_promotion.py \
@@ -517,22 +683,49 @@ jobs:
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
               tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_lines_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
+              tests/unit/test_studio_publish_install_r8.py \
+              tests/unit/test_studio_package_install_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
+              tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_chat_build_r8.py \
+              tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_shell_layout_r8.py \
+              tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_field_values_r8.py \
+              tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_project_rules.py \
+              tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
+              tests/unit/test_crm_pipelines_native.py \
+              tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_headless_turn_r8.py \
+              tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_email_signature_images_r8.py \
+              tests/unit/test_email_signature_settings_r8.py \
+              tests/unit/test_mcp_edge_attachment_r8.py \
+              tests/unit/test_mcp_edge_comment_edit_r8.py \
+              tests/unit/test_projects_status_slot_r8.py \
+              tests/unit/test_pm_project_updates_r8.py \
+              tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_staging_export.py
 
+      # CIV-3. A selection run holds part of the timings. Only a full run
+      # publishes them, or `.test_durations` would refresh from a fragment.
       - name: Write the measured timings
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.full == 'true' }}
         run: python3 scripts/ci_unit_guard.py durations --junit junit --out test_durations.json
 
-      - uses: actions/upload-artifact@v4
+      - if: ${{ needs.changes.result == 'success' && needs.changes.outputs.full == 'true' }}
+        uses: actions/upload-artifact@v4
         with:
           name: test-durations
           path: test_durations.json
@@ -552,6 +745,9 @@ jobs:
   backup-restore:
     name: "Backup/restore rehearsal"
     runs-on: ubuntu-24.04
+    # CIV-23 (D201). Stays hosted. The verify container count and the EXIT trap
+    # of scripts/rehearse_verify_scratch.sh work on the WHOLE Docker daemon, so two
+    # runs on the box daemon would kill each other (CIV-6).
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
@@ -561,7 +757,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: rehearsal
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -570,10 +766,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       # The runner's client must not be OLDER than the server: pg_dump refuses
       # to dump a newer server, which would fail the job for a reason that has
       # nothing to do with our scripts.
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -584,7 +786,6 @@ jobs:
       - name: Rehearse
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_restore.sh
@@ -601,7 +802,6 @@ jobs:
       - name: Rehearse the scratch-database drop and sweep
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_verify_scratch.sh
@@ -617,7 +817,7 @@ jobs:
   # about 152 files nobody had checked together; now it is a build step.
   migrations:
     name: "Migration ladder replay"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # The ladder is infra/, and its appliers are under scripts/. The R1
     # number guard runs in the shards and in push-check on every PR anyway.
     needs: changes
@@ -627,15 +827,15 @@ jobs:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: ladder
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       PGHOST: localhost
-      PGPORT: "5432"
       PGUSER: postgres
       PGPASSWORD: ladder
       PG_MODE: local
@@ -645,7 +845,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -691,7 +897,7 @@ jobs:
         run: |
           set -euo pipefail
           createdb console
-          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:5432/console"
+          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:${PGPORT:-5432}/console"
           for i in 1 2 3; do
             echo "--- console ladder run $i ---"
             bash scripts/apply_customer_console_migrations.sh | tail -1
@@ -717,7 +923,7 @@ jobs:
   # build` — that stays a deploy-time step.
   frontend:
     name: "Frontend (typecheck + unit tests)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # ⚠️ NOT filtered by path. Its unit tests read files across the whole
     # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
@@ -774,14 +980,21 @@ jobs:
       # * With no event file (the local CI on the PC) there is no body, so
       #   the step passes.
       # * `!cancelled()`: it reports even when a test above failed.
-      # ⚠️ A rerun replays the first event. After you edit the body, push a
-      # commit. Fence: tests/unit/test_fence_lists.py.
+      # * CIV-8 (2026-11-07). The step reads the LIVE body through the API, and
+      #   uses the event body only when the API call fails. A rerun replays the
+      #   first EVENT, so with the event body alone a missing line cost a new
+      #   push and a whole new run (about 17 jobs). 21 of the last 50 red
+      #   pr-check runs failed on this line alone. Now: edit the body, then
+      #   `gh run rerun <run id> --failed` reruns only the failed jobs.
+      # Fence: tests/unit/test_fence_lists.py.
       - name: Visual review line (a frontend PR)
         if: "!cancelled()"
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -u
           if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
-          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; print(((p.get("base") or {}).get("sha") if sys.argv[1] == "base" else p.get("body")) or "")' "$1"; }
+          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; k = sys.argv[1]; print(((p.get("base") or {}).get("sha") if k == "base" else str(p.get("number") or "") if k == "number" else p.get("body")) or "")' "$1"; }
           base="$(ev base)"
           frontend=true
           if [ -n "$base" ] \
@@ -790,12 +1003,19 @@ jobs:
             grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
           fi
           $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
-          body="$(ev body)"
+          pr="$(ev number)"
+          if [ -n "${GH_TOKEN:-}" ] && [ -n "$pr" ] && live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.body // ""' 2>/dev/null)"; then
+            body="$live"
+            echo "read the live body of PR ${pr}"
+          else
+            body="$(ev body)"
+            echo "the live body is not available, so the body of the event is checked"
+          fi
           if grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body"; then
             echo "the body names its visual review"
             exit 0
           fi
-          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then push a commit, because a rerun reads the old body. Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
+          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then edit the PR body and rerun the failed jobs of this run: gh run rerun <run id> --failed (or the button Re-run failed jobs). Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
           exit 1
 
   # The operator console had tests but NO CI running them — a fence that never
@@ -804,7 +1024,7 @@ jobs:
   # authority check first), which is the only fence on that ordering.
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
     permissions:
@@ -959,7 +1179,7 @@ jobs:
 
   caddy:
     name: "Caddy config (validate)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
@@ -983,7 +1203,7 @@ jobs:
 
   secret-scan:
     name: "Secret scan"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # Report-only initially (ratchet, like mypy/ruff-full above): surfaces any
     # credential in a PR's NEW commits without blocking on an install/config
     # hiccup. Graduate to blocking once proven on a few PRs. Scans only the PR's
@@ -996,6 +1216,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install gitleaks
+        if: runner.environment == 'github-hosted'
         # `go install github.com/gitleaks/gitleaks/v8` broke: that tag's go.mod
         # still declares the module path as github.com/zricethezav/gitleaks/v8,
         # so `go install` errors on the path mismatch and the scan never ran.
@@ -1006,6 +1227,10 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
+
+      # A missing tool must be loud. `continue-on-error` hides exit 127 otherwise.
+      - name: Check that gitleaks is on the PATH
+        run: command -v gitleaks || { echo "::error::gitleaks is not installed on this runner"; exit 1; }
 
       - name: Scan PR commits for secrets
         run: |

@@ -10,6 +10,8 @@
 
 import { useSyncExternalStore } from "react";
 
+import { setGuideHold } from "./guide";
+
 /**
  * Whether the question dialog shows.
  *
@@ -60,6 +62,8 @@ const _welcomeListeners = new Set<() => void>();
 export function setWelcomeOpen(open: boolean): void {
   if (_welcomeOpen === open) return;
   _welcomeOpen = open;
+  // The guide waits while the dialog is open and starts when it closes (GD-4).
+  setGuideHold(open);
   _welcomeListeners.forEach((l) => l());
 }
 

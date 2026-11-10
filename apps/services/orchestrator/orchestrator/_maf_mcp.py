@@ -41,6 +41,16 @@ The rules:
    goes from the row to :class:`McpServer`, onto the tool at the attach
    (:func:`server_always_confirms`), and to ``decide()`` as the fact
    ``mcp_always_confirm``. ``decide()`` stays the one gate.
+   **The read-only key** (MCP-C2, item 32): an admin can say that the key
+   of a server can only read (``provider_meta.read_only_key``). Then NO tool
+   of that server waits for the card, whatever its hints say, also in a run
+   with no member. The registry parses the key once
+   (``StoredServer.read_only_key``), and the flag goes the same path:
+   :class:`McpServer`, the tool (:func:`server_read_only_key`), and
+   ``decide()`` as the fact ``mcp_read_only_key``. ``decide()`` answers
+   ``mcp_read_only_key``, and the gate runs the tool as for
+   ``mcp_read_only``. An untrusted answer and "always confirm" still ask
+   the card, because ``decide()`` checks them first.
 7. **No stdio.** Nothing here builds an ``MCPStdioTool`` (D85). Fence:
    ``tests/unit/test_no_mcp_stdio.py``.
 8. **Tools on demand** (WS-8c items 22 to 30). Each tool is built with MAF's
@@ -157,6 +167,9 @@ class McpServer:
     headers: dict[str, str] = field(default_factory=dict, repr=False)
     #: H-300: every tool of this server needs the card. False keeps H-299.
     always_confirm: bool = False
+    #: MCP-C2: the admin says the key can only read, so no tool of this
+    #: server needs the card. ``always_confirm`` wins over it.
+    read_only_key: bool = False
     #: IN-8b: the header is the bearer token of an OAuth consent.
     oauth: bool = False
     #: IN-8b: the registry refreshed that token in THIS run, before the
@@ -465,6 +478,8 @@ def _record_tool_list(meta: dict[str, ToolMeta], result: Any, server: str = "") 
 
 #: The key on a tool's ``__dict__`` that holds its server's H-300 flag.
 _ALWAYS_CONFIRM_KEY = "_ws8c_always_confirm"
+#: MCP-C2: the key that holds its server's read-only key flag.
+_READ_ONLY_KEY_KEY = "_mcpc2_read_only_key"
 #: IN-8c: the key that holds ``(admin email, host)`` of an OAuth server.
 _ACTS_AS_KEY = "_in8c_acts_as"
 
@@ -488,6 +503,16 @@ def server_always_confirms(tool: Any) -> bool:
     The attach writes the flag from the registry row. A tool with no flag
     reads as false, as a row with no key does."""
     return getattr(tool, "__dict__", {}).get(_ALWAYS_CONFIRM_KEY) is True
+
+
+def server_read_only_key(tool: Any) -> bool:
+    """True when an admin says the key of the server of *tool* can only read
+    (MCP-C2, item 32).
+
+    The attach writes the flag from ``McpServer.read_only_key``, which the
+    registry parsed once. A tool with no flag, or a value that is not a real
+    ``True``, reads as false, so the hints decide the card as before."""
+    return getattr(tool, "__dict__", {}).get(_READ_ONLY_KEY_KEY) is True
 
 
 def tool_meta(tool: Any, remote_name: str) -> ToolMeta | None:
@@ -577,12 +602,15 @@ def mcp_index(tool: Any) -> list[dict[str, Any]]:
     returns the full ``parameters()`` of each tool, so one list call cost what
     the disclosure saved. ``read_only`` is true only when the gate would
     answer ``mcp_read_only`` (item 13): the hints say read-only and not
-    destructive, and the server is not set to always confirm (H-300). The
+    destructive, and the server is not set to always confirm (H-300). It is
+    true for each tool of a server whose key an admin says can only read
+    (MCP-C2, item 32), unless that server is also set to always confirm. The
     model gets the full schema when it loads the tool. This is the two-tier
     model of ``acb_skills.artifact_kit``."""
     from acb_skills.permission_policy import mcp_needs_confirmation
 
     always = server_always_confirms(tool)
+    read_only_key = server_read_only_key(tool)
     loaders = {getattr(f, "name", "") for f in _loader_functions(tool)}
     out: list[dict[str, Any]] = []
     for fn in list(getattr(tool, "_functions", None) or []):
@@ -597,8 +625,8 @@ def mcp_index(tool: Any) -> list[dict[str, Any]]:
         out.append({
             "name": name,
             "description": _index_line(text),
-            "read_only": not always and not mcp_needs_confirmation(
-                meta.hints if meta is not None else None),
+            "read_only": not always and (read_only_key or not mcp_needs_confirmation(
+                meta.hints if meta is not None else None)),
         })
     return out
 
@@ -835,6 +863,8 @@ async def attach_mcp_tools(
                 )
             # H-300: the gate reads the server's flag from the tool.
             tool.__dict__[_ALWAYS_CONFIRM_KEY] = server.always_confirm is True
+            # MCP-C2: the admin's read-only key, as the registry parsed it.
+            tool.__dict__[_READ_ONLY_KEY_KEY] = server.read_only_key is True
             # IN-8c (D98): the card names the admin that an OAuth row acts as.
             if server.oauth and server.acts_as and host:
                 tool.__dict__[_ACTS_AS_KEY] = (str(server.acts_as), host)
@@ -886,7 +916,8 @@ async def attach_mcp_tools(
     )]
     names = [t.name for t in tools]
     _log.info("mcp.attached", servers=names,
-              always_confirm=[t.name for t in tools if server_always_confirms(t)])
+              always_confirm=[t.name for t in tools if server_always_confirms(t)],
+              read_only_key=[t.name for t in tools if server_read_only_key(t)])
     return names
 
 
@@ -1347,7 +1378,9 @@ def _make_gate_class() -> type:
         ``mcp_read_only`` needs the member's card before the call reaches
         the server (``ask_tools.request_confirmation``). H-300: it also gets
         the server's "always confirm" flag, and then ``decide()`` never
-        answers ``mcp_read_only``. *tools* are the MCP
+        answers ``mcp_read_only``. MCP-C2: it also gets the admin's
+        read-only key, and ``mcp_read_only_key`` runs the tool as
+        ``mcp_read_only`` does, with no card. *tools* are the MCP
         tools of the run, so the gate can find the server of a function.
         *member_present* is False for a run with no member, and then a tool
         that needs a card is refused.
@@ -1367,7 +1400,7 @@ def _make_gate_class() -> type:
 
         async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
             from acb_skills.egress import _from_mcp
-            from acb_skills.permission_policy import MCP_READ_ONLY
+            from acb_skills.permission_policy import MCP_READ_ONLY, MCP_READ_ONLY_KEY
             from acb_skills.tool_guard import tool_name
 
             from orchestrator._tool_injection import _permission_gate
@@ -1385,7 +1418,11 @@ def _make_gate_class() -> type:
                 return
             server, remote, meta = self.owner_of(function)
             # H-300: the admin's switch on the server. The owner holds it.
-            always = server_always_confirms(_owner_tool(self.tools, function))
+            owner = _owner_tool(self.tools, function)
+            always = server_always_confirms(owner)
+            # MCP-C2: the admin's read-only key. ``decide()`` puts it after
+            # the untrusted answer and after always confirm.
+            read_only_key = server_read_only_key(owner)
             # WS-17 EM-G11d round 3: a chat session that read an untrusted
             # agent's answer asks a card for each MCP call. The read of the
             # mark fails closed.
@@ -1395,13 +1432,14 @@ def _make_gate_class() -> type:
                 name, arguments, surface="mcp_tool",
                 facts={"mcp_tool": True,
                        "mcp_annotations": meta.hints if meta is not None else None,
-                       "mcp_always_confirm": always},
+                       "mcp_always_confirm": always,
+                       "mcp_read_only_key": read_only_key},
                 after_untrusted_answer=await session_is_marked(),
             )
             if not allowed:
                 context.result = f"[blocked by permission policy: {reason}]"
                 return
-            if reason == MCP_READ_ONLY:
+            if reason in (MCP_READ_ONLY, MCP_READ_ONLY_KEY):
                 await call_next()
                 return
             refusal = _card_refusal(self.member_present)
@@ -1414,7 +1452,7 @@ def _make_gate_class() -> type:
                 card = card_text(server, remote, arguments, meta,
                                  str(getattr(function, "description", "") or ""),
                                  local=name, always_confirm=always,
-                                 acts_as=server_acts_as(_owner_tool(self.tools, function)))
+                                 acts_as=server_acts_as(owner))
             except Exception:  # CardTooLong, or a fault: no whole card, no call
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
@@ -1474,6 +1512,7 @@ __all__ = [
     "schema_tokens",
     "server_acts_as",
     "server_always_confirms",
+    "server_read_only_key",
     "tool_hints",
     "tool_meta",
 ]

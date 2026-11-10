@@ -321,3 +321,35 @@ def test_check_mode_and_the_parser(capsys) -> None:
     assert "50 questions" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         run.main([])  # a mode is required
+
+
+# ── KG-3b: the latency limits of knowledge_graph.md §7.3 ────────────────────
+
+
+def _timed(seconds: float, n: int = 10):
+    return score.summarize([_o(f"q{i}", "tasks", 1, seconds=seconds, hits={"tasks": 1})
+                            for i in range(n)], REGISTRY)
+
+
+def test_the_limits_are_the_targets_of_the_spec() -> None:
+    assert (score.P50_LIMIT_S, score.P95_LIMIT_S) == (1.5, 3.0)
+
+
+def test_verdict_p50_must_be_under_one_and_a_half_seconds() -> None:
+    assert score.verdict(_timed(1.49)) == score.EXIT_PASS
+    assert score.verdict(_timed(1.5)) == score.EXIT_FAIL
+
+
+def test_verdict_p95_must_be_under_three_seconds() -> None:
+    fast = [_o(f"q{i}", "tasks", 1, seconds=0.2, hits={"tasks": 1}) for i in range(18)]
+    slow_ok = [*fast, *[_o(f"s{i}", "tasks", 1, seconds=2.9, hits={"tasks": 1}) for i in range(2)]]
+    slow_bad = [*fast, *[_o(f"s{i}", "tasks", 1, seconds=3.0, hits={"tasks": 1}) for i in range(2)]]
+    ok, bad = score.summarize(slow_ok, REGISTRY), score.summarize(slow_bad, REGISTRY)
+    assert ok.p50 < 1.5 and bad.p50 < 1.5
+    assert score.verdict(ok) == score.EXIT_PASS
+    assert score.verdict(bad) == score.EXIT_FAIL
+
+
+def test_the_report_names_the_limits() -> None:
+    text = score.render(_timed(0.1), mode="fixture", flags={}, floor=score.FLOOR)
+    assert "p50 < 1.5s" in text and "p95 < 3.0s" in text and text.endswith("PASS")

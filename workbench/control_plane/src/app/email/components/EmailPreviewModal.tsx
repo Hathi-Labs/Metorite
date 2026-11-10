@@ -92,6 +92,20 @@ export function EmailPreviewModal({
           </button>
         </div>
         <div className="overflow-y-auto px-4 py-3 flex-1">
+          {/* The files sit above the body, as in the reading pane (owner,
+              2026-11-06). */}
+          {(e?.attachments?.length ?? 0) > 0 && (
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {e!.attachments!.map((a) => (
+                <span
+                  key={a.id}
+                  className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border text-muted-foreground"
+                >
+                  <Icon name="Paperclip" size={10} /> {a.filename}
+                </span>
+              ))}
+            </div>
+          )}
           {loading && !e ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground py-6">
               <Icon name="Loader2" className="animate-spin" size={14} /> Loading…
@@ -103,18 +117,6 @@ export function EmailPreviewModal({
           ) : (
             <div className="text-xs text-muted-foreground italic py-2">
               No preview text.
-            </div>
-          )}
-          {(e?.attachments?.length ?? 0) > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {e!.attachments!.map((a) => (
-                <span
-                  key={a.id}
-                  className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border text-muted-foreground"
-                >
-                  <Icon name="Paperclip" size={10} /> {a.filename}
-                </span>
-              ))}
             </div>
           )}
         </div>

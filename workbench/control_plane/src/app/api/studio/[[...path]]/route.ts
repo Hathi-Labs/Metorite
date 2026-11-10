@@ -75,6 +75,16 @@ async function forward(
     if (method !== "GET" && method !== "DELETE") {
       const body = await req.json().catch(() => ({}));
       init.body = JSON.stringify(body);
+    } else if (method === "DELETE") {
+      // The delete of a package carries its confirm token in the body (A5c-1,
+      // BETA-1). A DELETE with no body, or with a body that is not JSON, goes on with none.
+      const raw = await req.text().catch(() => "");
+      let body: unknown;
+      try { body = raw.trim() ? JSON.parse(raw) : undefined; } catch { body = undefined; }
+      if (body !== undefined) {
+        init.body = JSON.stringify(body);
+        init.headers = { ...(init.headers as Record<string, string>), "Content-Type": "application/json" };
+      }
     }
     // A refused connect and a stale keep-alive socket are retried inside
     // `gatewayFetch` (H-194). Do not add a second retry here: it would

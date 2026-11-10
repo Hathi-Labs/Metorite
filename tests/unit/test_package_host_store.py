@@ -268,7 +268,7 @@ def test_the_lock_comes_before_each_read_that_decides_the_write() -> None:
 def test_each_read_names_the_bound_org_and_no_insert_names_an_org() -> None:
     bound = "NULLIF(current_setting('app.tenant_id', true), '')"
     for sql in (store._APP_SQL, store._SCOPE_TAKEN_SQL, store._HELD_SQL,
-                store._GROUPS_OF_MEMBER, store._GROUPS_OF_HOLDER):
+                store._GROUPS_OF_MEMBER, store._KEPT_KEYS_SQL):
         assert f"organization_id = CAST({bound} AS uuid)" in sql, sql
     for sql in (store._INSERT_INSTALL_SQL, store._INSERT_CONTRIBUTION_SQL):
         assert "organization_id" not in sql
@@ -276,13 +276,15 @@ def test_each_read_names_the_bound_org_and_no_insert_names_an_org() -> None:
     assert "status <> 'archived'" in store._APP_SQL
 
 
-def test_the_overlap_of_each_kind_reads_both_sides() -> None:
-    """§4 as one relation. A new group claim also meets the private claims of
-    its members, and a new private claim meets the claims of its groups."""
-    assert store.OVERLAP["org"] == "TRUE"
-    assert "i.scope_kind = 'org'" in store.OVERLAP["group"]
-    assert "i.scope_kind = 'group' AND i.scope_subject = :subject" in store.OVERLAP["group"]
-    assert f":subject IN ({store._GROUPS_OF_HOLDER})" in store.OVERLAP["group"]
+def test_the_overlap_of_each_kind_follows_section_4() -> None:
+    """§4 and PKG-Q6 (the org wins). A new org or group claim never meets a
+    private claim, and a new private claim meets the org claims and the
+    claims of its groups. The R8 twin holds the behaviour."""
+    assert store.OVERLAP["org"] == "i.scope_kind <> 'private'"
+    assert store.OVERLAP["group"] == (
+        "(i.scope_kind = 'org' OR (i.scope_kind = 'group' AND i.scope_subject = :subject))")
+    for kind in ("org", "group"):
+        assert "'private'" not in store.OVERLAP[kind].replace("<> 'private'", ""), kind
     assert "i.scope_kind = 'org'" in store.OVERLAP["private"]
     assert "i.scope_kind = 'private' AND i.scope_subject = :subject" in store.OVERLAP["private"]
     assert f"i.scope_subject IN ({store._GROUPS_OF_MEMBER})" in store.OVERLAP["private"]
@@ -294,7 +296,9 @@ def test_the_overlap_of_each_kind_reads_both_sides() -> None:
 
 def test_the_groups_are_the_one_group_query_with_active_members_only() -> None:
     """§4: a member of a group is an active member. The store reuses
-    ``_MY_GROUPS_SQL`` in both directions and keeps no copy, so the rule
+    ``_MY_GROUPS_SQL`` for the overlap of a private claim, and keeps no
+    copy. ``group_exists`` (PKG-8b) reads ``org_groups`` of the same module,
+    the group list of the grant routes. So the rule
     ``au.status = 'active'`` and the fold ``lower(au.email)`` have one home.
     The R8 twin holds the behaviour: a removed member and a mixed-case
     address."""
@@ -304,8 +308,10 @@ def test_the_groups_are_the_one_group_query_with_active_members_only() -> None:
     assert "lower(au.email) = :email AND au.status = 'active'" in one
     bound = f"g.organization_id = {store._BOUND_ORG}"
     of_member = f"{one.replace(':email', ':subject')} AND {bound}"
-    of_holder = f"{one.replace(':email', 'i.scope_subject')} AND {bound}"
-    assert (of_member, of_holder) == (store._GROUPS_OF_MEMBER, store._GROUPS_OF_HOLDER)
+    assert of_member == store._GROUPS_OF_MEMBER
+    from gateway.routes.projects import core
+
+    assert store.org_groups is core.org_groups
     source = (_ROOT / "apps/services/gateway/gateway/package_host/store.py").read_text(
         encoding="utf-8")
     assert not re.search(r"\b(FROM|JOIN)\s+org_group", source), (
@@ -319,16 +325,16 @@ _HELD_QUOTE = ("jobs", "quote", "install-0")
 @pytest.mark.parametrize(("kind", "subject"), [
     ("org", "org"), ("group", "group:ops"), ("private", ANA)])
 def test_a_claim_of_the_same_app_is_no_conflict_at_any_scope(kind: str, subject: str) -> None:
-    """§4: two installs of one app never conflict. Ben holds the app Q
-    privately, and an install of Q at each scope passes. An install of
-    another app on the same key is still refused. The R8 twin holds the
-    same cases on a real database."""
+    """§4: two installs of one app never conflict. An org install holds the
+    app Q, and an install of Q at each scope passes. An install of another
+    app on the same key is still refused, because an org claim meets every
+    kind. The R8 twin holds the same cases on a real database."""
     claim = [Contribution("jobs", "quote")]
-    same = _FakeDb(held=((*_HELD_QUOTE, APP, "private", "ben@x.test"),))
+    same = _FakeDb(held=((*_HELD_QUOTE, APP, "org", "org"),))
     got = _run(store.install(same, **_args(scope_subject=subject, scope_kind=kind,
                                            contributions=claim)))
     assert got.id == "install-1"
-    other = _FakeDb(held=((*_HELD_QUOTE, str(uuid.uuid4()), "private", "ben@x.test"),))
+    other = _FakeDb(held=((*_HELD_QUOTE, str(uuid.uuid4()), "org", "org"),))
     with pytest.raises(ClaimTaken):
         _run(store.install(other, **_args(scope_subject=subject, scope_kind=kind,
                                           contributions=claim)))
@@ -374,12 +380,15 @@ def test_a_system_key_at_a_point_of_many_claims_is_no_conflict() -> None:
 # ── d. The one writer ──────────────────────────────────────────────────────
 
 
-_WRITE = re.compile(r"INSERT\s+INTO\s+package_(install|contribution)\b", re.I)
+_WRITE = re.compile(
+    r"(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+package_(install|contribution)\b", re.I)
 
 
 def test_only_the_store_writes_an_install_or_a_claim() -> None:
-    """The member purge deletes and counts rows, and that stays legal. A
-    second INSERT under ``apps/`` or ``packages/`` fails here."""
+    """A second INSERT, UPDATE or DELETE of an install or a claim under
+    ``apps/`` or ``packages/`` fails here (PKG-9). The member purge deletes
+    and counts rows through ``_PersonRows``, and that stays legal: its
+    statement names the table through a parameter."""
     writers = sorted(
         str(p.relative_to(_ROOT)).replace("\\", "/")
         for folder in ("apps", "packages")
@@ -388,7 +397,12 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
     assert writers == ["apps/services/gateway/gateway/package_host/store.py"]
     members = (_ROOT / "apps/services/gateway/gateway/routes/admin/members.py").read_text(
         encoding="utf-8")
-    assert "package_install" in members and not _WRITE.search(members)
+    assert '_PersonRows("private_app_installs", "package_install"' in members
+    assert not _WRITE.search(members)
+    # The store holds each of the three statements of the disposal.
+    assert _WRITE.search(store._DELETE_INSTALL_SQL)
+    assert _WRITE.search(store._SET_STATE_SQL)
+    assert "FOR UPDATE" in store._STATE_SQL
 
 
 def test_the_store_reads_apps_and_never_writes_it() -> None:
@@ -405,6 +419,21 @@ def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     entry, the R8 twin skips in CI with no database and the job stays green."""
     workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
     assert "tests/unit/test_package_host_store_r8.py" in workflow
+
+
+def test_the_disposal_r8_suite_is_named_in_the_ci_skip_guard() -> None:
+    """PKG-9. Without the entry, ``test_package_disposal_r8.py`` skips in CI
+    with no database and the job stays green. The name must be in the
+    ``--must-run`` list itself, not only somewhere in the file."""
+    lines = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
+        encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
+    listed: list[str] = []
+    for line in lines[start + 1:]:
+        listed.append(line.strip().removesuffix("\\").strip())
+        if not line.rstrip().endswith("\\"):
+            break
+    assert "tests/unit/test_package_disposal_r8.py" in listed
 
 
 def test_an_install_records_its_end_date() -> None:

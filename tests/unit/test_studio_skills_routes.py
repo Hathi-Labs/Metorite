@@ -40,6 +40,7 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -219,7 +220,7 @@ def _client(world: Any, org: str | None = ORG, email: str = ANA) -> TestClient:
         # The auth layer binds the session's org. The fake session reads it.
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
@@ -703,3 +704,118 @@ class TestTheStates:
         assert got["skill"]["current_version"] == got["version"]["version"] == 1
         assert got["skill"]["state"] == "draft" and got["skill"]["visibility"] == "private"
         assert _create(_client(world), name="Bare")["version"] is None
+
+
+# ── Hidden characters (WS-STU F1b) ─────────────────────────────────────────
+
+_ZWSP, _TAG_A, _RLO, _BOM = chr(0x200B), chr(0xE0041), chr(0x202E), chr(0xFEFF)
+#: The kept texts of the shared cases, by id.
+_KEPT = {c["id"]: c["text"] for c in json.loads(
+    (Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "hidden_text_cases.json")
+    .read_text(encoding="utf-8"))["kept"]}
+
+
+def _hidden(path: str, at: int, ch: str) -> str:
+    return (f"{path}: This text holds a hidden character at position {at} "
+            f"(U+{ord(ch):04X}). Remove it.")
+
+
+class TestTheHiddenCharacters:
+    """The store refuses a character that no person sees (F1b). The route
+    gives the sentence of the store as 422 and writes nothing. A body check
+    runs before the store session opens. A publish or a resume of a stored
+    body with such a character is 422 too.
+
+    Mutation: drop the ``body_hidden_problem`` term in ``set_skill_state``.
+    ``test_a_publish_or_a_resume_of_a_stored_hidden_character_is_422`` goes red.
+    """
+
+    @pytest.mark.parametrize(("payload", "detail"), [
+        ({"name": "Quotes" + _ZWSP}, _hidden("name", 7, _ZWSP)),
+        ({"name": "Quotes", "description": "Prices" + _TAG_A},
+         _hidden("description", 7, _TAG_A)),
+        ({"name": "Quotes", "body": _body(description="Use" + _ZWSP)},
+         _hidden("body.description", 4, _ZWSP)),
+        ({"name": "Quotes", "body": _body(instructions=_RLO + "Read")},
+         _hidden("body.instructions", 1, _RLO)),
+        ({"name": "Quotes", "body": _body(cards=[{"title": "T" + _TAG_A}])},
+         _hidden("body.cards[0].title", 2, _TAG_A)),
+        ({"name": "Quotes", "body": _body(**{"note" + _BOM: 1})},
+         _hidden("body key 4", 5, _BOM)),
+    ], ids=["name", "description", "body_description", "body_instructions",
+            "nested_string", "body_key"])
+    def test_a_create_with_a_hidden_character_is_422_and_writes_nothing(
+            self, world, payload, detail):
+        r = _client(world).post("/studio/skills", json=payload)
+        assert r.status_code == 422, r.text
+        assert r.json() == {"detail": detail}
+        assert "Prices" not in r.text and "note" not in r.text
+        assert world.tables.skills == {} and world.tables.versions == []
+        if "body" in payload:
+            assert "store-open" not in world.log  # the body check runs first
+
+    @pytest.mark.parametrize(("body", "detail"), [
+        (_body(instructions="Read" + _ZWSP), _hidden("body.instructions", 5, _ZWSP)),
+        (_body(tests=[{"q": "x", "k" + _RLO: "y"}]), _hidden("body.tests[0] key 2", 2, _RLO)),
+    ], ids=["instructions", "nested_key"])
+    def test_a_new_version_with_a_hidden_character_is_422_and_writes_nothing(
+            self, world, body, detail):
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        world.log.clear()
+        r = c.post(f"/studio/skills/{sid}/versions", json={"body": body})
+        assert r.status_code == 422 and r.json() == {"detail": detail}
+        assert len(world.tables.versions) == 1
+        assert world.tables.skills[sid]["current_version"] == 1
+        assert "store-open" not in world.log
+
+    @pytest.mark.parametrize("start", ["draft", "paused"])
+    def test_a_publish_or_a_resume_of_a_stored_hidden_character_is_422(self, world, start):
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        # A row that a store before F1b kept. The fake session runs no check.
+        world.tables.versions[0]["body"]["instructions"] = "Read" + _TAG_A + " the list."
+        world.tables.skills[sid]["state"] = start
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": "published"})
+        assert r.status_code == 422, r.text
+        assert r.json() == {"detail": _hidden("body.instructions", 5, _TAG_A)}
+        assert world.tables.skills[sid]["state"] == start
+
+    @pytest.mark.parametrize(("field", "value", "detail"), [
+        ("name", "Quotes" + _ZWSP, _hidden("name", 7, _ZWSP)),
+        ("description", "Use" + _TAG_A, _hidden("description", 4, _TAG_A)),
+    ], ids=["name", "description"])
+    def test_a_publish_of_a_stored_hidden_name_or_description_is_422(
+            self, world, field, value, detail):
+        """A store before F1b kept a hidden character in a column too. The
+        publish gate reads both columns, after the body.
+        Mutation: drop the column terms of the gate -> red."""
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        world.tables.skills[sid][field] = value
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": "published"})
+        assert r.status_code == 422, r.text
+        assert r.json() == {"detail": detail}
+        assert world.tables.skills[sid]["state"] == "draft"
+
+    def test_a_live_skill_with_a_stored_hidden_character_can_still_pause(self, world):
+        """A member must be able to stop a skill that an older store kept."""
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        world.tables.versions[0]["body"]["instructions"] = "Read" + _ZWSP
+        world.tables.skills[sid]["state"] = "published"
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": "paused"})
+        assert r.status_code == 200 and world.tables.skills[sid]["state"] == "paused"
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": "archived"})
+        assert r.status_code == 200
+
+    def test_the_kept_scripts_save_publish_and_read_back_byte_equal(self, world):
+        c = _client(world)
+        name = "Plan " + _KEPT["persian_zwnj"] + " " + _KEPT["heart_vs16"]
+        body = _body(description=_KEPT["hindi_zwj"] + " " + _KEPT["bengali_zwj"],
+                     instructions=_KEPT["family_emoji"] + "\n" + _KEPT["keycap_one"])
+        sid = _create(c, name=name, body=body)["skill"]["id"]
+        assert c.patch(f"/studio/skills/{sid}/state",
+                       json={"state": "published"}).status_code == 200
+        read = c.get(f"/studio/skills/{sid}").json()
+        assert read["skill"]["name"] == name and read["version"]["body"] == body

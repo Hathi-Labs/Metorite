@@ -23,7 +23,8 @@ const ADMIN = {
   email: "admin@example.com",
   name: "Asha Rao",
   is_admin: true,
-  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations", "artifacts", "knowledge"],
+  // `studio` since J1-1 (3f3e42ce6, 2026-11-06): each Studio route needs feature:studio.
+  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations", "artifacts", "knowledge", "workflows", "studio"],
   permissions: ["admin:members:read", "admin:members:manage"],
   capabilities: ["admin:members:read", "admin:members:manage"],
   roles: ["owner"],
@@ -72,6 +73,9 @@ const CRM: Record<string, unknown> = {
     ],
   },
   "statuses/deal": [CRM_STAGE],
+  // The rail reads the modules in Native mode too (CRM-U17a, 1b2df77da). The
+  // rail calls `.filter` on the answer, so it must be an array.
+  modules: [],
   "statuses/lead": [],
   "lost-reasons": [],
 };
@@ -144,7 +148,7 @@ async function setup(page: Page, opts: { chatName?: string; memberName?: string 
       "knowledge/pages": { pages: [KB_PAGE] },
       agents: [],
     },
-    { arrayPaths: /^(notes|chat|agent|apps|agents)\b/ },
+    { arrayPaths: /^(notes|chat|agent|apps|agents|workflows|studio)\b/ },
   );
   // The CRM reads its own BFF. A board with one lane and the vocabulary is
   // enough for the bar and the rail to draw over real content.
@@ -164,7 +168,7 @@ async function setup(page: Page, opts: { chatName?: string; memberName?: string 
 const PAGES: Array<[string, string]> = [
   ["My Day", "/"],
   ["My Tasks", "/tasks"],
-  // Preview pane (AI Studio A1). The census visits it with the live ones.
+  // Live pane since 2026-11-05 (AI Studio A1, D179).
   ["Studio", "/studio"],
   ["Calendar", "/calendar"],
   ["My Profile", "/people/me"],

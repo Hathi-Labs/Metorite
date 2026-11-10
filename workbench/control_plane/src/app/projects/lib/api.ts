@@ -3,6 +3,7 @@ import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact, PullRequestFact } from "@/lib/taskCard";
 
 import {
+  type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
   type AgentRunDetail,
@@ -12,9 +13,12 @@ import {
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -297,6 +301,13 @@ export interface NodeSummary {
     overdue: number;
     by_category: Record<string, number>;
   };
+  /**
+   * WS-39 LP-1a — the newest live update of a project or a subproject, or
+   * null when it has none. The key is there only while
+   * `PROJECTS_UPDATES_ORGS` holds the org, so the Overview draws the line
+   * with the roll-up, in one read, and nothing moves when it arrives.
+   */
+  latest_update?: ProjectUpdate | null;
   /**
    * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
    * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
@@ -1809,6 +1820,12 @@ export interface TaskRow {
    */
   time_spent_mins?: number;
   /**
+   * SP-9 — the roll-up of an EPIC over every descendant the reader can see.
+   * Only the single read carries it, and only for a task whose type is an
+   * epic type. `subtasks` above still counts the direct children.
+   */
+  rollup?: EpicRollup;
+  /**
    * WS-55 EA-12c — the derived state of the newest open agent run, or null
    * when the task has none (`external_agent_access.md` §12.1, EA12-10).
    * The run types live in `agentRuns.ts`, with the two optional run facts
@@ -1871,6 +1888,24 @@ export interface StatusRow {
   is_default: boolean;
 }
 
+/**
+ * A project below the owner that keeps its own set (PST-1, §9.4).
+ *
+ * ⚠️ `path` and `used_by` are optional for the release window: an old gateway
+ * sends `{id, name}` only. The copy module reads them with a default.
+ */
+export interface StatusSetOverride {
+  id: string;
+  name: string;
+  /**
+   * The names above it, from the first one the caller can see. A hidden
+   * run after a visible name is one "…", so no hidden name reaches the browser.
+   */
+  path?: string[];
+  /** Projects that use ITS set, it left out. */
+  used_by?: number;
+}
+
 /** Where a project's lanes come from — `projectsApi.statusSet`. */
 export interface StatusSetInfo {
   project_id: string;
@@ -1893,6 +1928,27 @@ export interface StatusSetInfo {
    */
   inherit_from_id: string | null;
   inherit_from_name: string | null;
+  /*
+   * ⚠️ The PST-1 fields below are optional for the release window. For a few
+   * minutes an old gateway sends none of them, and the screen then draws the
+   * sentences with no count (`statusSetCopy.ts`).
+   */
+  /** The kind of the owner node. A space is a root (PST-1, §9.4). */
+  owner_kind?: "space" | "project";
+  /**
+   * Projects that use the set, the owner left out. It counts every depth
+   * below the owner and stops at a node that owns a set. It leaves a folder
+   * out, because a folder holds no lanes. It counts projects the caller
+   * cannot see, because an edit changes them too. It is the N of "shared
+   * with N" (§9.4).
+   */
+  used_by?: number;
+  /**
+   * Every board that an edit changes: `used_by`, plus the owner when its own
+   * board shows lanes. A team space shows none, and a project does. The N
+   * of "A change here changes the lanes of N projects".
+   */
+  reach?: number;
   /**
    * Projects under the OWNER that keep their own lanes — an edit here does not
    * reach them.
@@ -1903,8 +1959,13 @@ export interface StatusSetInfo {
    * Immediate breakaways only. A project that overrode a project that overrode
    * this one was never getting these lanes, and listing it would grow this
    * list with the tree rather than with the decisions somebody took.
+   *
+   * Only the ones the caller can see (PST-1). `hidden_overrides` counts the
+   * rest, and no name of them reaches the browser.
    */
-  overrides: { id: string; name: string }[];
+  overrides: StatusSetOverride[];
+  /** Breakaways the caller cannot see. The UI counts them and names none. */
+  hidden_overrides?: number;
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */
@@ -2096,6 +2157,31 @@ export function refusedFields(err: unknown): FieldRow[] {
 }
 
 /**
+ * WS-39 LP-1a — one update of a project (`GET /projects/nodes/{id}/updates`).
+ * The author picks the health by hand. `body` is the text a person wrote.
+ */
+export type ProjectHealthValue = "on_track" | "at_risk" | "off_track";
+
+export type ProjectUpdate = {
+  id: string;
+  project_id: string;
+  author: string;
+  health: ProjectHealthValue;
+  body: string;
+  posted_at: string | null;
+  drafted_by_ai: boolean;
+  via: string | null;
+  /** This reader's right to delete it (`authority.may_delete_update`). */
+  can_delete?: boolean;
+  delete_refusal?: string | null;
+};
+
+export type ProjectUpdatesPage = {
+  rows: ProjectUpdate[];
+  next_before: string | null;
+};
+
+/**
  * The one request seam for `/api/projects/*`.
  *
  * Exported as `projectsCall` (WS-39 S3a-client) because the Tasks lens speaks
@@ -2248,6 +2334,7 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
 
   /**
    * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.
@@ -3136,6 +3223,30 @@ export const refsApi = {
 };
 
 /**
+ * WS-ALN ALN-2b — the decisions of a task (`project_alignment.md` §3.2). The
+ * pure rules are in `decisions.ts`. `forTask` gives `null` while the routes
+ * are OFF (`DECISIONS_ORGS`): every route answers 404, and the block draws
+ * nothing. `answer` is the ONE answer route, the one the chat tool calls.
+ */
+export const decisionsApi = {
+  forTask: async (taskId: string): Promise<TaskDecisions | null> => {
+    try {
+      const raw = await call<unknown>(`decisions?task_id=${encodeURIComponent(taskId)}`);
+      return readTaskDecisions(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  answer: (decisionId: string, key: string, reason: string) =>
+    call<{ decision: unknown }>(`decisions/${encodeURIComponent(decisionId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify(answerBody(key, reason)),
+    }),
+};
+
+/**
  * WS-55 EA-12c — agent runs on a task (`external_agent_access.md` §12.1).
  * The wire types and the pure rules are in `agentRuns.ts`.
  */
@@ -3204,6 +3315,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43. The run's member takes back an answer that no agent has read.
+   * 404 while the gateway flag is off, 403 for any other caller, 409 when the
+   * agent already has the answer. A retry with the same key writes once.
+   */
+  withdrawAnswer: (runId: string, body: WithdrawBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3224,6 +3346,21 @@ export const agentRunsApi = {
       return true;
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * CIV-14k. Every open question of the caller, oldest first, with the task
+   * number, title and project name on each row. `null` means the routes are
+   * OFF (404), and then the Approvals page draws no list.
+   */
+  waiting: async (): Promise<AgentRun[] | null> => {
+    try {
+      const raw = await call<unknown>("agent-runs?status=awaiting&order=oldest&with_task=true&limit=100");
+      return agentRunRows<AgentRun>(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
     }
   },
 

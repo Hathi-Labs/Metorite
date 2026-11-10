@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 
 type Tab = { href: string; label: string; icon: ThemedIcon; exact?: boolean };
 
@@ -89,7 +90,10 @@ function SectionNavDrawer({
 export default function WhatsAppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { isMobile } = useViewMode();
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
+  // Sections shows selected in the bar while its sheet is open (MOB-12).
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
+  usePhoneBar({ active: sheetTab });
   const isActive = (t: Tab) => isTabActive(t, pathname);
   // The sections rail, shown until the member hides it from the bar.
   const [railOpen, setRailOpen] = useState(true);
@@ -101,13 +105,14 @@ export default function WhatsAppLayout({ children }: { children: React.ReactNode
   useEffect(() => {
     const handler = (e: Event) => {
       if ((e as CustomEvent<string>).detail !== "wa-sections") return;
+      markSheetTab("wa-sections");
       openDrawer(
         <SectionNavDrawer pathname={pathname} onNavigate={closeDrawer} />
       );
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer, closeDrawer, pathname]);
+  }, [openDrawer, closeDrawer, markSheetTab, pathname]);
 
   // ── Mobile: no in-page chrome; the section nav lives in the bottom drawer ─
   if (isMobile) {

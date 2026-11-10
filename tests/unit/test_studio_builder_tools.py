@@ -159,7 +159,10 @@ async def test_patch_applies_and_returns_the_new_manifest_with_a_diff(catalog) -
     out = await st.studio_patch(m, ops)
     assert out["ok"], out
     assert out["manifest"]["objects"][0]["name"] == "order"
-    assert out["diff"] == ["add /objects/-"]
+    # STU-BETA-2: the diff also names the record actions that the check added.
+    assert out["diff"][0].startswith("add /actions (record actions of order)")
+    assert out["diff"][1] == "add /objects/-"
+    assert len(out["diff"]) == 2
     assert m == before, "the input manifest is never changed"
 
 

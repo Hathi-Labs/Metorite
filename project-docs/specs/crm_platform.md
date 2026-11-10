@@ -1,5 +1,7 @@
 # CRM — the Metorite port, two modes, and the Zoho mirror
 
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
+
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
@@ -1692,7 +1694,7 @@ each of these on a real database:
   of a module are not in the CRM store, so `ModuleList.tsx` holds the paging
   state. It keeps the rules of the store: `appendPage`, a short page ends the
   list, and the newest request wins.
-- `RecordShell.tsx` holds the drawer, the header facts and the tab bar.
+- `RecordShell.tsx` holds the card, the header facts and the tab bar. D181 replaced the drawer with the shared frame (`one_record_card.md`).
   `RecordSheet` and `ModuleRecordSheet` both use it, so the two record pages
   have one look.
 - Fences: `tests/unit/test_crm_modules_routes_r8.py` and
@@ -8929,7 +8931,7 @@ SELECT DISTINCT ON (a.deal_id)
 
 **Non-goals.**
 
-- A docked panel in place of the drawer (§8.1). The sheet stays a `Modal` with
+- A docked panel in place of the drawer (§8.1). ⚠️ D181 reversed this on 2026-11-06: `one_record_card.md`. The sheet stays a `Modal` with
   `end`, and `sheet` on a phone.
 - The Tasks tab of §8.1. This slice ships a Fields tab in its place. The Tasks
   tab comes with CRM-S1 and CRM-X5, when tasks live in `pm_tasks`.

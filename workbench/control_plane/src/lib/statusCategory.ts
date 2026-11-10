@@ -164,6 +164,42 @@ export interface LaneLike {
   position: number;
 }
 
+/**
+ * Lifecycle rank of a stage, the first key of the ONE lane order (task 1792).
+ * An unknown stage ranks last: a value this client has not heard of is more
+ * likely a later addition than a new front door.
+ */
+export function categoryRank(category: string): number {
+  const index = (STATUS_CATEGORIES as readonly string[]).indexOf(category);
+  return index === -1 ? STATUS_CATEGORIES.length : index;
+}
+
+/**
+ * The ONE order for status lanes: stage, then position, then name.
+ *
+ * Position orders lanes INSIDE a stage and never moves a lane into another
+ * stage, so a Done row at position 1 still draws after In progress. The
+ * gateway reads the same rule (`core.status_order_sql`). Board columns, list
+ * sections, the status picker and every first-of-stage rule use this.
+ */
+export function compareLanes(
+  a: Pick<LaneLike, "category" | "position" | "name">,
+  b: Pick<LaneLike, "category" | "position" | "name">
+): number {
+  return (
+    categoryRank(a.category) - categoryRank(b.category) ||
+    a.position - b.position ||
+    a.name.localeCompare(b.name)
+  );
+}
+
+/** Every lane of a set in the one order. Returns a new array. */
+export function orderedLanes<T extends Pick<LaneLike, "category" | "position" | "name">>(
+  rows: readonly T[]
+): T[] {
+  return [...rows].sort(compareLanes);
+}
+
 /** The statuses of one stage, in board order: position, then name. */
 export function stageLanes<T extends LaneLike>(
   rows: readonly T[],
@@ -217,10 +253,7 @@ export function reopenLane<T extends LaneLike>(rows: readonly T[]): T | null {
   const todo = landingLane(rows, "todo");
   if (todo) return todo;
   const first =
-    [...rows]
-      .filter((row) => row.category !== "triage")
-      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))[0] ??
-    null;
+    orderedLanes(rows).filter((row) => row.category !== "triage")[0] ?? null;
   return first && !closesTask(first.category) ? first : null;
 }
 

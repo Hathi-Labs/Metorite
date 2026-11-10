@@ -31,7 +31,7 @@
  *
  * Pure of React, so a test drives it in the node environment.
  */
-import type { ActionResult, Row, StudioDataDoor, StudioSource } from "./dataDoor";
+import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
@@ -46,6 +46,11 @@ export const NOT_DECLARED_SENTENCE = "This package does not declare that action,
 export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
 export const APPROVAL_SENTENCE =
   "Direct edits are not on for your workspace yet, so this change was not saved.";
+/**
+ * A 202 of the door: the change waits for an approval card, and nothing is
+ * written yet (STU-B2c-2a). It is never a save.
+ */
+export const WAITING_SENTENCE = "This change waits for an approval, so it is not saved yet.";
 export const GONE_SENTENCE = "That record is gone. Reload the list.";
 export const UNPUBLISHED_SENTENCE = "This package has no such object yet. Publish the package first.";
 export const SIGN_IN_SENTENCE = "Your session ended. Sign in again.";
@@ -154,6 +159,8 @@ export function busySentence(retryAfter: string | null | undefined): string {
  * CONTRACT). `status` is the HTTP status. `body` is the parsed JSON, or `{}`.
  */
 export function mapAnswer(status: number, body: unknown, retryAfter?: string | null): ActionResult {
+  // A 202 means a card waits and nothing is written, so it is not a save.
+  if (status === 202) return { ok: false, message: WAITING_SENTENCE };
   if (status >= 200 && status < 300) return { ok: true, data: body };
   const d = detailOf(body);
   if (status === 422) {
@@ -236,7 +243,11 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       }
       const rows = flattenRecords(out.body);
       if (!rows) throw new DoorReadError(ACTION_FAILED, 502);
-      return rows;
+      const b = isObject(out.body) ? out.body : {};
+      return withMeta(rows, {
+        ...(typeof b.total === "number" ? { total: b.total } : {}),
+        ...(typeof b.total_at_least === "number" ? { atLeast: b.total_at_least } : {}),
+      });
     },
 
     async run(action: string, args?: Record<string, unknown>): Promise<ActionResult> {
@@ -283,6 +294,8 @@ export interface PackageSummary {
   name: string;
   status: string;
   live_version: number | null;
+  /** The last change, as the gateway writes it. Null when the answer has none. */
+  updated_at: string | null;
 }
 
 export interface ObjectRow {
@@ -292,6 +305,8 @@ export interface ObjectRow {
   fields: Array<{
     key: string; type: string; label: string | null; required: boolean; many: boolean;
     options: string[] | null; to: string | null; hot: boolean;
+    /** C13. A lines relation names the field of its line object that points back. */
+    lines?: string | null;
   }>;
   rules: Array<Record<string, unknown>>;
 }
@@ -322,6 +337,7 @@ export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<Pac
   return raw.filter(isObject).map((p) => ({
     id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
     live_version: typeof p.live_version === "number" ? p.live_version : null,
+    updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
   }));
 }
 

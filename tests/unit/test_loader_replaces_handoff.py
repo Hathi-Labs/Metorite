@@ -322,14 +322,17 @@ async def test_with_email_held_and_setup_over_the_cap_the_hand_off_stays_open(
     """Acceptance 3. ``email`` is held by layer (a) and ``email-setup`` would
     pass 110: the run is the run of OA-7c. The specialist tool left with the
     pack (as before OA-7i), the hand-off for the setup work stays open, and
-    the rules send it to the email assistant. Mutation: refuse the hand-off
-    for the owner whenever a pack is held → red."""
+    the rules send it to the email assistant. Task 1747 (D169 item 8 as
+    amended): ``email`` came in only by the words, so a load can move it out.
+    The run now offers ``email-setup``, and the reach of the owner does not
+    change. Mutation: refuse the hand-off for the owner whenever a pack is
+    held → red."""
     ran = _fake_run_agent(monkeypatch)
     _base(monkeypatch, 60)
     applied = await _apply(agents, "check my inbox")
     assert applied is not None and applied.record.slugs == ("email",)
     assert applied.record.via_loader == frozenset() and applied.record.replaced == {EA}
-    assert _provider(agents[0]) is None, "email-setup does not fit, so nothing is left to offer"
+    assert _provider(agents[0]).loader.offered == ("email-setup",)
     persona = agents[0].default_options["instructions"]
     assert tp._EMAIL_SETUP_ROUTE_LINE in persona and tp.PACKS["email"].loader_route not in persona
     assert getattr(agents[0], ti.PACK_REFUSED_ATTR) == frozenset()

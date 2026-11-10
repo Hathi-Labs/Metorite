@@ -251,8 +251,9 @@ async def test_a_register_writes_one_audit_event_and_no_secret(ns, audit) -> Non
     first = audit[0]
     assert first.action == "integration.mcp.registered" and first.target == f"mcp:{name}"
     assert first.actor == f"user:{ADMIN_A}" and first.organization_id == ns.org_a
+    # MCP-C2 (item 32): the event records both switches.
     assert first.payload == {"organization_id": ns.org_a, "always_confirm": True,
-                             "outcome": "created"}
+                             "read_only_key": False, "outcome": "created"}
 
     audit.clear()
     await _post(user, name, always_confirm=False)
@@ -260,7 +261,7 @@ async def test_a_register_writes_one_audit_event_and_no_secret(ns, audit) -> Non
     (event,) = audit
     assert event.action == "integration.mcp.registered"
     assert event.payload == {"organization_id": ns.org_a, "always_confirm": False,
-                             "outcome": "updated"}
+                             "read_only_key": False, "outcome": "updated"}
     text = repr(audit)
     assert SENTINEL not in text and "sentinel-h300" not in text
     assert "mcp.example.com" not in text, "the url reached the audit payload"

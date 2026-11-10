@@ -93,7 +93,7 @@ def _content_hash(content: str) -> str:
 
 
 async def _embed_batch(
-    texts: list[str], model: str,
+    texts: list[str], model: str, org: str | None = None,
 ) -> list[list[float] | None] | None:
     """Embed a batch through the embed door of Knowledge (KG-2, D128).
 
@@ -118,7 +118,8 @@ async def _embed_batch(
         # cap and the daily budget bind the embed. Elsewhere this is a no-op.
         # The slot holds the leaf call and nothing else.
         async with llm_slot():
-            vectors = await embed_on_door(texts)
+            # KG-3b: the org of the session goes to the usage log. Left out when None.
+            vectors = await (embed_on_door(texts, org=org) if org else embed_on_door(texts))
     except Exception as exc:
         logger.warning("email_embed.batch_failed model=%s err=%s",
                        model, type(exc).__name__)
@@ -132,7 +133,7 @@ async def _embed_batch(
     return list(vectors)
 
 
-async def embed_query(query: str) -> list[float] | None:
+async def embed_query(query: str, org: str | None = None) -> list[float] | None:
     """Embed a single search query with the configured email embedding model, for
     the hybrid search path. Returns the vector, or None if semantic search is off
     or the embed fails (caller falls back to pure lexical)."""
@@ -141,7 +142,7 @@ async def embed_query(query: str) -> list[float] | None:
     if not settings.email_semantic_search_enabled or not query.strip():
         return None
     vecs = await _embed_batch([query.strip()[:_MAX_EMBED_CHARS]],
-                              settings.email_embedding_model)
+                              settings.email_embedding_model, org)
     return vecs[0] if vecs else None
 
 

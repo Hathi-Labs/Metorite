@@ -106,6 +106,8 @@ import { ProjectPathChip } from "./ProjectPathChip";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
 import { useTaskUndo } from "./useTaskUndo";
+import { useToast } from "@/components/ui/Toast";
+import { epicTypeOf, isEpicTask, makeEpicTarget, typeRefusal } from "../lib/taskEpic";
 import { useAccess } from "@/components/AccessProvider";
 
 const NOBODY: ReadonlySet<string> = new Set();
@@ -241,6 +243,13 @@ interface Props {
    */
   statusesFor?: (task: TaskRow) => readonly StatusRow[];
   /**
+   * Task 1792. Opens the Statuses dialog, where the order of the columns is
+   * edited. Shown above a board grouped by status, so the control sits one
+   * click from the columns it changes. Absent in My tasks, which spans many
+   * projects and has no one status set to edit.
+   */
+  onManageStatuses?: () => void;
+  /**
    * WS-64 OP-11 fix round. False hides the per-column quick add: My tasks
    * spans many projects, so a column names no home for a new task. Its one
    * add is the top Capture. Default true.
@@ -293,6 +302,7 @@ export function TaskBoard({
   projectPath,
   projectPrivate,
   statusesFor,
+  onManageStatuses,
   canQuickAdd = true,
   columnTotals = null,
   onLoadColumn,
@@ -322,6 +332,7 @@ export function TaskBoard({
    */
   // UNDO-1 — an inline rename offers Undo.
   const taskUndo = useTaskUndo();
+  const toast = useToast();
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(
     null
   );
@@ -686,6 +697,7 @@ export function TaskBoard({
     moveToProject: (task) => onMoveTask?.(task.id),
     mergeInto: (task) => onMergeTask?.(task.id),
     askAgent: (task) => onAskAgent?.(task.id),
+    makeEpic: (task) => void makeEpic(task),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -732,6 +744,10 @@ export function TaskBoard({
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
+    // SP-6 — the epic command needs the project's types and a place to send
+    // the result, so a board without either does not offer it.
+    epicTypeId: onRenamed ? epicTypeOf(taskTypes)?.id ?? null : null,
+    isEpic: isEpicTask(task, taskTypes),
     canEditInline: Boolean(onRenamed),
     canArchive: Boolean(onArchive),
     // WS-64 OP-8 — the server's `can_delete`. Only an explicit `false` hides
@@ -739,6 +755,36 @@ export function TaskBoard({
     canDelete: Boolean(onDeleteTask) && task.can_delete !== false,
     selected: selected?.has(task.id) ?? false,
   });
+
+  /**
+   * SP-6 — "Make it an epic". A subtask is refused here, before the request,
+   * with the reason. A refusal from the server (a 422) is shown with the
+   * next step. A success offers Undo, as the other inline edits do.
+   */
+  async function makeEpic(task: TaskRow) {
+    const epic = makeEpicTarget(task, taskTypes);
+    if (!epic) return;
+    const refusal = typeRefusal(task, epic);
+    if (refusal) {
+      toast.show({ variant: "error", title: refusal });
+      return;
+    }
+    try {
+      const fresh = await projectsApi.patchTask(task.id, { type_id: epic.id });
+      taskUndo.edited(task, { type_id: epic.id }, fresh, {
+        label: `made ${task.title} an epic`,
+        receipt: "Now an epic",
+        after: () => onRenamed?.(),
+      });
+      onRenamed?.();
+    } catch (err) {
+      toast.show({
+        variant: "error",
+        title: "Couldn't make this an epic",
+        description: `${String((err as Error).message)} Check the task and try again.`,
+      });
+    }
+  }
 
   /**
    * Close a field ONLY if it is still the one this write belongs to.
@@ -1147,6 +1193,22 @@ export function TaskBoard({
       className="outline-none"
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
+      {/* MOB-11 (task 2004): a phone draws no Statuses row. The status tabs are
+          its first row, and "Manage this project" in the title row holds the
+          Statuses item. Desktop keeps the button. */}
+      {onManageStatuses && groupBy === "status" && !phone ? (
+        <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="Columns3"
+            onClick={onManageStatuses}
+          >
+            Statuses
+          </Button>
+        </div>
+      ) : null}
+
       {laned ? (
         <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button
@@ -1181,7 +1243,11 @@ export function TaskBoard({
             if (dir) setChosenTab(stepTab(tabs, shownTab, dir));
           }}
         >
-          <div className="sticky top-0 z-10 border-b border-border bg-background px-3 py-1.5">
+          {/* z-[5], not z-10: the header row (AppTopBar, relative z-10 in the glass
+              look) holds the "Manage this project" menu. An equal layer, later in
+              the tree, painted this strip over the menu's Custom fields and
+              Statuses rows on a phone (MOB-11, task 2004). */}
+          <div className="sticky top-0 z-[5] border-b border-border bg-background px-3 py-1.5">
             <ScrollStrip label="Statuses" className="gap-1.5" revealKey={shownTab ?? ""}>
               {tabs.map((tab) => (
                 <Button

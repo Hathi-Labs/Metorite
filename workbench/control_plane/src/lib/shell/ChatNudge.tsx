@@ -37,6 +37,15 @@
  * the question is never asked over the sheet, and a late identity bind
  * (`clearAll`, which closes the assistant) never follows the open (review
  * of #1206).
+ *
+ * **The hello** (WS-BUD BUD-1, D177, `onboarding.md` §13). The same hook
+ * makes the one other open of the landing: a member whom the server never
+ * greeted, who never chatted, never took the tour, and has no guide running,
+ * sees the assistant open on a NEW chat. The server posts the hello row
+ * (`buddyHello`, three chips) and names the chat "Welcome". It opens as the
+ * full sheet on a phone and as the side panel on a desktop. It needs
+ * `GUIDE_ORGS`: with the switch off, the hook makes no call and draws
+ * nothing. It takes the place of the phone's brief on that visit.
  */
 
 import { usePathname } from "next/navigation";
@@ -49,9 +58,22 @@ import { boundOrganization, identity } from "@/lib/dataCache";
 import { useChatScope } from "@/hooks/useChatSessions";
 import { chatScope, fetchAndMergeSessionsFromDb } from "@/lib/sessions";
 
-import { CHAT_LANDED_KEY, openAssistant, opensOnLanding, useAssistant } from "./assistant";
+import { CHAT_LANDED_KEY, assistantState, openAssistant, opensOnLanding, useAssistant } from "./assistant";
+import { noteBeforeHello } from "./buddyHello";
 import { chatFirstOn } from "./chatFlag";
-import { markChatFirstMessage, memberWrote, nudgeShows, readNudgeRetired, useNudgeRetiredHere, useShellPrefs } from "./shellPrefs";
+import { isActive, useGuide, useGuideAllowed } from "./guide";
+import {
+  helloIsPending,
+  markChatFirstMessage,
+  memberWrote,
+  nudgeShows,
+  readNudgeRetired,
+  setHelloPending,
+  useHelloPending,
+  useNudgeRetiredHere,
+  useShellPrefs,
+} from "./shellPrefs";
+import type { StoredShell } from "./presets";
 import { useWelcomeOpen, welcomeOpen } from "./welcomeSteps";
 
 /** The desktop's words, under the field. */
@@ -117,6 +139,7 @@ export function ChatNudge({
   const retiredHere = useNudgeRetiredHere();
   const scope = useScope();
   const hasChats = useHasChats(chatFirst);
+  const helloPending = useHelloPending();
   // The browser copy, read after mount so the server and the browser agree
   // on the first frame.
   const [retiredInBrowser, setRetiredInBrowser] = useState(true);
@@ -136,6 +159,7 @@ export function ChatNudge({
       welcomeOpen: welcome,
       assistantOpen: assistant.open,
       hasChats,
+      helloPending,
     });
 
   useEffect(() => {
@@ -202,9 +226,28 @@ export function landingSettled(a: {
 }
 
 /**
- * The landing open, on a phone. `AppShell` calls it once, above its early
- * returns. It decides once per page load, when `landingSettled` says every
- * fact is in, and then marks the browser session.
+ * Whether the hello opens (BUD-1). Pure, so the unit test holds it. Every
+ * fact must be in and say "new": the switch is on, the SERVER's layout of
+ * this page holds no hello, no first message and no tour start, the session
+ * list says the member never wrote, and no guide runs.
+ */
+export function helloOpens(a: {
+  guideAllowed: boolean;
+  fresh: StoredShell | undefined;
+  hasChats: boolean | null;
+  guideActive: boolean;
+}): boolean {
+  if (!a.guideAllowed || a.guideActive || a.hasChats !== false || a.fresh === undefined) return false;
+  return a.fresh.buddy_hello_at === null && a.fresh.chat_first_message_at === null && a.fresh.tour_seen_at === null;
+}
+
+/**
+ * The landing open. `AppShell` calls it once, above its early returns. It
+ * decides once per page load, when `landingSettled` says every fact is in,
+ * and then marks the browser session. A phone opens the chat-first sheet
+ * (`opensOnLanding`). A member who is new opens the hello (`helloOpens`),
+ * on a phone and on a desktop. The hello wins on a visit that qualifies for
+ * both, and it still marks the phone's browser session.
  */
 export function useChatFirstLanding(phone: boolean): void {
   const pathname = usePathname();
@@ -213,14 +256,23 @@ export function useChatFirstLanding(phone: boolean): void {
   const welcome = useWelcomeOpen();
   const { status: sessionStatus, data: session } = useSession();
   const { access, loading: accessLoading } = useAccess();
+  const guideAllowed = useGuideAllowed();
+  const guide = useGuide();
+  const guideActive = isActive(guide);
+  // The session list is read only with the switch on: off, the hello costs
+  // no call at all.
+  const hasChats = useHasChats(guideAllowed);
   const decided = useRef(false);
   // What `AppShell` binds the read cache to: the session's email and the
   // access read's organization. Not `access.email`: under the dev bypass
   // the two can differ, and the cache is keyed on the session's.
   const sessionEmail = session?.user?.email ?? null;
   const org = access.organization?.id ?? null;
+  const fresh = shell.fresh;
   useEffect(() => {
-    if (decided.current || !chatFirst || !phone) return;
+    if (decided.current) return;
+    const landing = chatFirst && phone;
+    if (!landing && !guideAllowed) return;
     // The read cache is bound to this member and organization: `AppShell`
     // binds it in an earlier effect, and a later bind would clear the cache
     // and close what this opened.
@@ -234,6 +286,10 @@ export function useChatFirstLanding(phone: boolean): void {
       welcomeOpen: welcome || welcomeOpen(),
     });
     if (!settled) return;
+    // The hello waits for the member's session list, unless the server's
+    // layout already settles it ("no hello"): a stamp needs no list.
+    const stamped = !!fresh && (fresh.buddy_hello_at !== null || fresh.chat_first_message_at !== null || fresh.tour_seen_at !== null);
+    if (guideAllowed && !stamped && fresh !== undefined && hasChats === null) return;
     decided.current = true;
     let seen = false;
     try {
@@ -241,6 +297,23 @@ export function useChatFirstLanding(phone: boolean): void {
     } catch {
       /* storage off: the open happens on each landing */
     }
+    // The hello belongs to the landing page, as the phone's open does: a
+    // link that someone sent (`/projects?task=...`) gets no hello (D-CF-3).
+    const onLanding = pathname === "/" && !(window.location.search ?? "").replace(/^\?/, "").trim();
+    if (onLanding && !seen && !helloIsPending() && helloOpens({ guideAllowed, fresh, hasChats, guideActive })) {
+      try {
+        window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");
+      } catch {
+        /* storage off */
+      }
+      setHelloPending(true);
+      // The hello may leave no row (a 204, a refusal): the dock then closes
+      // the panel and puts this chat back.
+      noteBeforeHello(assistantState().sessionId);
+      openAssistant({ mode: phone ? "full" : "dock", fresh: true, hello: true });
+      return;
+    }
+    if (!landing) return;
     if (!opensOnLanding({ chatFirst, phone, pathname, search: window.location.search, seen })) return;
     try {
       window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");
@@ -248,5 +321,5 @@ export function useChatFirstLanding(phone: boolean): void {
       /* storage off */
     }
     openAssistant({ mode: "full" });
-  }, [chatFirst, phone, sessionStatus, accessLoading, shell.enabled, shell.answered, welcome, pathname, sessionEmail, org]);
+  }, [chatFirst, phone, guideAllowed, guideActive, hasChats, fresh, sessionStatus, accessLoading, shell.enabled, shell.answered, welcome, pathname, sessionEmail, org]);
 }

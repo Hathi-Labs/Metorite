@@ -559,6 +559,65 @@ def test_knowledge_manage_is_a_capability_that_no_feature_grants() -> None:
     assert not build_access(["feature:*"]).has("knowledge:manage")
 
 
+def test_studio_is_registered_on_both_sides() -> None:
+    """WS-STU J1's registration (`ai_studio.md` §9), by name.
+
+    The generic pair above passes when BOTH sides miss a slug, so this test
+    names the slug that J1 adds. Without the FEATURES entry, `/auth/me` never
+    lists `studio`, and the nav hides the pane from an owner too.
+    """
+    assert "studio" in FEATURES
+    assert "studio" in _catalog_slugs()
+    # After Workflows: `allowed_features()` emits in tuple order.
+    assert FEATURES.index("studio") == FEATURES.index("workflows") + 1
+
+
+def test_studio_is_a_default_feature_in_its_migration() -> None:
+    """The row is found by content, not number (R1), and it is `is_default`.
+
+    A `false` here would hide Studio from a member whose role has no
+    `feature:*`. The row grants nothing: the file holds no role write.
+    """
+    rows = []
+    sources = []
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        if path.name == "schema.generated.sql":
+            continue
+        sql = path.read_text(encoding="utf-8", errors="replace")
+        for insert in _CATALOG_INSERT_RE.finditer(sql):
+            found = re.findall(r"\(\s*'studio'\s*,[^)]*\)", insert.group(1))
+            if found:
+                sources.append(sql)
+            rows += found
+    assert len(rows) == 1, rows
+    assert re.search(r",\s*'/studio'\s*,\s*'apps'\s*,\s*96\s*,\s*true\s*\)$", rows[0], re.I), rows[0]
+    body = re.sub(r"--[^\n]*", "", sources[0])
+    for table in ("org_role_permission", "user_role", "user_permission_override",
+                  "provision_org_roles", "app_user"):
+        assert table not in body, f"the studio feature migration writes {table}"
+
+
+def test_studio_publish_is_a_capability_that_no_feature_grants() -> None:
+    """`studio:publish` (J1, STU-Q4 and STU-Q4b): the owner holds it, a
+    feature grant does not.
+
+    The owner holds it through `*`. `feature:*` (member, manager, admin)
+    must not reach it, and neither must `feature:studio`. The admin seed is
+    J1-2 (task 1707), so no role but the owner holds it by default.
+    """
+    assert "studio:publish" in CAPABILITIES
+    assert "studio:publish" not in FEATURES
+    assert not [c for c in CAPABILITIES if c.startswith("studio:") and c != "studio:publish"]
+    validate_permission("studio:publish")
+    assert permission_matches("*", "studio:publish")
+    assert not permission_matches("feature:*", "studio:publish")
+    assert not permission_matches("feature:studio", "studio:publish")
+    assert build_access(["*"]).has("studio:publish")
+    assert not build_access(["feature:*"]).has("studio:publish")
+    assert build_access(["feature:*"]).can_use_feature("studio")
+    assert not build_access(["feature:workflows"]).can_use_feature("studio")
+
+
 def test_agent_service_is_not_assignable_to_people() -> None:
     assert "agent_service" in SYSTEM_ROLES
     assert "agent_service" not in ASSIGNABLE_SYSTEM_ROLES

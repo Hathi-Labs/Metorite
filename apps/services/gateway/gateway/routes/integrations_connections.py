@@ -303,6 +303,8 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             "agent_scope": ", ".join(srv.agent_scope),
             # H-300: the console draws this key as a switch, not as text.
             "always_confirm": "true" if srv.always_confirm else "false",
+            # MCP-C2: a switch too. The one parse is ``StoredServer``.
+            "read_only_key": "true" if srv.read_only_key else "false",
         }
         host = _host_only(srv.url)
         if host:

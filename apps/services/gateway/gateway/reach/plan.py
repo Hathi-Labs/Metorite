@@ -85,6 +85,13 @@ def pair(card: dict[str, Any]) -> Pair:
     return str(card["signal_id"]), reach_print(card)
 
 
+def entry(card: dict[str, Any]) -> tuple[str, str, str | None]:
+    """The :func:`pair` of one card and the id of the exception rule that let
+    it in, or None (BR-5 slice 2b-1). ``outbox.log`` writes it."""
+    rule = card.get(exceptions.RULE_KEY)
+    return (*pair(card), rule if isinstance(rule, str) and rule else None)
+
+
 def on_whatsapp(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The cards that may go on WhatsApp: each card whose main kind and
     folded kinds are all outside ``classes.NOT_ON_WHATSAPP`` (D114.7). Each
@@ -106,7 +113,8 @@ def _reply_fresh(card: dict[str, Any], now: datetime) -> bool:
 
 
 def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
-                         now: datetime, *, rules: bool = False) -> list[dict[str, Any]]:
+                         now: datetime, *, rules: bool = False,
+                         muted: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """The cards that may interrupt now, in the feed's order.
 
     A card qualifies when its class is ``interrupt`` or ``urgent``, its pair
@@ -117,12 +125,21 @@ def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
     decides instead of the class: only a card that matches an interrupt rule,
     or an explicit "tell me" request, qualifies. Every other card waits for
     the brief. The pair, open and fresh-reply tests above still apply.
+    *muted* holds the rules that the member muted. A muted rule matches
+    nothing. It has no effect with *rules* off.
+
+    With *rules* on, each card that a rule lets in comes back as a copy with
+    the rule id under ``exceptions.RULE_KEY`` (BR-5 slice 2b-1), so the log
+    row of the alert names its rule. An explicit request carries none.
     """
     out = []
     for card in cards:
         if rules:
-            if not exceptions.may_interrupt(card, now):
+            admitted, rule_id = exceptions.admit(card, now, muted=muted)
+            if not admitted:
                 continue
+            if rule_id is not None:
+                card = {**card, exceptions.RULE_KEY: rule_id}
         elif reach_class(card) not in REACHING:
             continue
         if pair(card) in logged:

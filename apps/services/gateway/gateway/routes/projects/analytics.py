@@ -1392,6 +1392,7 @@ def open_run_sql() -> str:
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "EXISTS (SELECT 1 FROM pm_agent_runs nr WHERE nr.task_id = t.id"
+        " AND nr.task_id IS NOT NULL"
         f" AND nr.status IN ({open_list}))"
     )
 

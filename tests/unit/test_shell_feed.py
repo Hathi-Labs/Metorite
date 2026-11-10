@@ -348,8 +348,10 @@ class TestOneRegistry:
         # adds `email_followups`, MD-3e `crm`, and MD-3f `people` and `chat`.
         # WS-61 KB-9a adds the gated `knowledge`. WS-66 RM-2b makes `reminders`
         # a needs provider: it registers before `approvals`, which stays last.
+        # WS-ALN ALN-2b adds the gated `decisions` at the end of `needs.py`.
         assert list(shell.REGISTRY) == ["tasks", "projects", "email", "reminders",
-                                        "approvals", "calendar", "tasks_followups",
+                                        "approvals", "decisions", "calendar",
+                                        "tasks_followups",
                                         "email_followups", "crm", "people", "chat",
                                         "knowledge"]
         again = shell.Provider("tasks", ("projects",), shell.REGISTRY["tasks"].run,

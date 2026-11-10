@@ -857,11 +857,8 @@ def estimate(requests: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]) ->
 def split(questions: Mapping[str, Any], state: dict[str, Any],
           ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """The requests of one entity: at most ``QUESTION_LIMIT`` (16) questions
-    share one state (§18.9.4 rule 1)."""
-    keys = list(questions)
-    size = df.QUESTION_LIMIT
-    return [(state, {k: questions[k] for k in keys[i:i + size]})
-            for i in range(0, len(keys), size)]
+    share one state (§18.9.4 rule 1). DEC-1: the cut is ``df.chunk_requests``."""
+    return df.chunk_requests(state, questions)
 
 
 # ── The result ───────────────────────────────────────────────────────────────

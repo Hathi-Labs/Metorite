@@ -1,9 +1,10 @@
 // The Skills section reads the list as a state (STU-F2b). A 404, a 401 and a
 // miss of the network keep the present empty state, with no button and no
 // error. Mutation: show an error on a 404, and the first test fails.
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadSkillsView, viewOfList } from "@/lib/studio/skillsApi";
+import { loadSkillsView, SKILLS_OFF_COPY, viewOfList } from "@/lib/studio/skillsApi";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -49,5 +50,20 @@ describe("the Skills list", () => {
     answer(500, { detail: "boom" });
     expect(await loadSkillsView()).toEqual({ kind: "error", detail: "The skills did not load. Try again." });
     expect(viewOfList({ ok: false, status: 502, detail: "x" }).kind).toBe("error");
+  });
+});
+
+describe("the off state copy (D179)", () => {
+  it("says in plain words that skills are not open for the org yet, and what happens next", () => {
+    expect(SKILLS_OFF_COPY.message).toMatch(/not open for your organization yet/i);
+    expect(SKILLS_OFF_COPY.hint).toMatch(/turns them on/i);
+    expect(`${SKILLS_OFF_COPY.message} ${SKILLS_OFF_COPY.hint}`).not.toMatch(/404|error|not found|undefined/i);
+  });
+
+  it("the gallery draws that copy for the off view", () => {
+    // Static check: the off branch reads SKILLS_OFF_COPY and keeps no copy of its own.
+    const src = readFileSync("src/app/studio/components/SkillsGallery.tsx", "utf-8");
+    expect(src).toContain("SKILLS_OFF_COPY.message");
+    expect(src).not.toContain("arrive with the skill creator");
   });
 });

@@ -70,11 +70,27 @@ const ME = {
 
 const TREE = {
   rows: [
-    { id: "p-eng", name: "Engineering", children: [{ id: "p-7", name: "Project Seven", children: [] }] },
+    {
+      id: "p-eng",
+      name: "Engineering",
+      children: [
+        {
+          id: "p-7",
+          name: "Project Seven",
+          children: [{ id: "p-7a", name: "Seven A", children: [] }],
+        },
+        { id: "p-8", name: "Project Eight", children: [] },
+      ],
+    },
     { id: "p-sales", name: "Sales", children: [] },
   ],
-  total: 3,
+  // The own personal roots of the member. A pinned connection reaches them only by a pin.
+  personal: [{ id: "p-me", name: "My space", children: [] }],
+  total: 5,
 };
+
+const scopeSwitch = (page: Page, name: string) => page.getByRole("switch", { name });
+const pickMode = (page: Page) => page.getByRole("tab", { name: "Only the ones I pick" }).click();
 
 async function stub(page: Page, view: object = VIEW) {
   const approvals: Request[] = [];
@@ -110,19 +126,20 @@ test.describe("the consent page of an outside agent", () => {
     await stub(page);
     await page.goto(PAGE);
     // The headline names the VERIFIED host. The name is a claim, shown second.
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Connect claude.ai to Metorite?");
     await expect(page.getByTestId("consent-claim")).toHaveText("It calls itself: “Claude Code”");
-    await expect(page.getByTestId("consent-origin")).toHaveText("https://claude.ai");
-    await expect(page.getByTestId("consent-redirect")).toHaveText("http://localhost:53122");
-    await expect(page.getByTestId("consent-org")).toHaveText("Fracktal Works");
-    await expect(page.getByLabel("Read your projects and tasks")).toBeChecked();
-    await expect(page.getByLabel("Change your projects and tasks")).toBeChecked();
-    await expect(page.getByText("Stay connected")).toBeVisible();
-    // offline_access has no box.
-    await expect(page.getByRole("checkbox", { name: "Stay connected" })).toHaveCount(0);
+    await expect(page.getByTestId("consent-origin")).toHaveText("claude.ai verified");
+    await expect(page.getByTestId("consent-redirect")).toHaveText("Returns to http://localhost:53122");
+    await expect(page.getByTestId("consent-org")).toHaveText("Org Fracktal Works");
+    await expect(scopeSwitch(page, "Read your projects and tasks")).toBeChecked();
+    await expect(scopeSwitch(page, "Change your projects and tasks")).toBeChecked();
+    // offline_access has no switch. The summary line says it stays connected.
+    await expect(page.getByRole("switch", { name: "Stay connected" })).toHaveCount(0);
     // On by default (owner 2026-10-30, D-EA-4 as amended).
-    await expect(page.getByLabel("Include my personal projects")).toBeChecked();
-    await expect(page.getByTestId("consent-pins").getByText("Project Seven")).toBeVisible();
+    await expect(scopeSwitch(page, "My personal projects and notes")).toBeChecked();
+    // "All my projects" is the default, and the tree waits behind the other choice.
+    await expect(page.getByRole("tab", { name: "All my projects" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("access-tree")).toHaveCount(0);
     // No chrome: the page is standalone.
     await expect(page.locator("aside")).toHaveCount(0);
   });
@@ -130,14 +147,16 @@ test.describe("the consent page of an outside agent", () => {
   test("an app redirect says it is an app on this computer", async ({ page }) => {
     await stub(page, { ...VIEW, redirect_display: "com.example.app:", redirect_app: true });
     await page.goto(PAGE);
-    await expect(page.getByTestId("consent-redirect")).toHaveText(/com\.example\.app:\s*an app on this computer/);
+    await expect(page.getByTestId("consent-redirect")).toHaveText(/com\.example\.app:\s*\W*\s*an app on this computer/);
   });
 
   test("narrowing works, and the approval sends the same request with the choices", async ({ page }) => {
     const approvals = await stub(page);
     await page.goto(PAGE);
-    await page.getByLabel("Change your projects and tasks").uncheck();
-    await page.getByTestId("consent-pins").getByText("Project Seven").click();
+    await scopeSwitch(page, "Change your projects and tasks").click();
+    await pickMode(page);
+    await page.getByRole("button", { name: "Unfold Engineering" }).click();
+    await page.getByRole("checkbox", { name: "Project Eight" }).check();
     await page.getByRole("button", { name: "Approve" }).click();
     await page.waitForURL(APPROVED);
     expect(approvals).toHaveLength(1);
@@ -146,15 +165,210 @@ test.describe("the consent page of an outside agent", () => {
       ...Object.fromEntries(QUERY.entries()),
       consent_ticket: VIEW.consent_ticket,
       scopes: ["projects:read", "offline_access"],
-      pinned_projects: ["p-7"],
+      pinned_projects: ["p-8", "p-me"],
+      left_out_projects: [],
       include_personal: true,
     });
+  });
+
+  // EA-17b (spec §10.8, D-EA-12): the tree ticks down, and an untick leaves out.
+  test("a tick on a parent ticks every child, and an untick of a child leaves it out", async ({ page }) => {
+    const approvals = await stub(page);
+    await page.goto(PAGE);
+    await pickMode(page);
+    const eng = page.getByRole("checkbox", { name: "Engineering", exact: true });
+    await eng.check();
+    await page.getByRole("button", { name: "Unfold Engineering" }).click();
+    const seven = page.getByRole("checkbox", { name: "Project Seven" });
+    const eight = page.getByRole("checkbox", { name: "Project Eight" });
+    // The cascade.
+    await expect(seven).toBeChecked();
+    await expect(eight).toBeChecked();
+    await expect(page.getByTestId("access-tree-count")).toHaveText("4 of 5 projects");
+    // The summary line follows.
+    await expect(page.getByTestId("consent-summary")).toHaveText(
+      "claude.ai will read and change tasks in 4 projects and the personal projects you have now. It stays connected until you remove it.",
+    );
+    // The untick: the child shows its tag, and the parent shows the dash and the count.
+    await eight.uncheck();
+    await expect(page.getByTestId("tree-row-Project Eight").getByText("left out")).toBeVisible();
+    await expect(eng).toHaveJSProperty("indeterminate", true);
+    await expect(page.getByTestId("tree-row-Engineering").getByTestId("tree-count")).toHaveText("3 of 4");
+    await expect(page.getByTestId("access-tree-count")).toHaveText("3 of 5 projects");
+    await expect(page.getByTestId("consent-summary")).toContainText("in 3 projects");
+    // A click on the dash ticks everything again.
+    await eng.check();
+    await expect(eight).toBeChecked();
+    await eight.uncheck();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    const body = approvals[0].postDataJSON();
+    expect(body.pinned_projects).toEqual(["p-eng", "p-me"]);
+    expect(body.left_out_projects).toEqual(["p-8"]);
+  });
+
+  test("a pin under a left-out parent is sent too", async ({ page }) => {
+    const approvals = await stub(page);
+    await page.goto(PAGE);
+    await pickMode(page);
+    await page.getByRole("checkbox", { name: "Engineering", exact: true }).check();
+    await page.getByRole("button", { name: "Unfold Engineering" }).click();
+    await page.getByRole("button", { name: "Unfold Project Seven" }).click();
+    await page.getByRole("checkbox", { name: "Project Seven" }).uncheck();
+    await page.getByRole("checkbox", { name: "Seven A" }).check();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    const body = approvals[0].postDataJSON();
+    expect(body.pinned_projects).toEqual(["p-eng", "p-7a", "p-me"]);
+    expect(body.left_out_projects).toEqual(["p-7"]);
+  });
+
+  test("Only the ones I pick with nothing ticked blocks Approve, and All my projects sends no list", async ({ page }) => {
+    const approvals = await stub(page);
+    await page.goto(PAGE);
+    const approve = page.getByRole("button", { name: "Approve" });
+    await expect(approve).toBeEnabled();
+    await pickMode(page);
+    await expect(approve).toBeDisabled();
+    await expect(page.getByTestId("consent-project-issue")).toContainText("Pick one project");
+    await page.getByRole("checkbox", { name: "Sales" }).check();
+    await expect(approve).toBeEnabled();
+    await page.getByRole("button", { name: "Clear" }).click();
+    await expect(approve).toBeDisabled();
+    expect(approvals).toHaveLength(0);
+    // Back to All my projects: Approve works, and no list goes with it.
+    await page.getByRole("checkbox", { name: "Sales" }).check();
+    await page.getByRole("tab", { name: "All my projects" }).click();
+    await approve.click();
+    await page.waitForURL(APPROVED);
+    const body = approvals[0].postDataJSON();
+    expect(body.pinned_projects).toEqual([]);
+    expect(body.left_out_projects).toEqual([]);
+  });
+
+  test("a list of more than 12 projects shows the search, and a match shows its parents", async ({ page }) => {
+    await stub(page);
+    const many = {
+      rows: [
+        { id: "p-eng", name: "Engineering", children: [{ id: "p-needle", name: "Needle", children: [] }] },
+        ...Array.from({ length: 12 }, (_, i) => ({ id: `p-x${i}`, name: `Filler ${i}`, children: [] })),
+      ],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(many) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await page.getByRole("searchbox", { name: "Find a project" }).fill("needle");
+    await expect(page.getByTestId("tree-row-Needle")).toBeVisible();
+    await expect(page.getByTestId("tree-row-Engineering")).toBeVisible();
+    await expect(page.getByTestId("tree-row-Filler 3")).toHaveCount(0);
+  });
+
+  test("in pick mode the personal switch pins the personal roots, and off pins none", async ({ page }) => {
+    const approvals = await stub(page);
+    await page.goto(PAGE);
+    await pickMode(page);
+    await page.getByRole("checkbox", { name: "Sales" }).check();
+    await expect(page.getByTestId("consent-summary")).toContainText("the personal projects you have now");
+    await scopeSwitch(page, "My personal projects and notes").click();
+    await expect(page.getByTestId("consent-summary")).not.toContainText("personal");
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    const body = approvals[0].postDataJSON();
+    expect(body.pinned_projects).toEqual(["p-sales"]);
+    expect(body.include_personal).toBe(false);
+  });
+
+  test("an archived subproject shows its tag and takes a left-out mark", async ({ page }) => {
+    const approvals = await stub(page);
+    const tree = {
+      rows: [{ id: "p-eng", name: "Engineering", children: [{ id: "p-old", name: "Old Work", archived_at: "2026-01-01", children: [] }] }],
+      personal: [],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await page.getByRole("checkbox", { name: "Engineering", exact: true }).check();
+    await page.getByRole("button", { name: "Unfold Engineering" }).click();
+    await expect(page.getByTestId("tree-row-Old Work").getByText("archived")).toBeVisible();
+    await page.getByRole("checkbox", { name: "Old Work" }).uncheck();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    expect(approvals[0].postDataJSON().left_out_projects).toEqual(["p-old"]);
+  });
+
+  test("a cut list says so, and never shows a parent without its children", async ({ page }) => {
+    await stub(page);
+    const kid = (i: number, r: string) => ({ id: `k-${r}-${i}`, name: `Kid ${r} ${i}`, children: [] });
+    const tree = {
+      rows: [
+        { id: "r-a", name: "Root A", children: Array.from({ length: 300 }, (_, i) => kid(i, "a")) },
+        { id: "r-b", name: "Root B", children: Array.from({ length: 300 }, (_, i) => kid(i, "b")) },
+      ],
+      personal: [],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await expect(page.getByTestId("access-tree-cut")).toContainText("301 of your 602 projects");
+    await expect(page.getByTestId("tree-row-Root A")).toBeVisible();
+    await expect(page.getByTestId("tree-row-Root B")).toHaveCount(0);
+  });
+
+  test("a lone root over the cap says the list is too long, not that there are no projects", async ({ page }) => {
+    await stub(page);
+    const tree = {
+      rows: [{ id: "r-big", name: "Big", children: Array.from({ length: 520 }, (_, i) => ({ id: `b-${i}`, name: `B ${i}`, children: [] })) }],
+      personal: [],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await expect(page.getByTestId("access-tree-cut")).toContainText("too long to pick from here");
+    await expect(page.getByText("You see no team projects.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Approve" })).toBeDisabled();
+  });
+
+  test("a team root under a personal project is left out when the personal pin is sent", async ({ page }) => {
+    const approvals = await stub(page);
+    const tree = {
+      rows: [
+        { id: "p-a", name: "Alpha", children: [] },
+        { id: "p-t", name: "Spill", parent_project_id: "p-me", children: [] },
+      ],
+      personal: [{ id: "p-me", name: "My space", children: [] }],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await page.getByRole("checkbox", { name: "Alpha" }).check();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    const body = approvals[0].postDataJSON();
+    expect(body.pinned_projects).toEqual(["p-a", "p-me"]);
+    expect(body.left_out_projects).toEqual(["p-t"]);
+  });
+
+  test("the footer says Remove, until Change access exists (EA-17c)", async ({ page }) => {
+    await stub(page);
+    await page.goto(PAGE);
+    await expect(page.getByText("Remove this access any time in")).toBeVisible();
+    await expect(page.getByText("Change or remove")).toHaveCount(0);
   });
 
   test("unticking personal access sends it as false", async ({ page }) => {
     const approvals = await stub(page);
     await page.goto(PAGE);
-    await page.getByLabel("Include my personal projects").uncheck();
+    await scopeSwitch(page, "My personal projects and notes").click();
     await page.getByRole("button", { name: "Approve" }).click();
     await page.waitForURL(APPROVED);
     expect(approvals).toHaveLength(1);
@@ -164,8 +378,7 @@ test.describe("the consent page of an outside agent", () => {
   test("approve is off when every permission is cleared", async ({ page }) => {
     await stub(page);
     await page.goto(PAGE);
-    await page.getByLabel("Read your projects and tasks").uncheck();
-    await page.getByLabel("Change your projects and tasks").uncheck();
+    await scopeSwitch(page, "Read your projects and tasks").click();
     await expect(page.getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 
@@ -188,14 +401,14 @@ test.describe("the consent page of an outside agent", () => {
   test("a claimed name never takes the headline", async ({ page }) => {
     await stub(page, { ...VIEW, client: { ...VIEW.client, name: "Metorite" } });
     await page.goto(PAGE);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Connect claude.ai to Metorite?");
     await expect(page.getByTestId("consent-claim")).toHaveText("It calls itself: “Metorite”");
   });
 
   test("with no claimed name, the page shows no claim line", async ({ page }) => {
     await stub(page, { ...VIEW, client: { ...VIEW.client, name: null } });
     await page.goto(PAGE);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Connect claude.ai to Metorite?");
     await expect(page.getByTestId("consent-claim")).toHaveCount(0);
   });
 
@@ -204,7 +417,7 @@ test.describe("the consent page of an outside agent", () => {
     await page.clock.install();
     await page.goto(PAGE);
     const approve = page.getByRole("button", { name: "Approve" });
-    await expect(page.getByTestId("consent-org")).toHaveText("Fracktal Works");
+    await expect(page.getByTestId("consent-org")).toHaveText("Org Fracktal Works");
     await expect(approve).toBeDisabled();
     // A click that arrives at once does nothing.
     await approve.click({ force: true });
@@ -355,7 +568,7 @@ test.describe("the consent page of an outside agent", () => {
     const approvals = await stub(page, { ...VIEW, client: { ...VIEW.client, name: "Aroh" } });
     await page.clock.install();
     await page.goto(PAGE);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Connect claude.ai to Metorite?");
     const approve = page.getByRole("button", { name: "Approve" });
     await expect(approve).toBeDisabled();
     await approve.click({ force: true });

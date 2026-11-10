@@ -59,8 +59,12 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Call `run` on `_agent_for_run(agent, provider)`, never on the agent with the input alone. Never append a run's provider to the agent object itself. `agent_with_providers` is the one per-run copy.
    - `native_session_store.py` is the one module that reads or writes `maf_agent_session`, through `tenant_session(organization_id)`. A session loads and saves ONLY in the actor's own thread.
    - A failed load falls back to the text history and never fails the run. Fence: `test_native_session_persistence.py`.
+   - Each harness agent holds exactly one provider of history. Give it `native_session_store.SessionHistoryProvider`, the store's own, and the store then loads and saves its session. `agent_for_run` attaches no second provider with the same source id. Fence: `test_app_builder_engine.py`.
 14. **`sandbox_broker.py` is the one seam that runs `docker` for the coding sandbox** (D83, spec `maf_coding_engine.md` §7.1). A tool never calls `docker` itself.
    - It keys one container on the org, the agent and the thread, from the run binding, so `acquire()` takes no argument. It never falls back to the host.
+   - The `app_builder` target (WS-43h, §7.8) mounts two read-only sources from code, and no other: a copy of the build scripts and `artifactUi.tsx` at `/opt/app-builder/build`, and the T2 vendor cache at `/opt/t2-vendor`. Never mount the agent dir or a clone.
+   - Before an `app_builder` start, `ensure_app_git` makes the app's `.git` and refuses a `.git` that is a link or a file, so the cover always covers it. After each command, the sweep removes each link in the app dir.
+   - `code_session.coding_harness_agent` is the one call of `create_harness_agent` (CA-14). `code_task` and app-builder both build their agent there.
    - `copilot_sandbox.py` and `mutation.py` still run `docker`, on a legacy list that only shrinks.
    - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
 15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
@@ -142,7 +146,8 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - The load tool rides in each request of the run, so the cap of layer (a) counts it (`base += 1`).
    - A load never takes a tool or a persona text away. `PackRun.replaced` and the "Delegatable agents" block keep the state of the run start.
    - MCP rule: a load of a pack of the email assistant refuses when the live list holds an MCP tool. The catalog line says so. Precedence differs by layer. In layer (a) the email pack wins and `_inject_mcp_servers` attaches none. In layer (b) the MCP tool wins and the pack stays out.
-   - A load makes no pack sticky. A pack becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
+   - A load by the model makes its pack sticky (task 1747). A pack of layer (a) becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
+   - Task 1747: `_pack_left_block` puts `tool_packs.left_line` last in `_context_preamble_parts`, after the cache break. It names the sticky packs that left at the start of the turn. It reads the record of the packs from the run binding, so a delegated run gets no line. Fence: `test_pack_turn_keeps_used_packs.py`.
    - Fence: `tests/unit/test_load_skill_tools.py`.
 
 29. **The orchestrator's per-turn context carries the briefing of the member's other chats** (WS-63 PZ-34, `project-docs/specs/personalization.md` §15.4). It ships dark behind `ASSISTANT_BRIEFING_ORGS`.
@@ -151,6 +156,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - The store is `tenant_redis.key("chat-briefing", session, member hash)`, 24 hours, and the empty marker counts. A stored block wins in its chat, also after a Forget, a Delete or a change of access (D-PZ-38).
    - ⚠️ The build runs in its own task, within `_BRIEFING_TIMEOUT_S`. `acb_auth.deps.member_context` binds the member's org, and the task keeps that binding away from the run. A fault costs the block, never the turn. A failed identity or role read (`identity_read_failed()`, `role_read_failed()`) stops the build, so the store keeps nothing.
    - The block sits right after the profile block. Each block above it keeps its bytes. Fences: `test_executor_briefing_block.py`, `test_executor_briefing_block_r8.py` (R8), `test_setup_laps.py`.
+30. **The per-turn context carries one celebration line** (WS-63 PZ-43, `personalization.md` §16.6). It ships dark behind `CELEBRATIONS_ORGS`. `_prime_celebrations` has the same gates as the briefing prime and reads ONE row (`celebrations.READ_SQL`). `_celebration_line` reads the run binding and asks the pure `celebrations.celebration_line`. The line comes in the first reply of the member's local day only, and it follows a profile block whose greeting is not `none`. Fence: `tests/unit/test_celebrations.py`.
 
 ## Work Guidance
 

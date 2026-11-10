@@ -145,6 +145,17 @@ skipped. A child that a money roll-up counts, in another currency than the rule,
 is refused. A roll-up that does not fit now, or that the store cannot read,
 refuses the batch.
 
+**The lines (C13).** A relation field of a parent with ``lines`` names a line
+object of the same package and its field ``via`` that points back. The parent
+holds no value for it (``studio_fields.validate_record``). A write with
+``parent`` names the create or the update of its parent earlier in the batch:
+a linked create gets ``via`` from that record, and a linked update must be a
+line of it. A line that names a parent by itself, on a create or a move, must
+name a record of the parent object of this package, in one statement after
+the writes. A record of another package or another org is not found, so the
+line is refused. :func:`_find_lines` reads the relations after the org lock,
+and a relation that no longer fits its line object refuses the batch.
+
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
 its one caller. It adds an object (:func:`define_object`, whose one caller it
@@ -162,6 +173,14 @@ field step names the field. ⚠️ The lock
 order: the caller holds the ``apps`` row ``FOR UPDATE``, and the sync takes
 the org lock after it. :func:`list_objects` reads the objects of one package
 in two statements.
+
+**The delete of a package (A5c-1).** ``packages_store.delete_package`` owns
+it, in the same lock order: the ``apps`` row ``FOR UPDATE``, then
+:func:`lock_org`. :func:`purge_records` deletes the records of the package
+in chunks of :data:`PURGE_CHUNK` under the 5 s deadline, and the cascade
+from ``apps`` deletes the objects, the fields and each hot row that is left.
+:func:`package_counts` counts the objects, the fields and the records (up to
+:data:`COUNT_CAP` for each object) for the preview.
 
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
@@ -222,10 +241,13 @@ from acb_common.studio_fields import (
     NAME_PATTERN,
     FieldError,
     FieldSpec,
+    RecordError,
     check_can_be_hot,
     hot_value,
+    lines_problem,
     parse_field_spec,
     record_json,
+    relation_key,
     storable_text,
     stored_field,
     validate_record,
@@ -396,6 +418,20 @@ _OBJECT_NAMES_SQL = (
     "AND id = ANY(CAST(:oids AS uuid[]))"
 )
 
+#: Each lines relation of one package (C13): the parent object, the key of its
+#: field, the field of the line object that names the parent, and the id of the
+#: line object, which a name of the same package finds. Each alias names the org.
+_LINES_SQL = (
+    "SELECT p.id::text, p.name, f.key, f.spec ->> 'lines', c.id::text, c.name "
+    "FROM studio_object_fields f "
+    f"JOIN studio_objects p ON p.organization_id = {_BOUND_ORG} AND p.id = f.object_id "
+    "AND p.package_id = CAST(:pid AS uuid) "
+    f"LEFT JOIN studio_objects c ON c.organization_id = {_BOUND_ORG} "
+    "AND c.package_id = CAST(:pid AS uuid) AND c.name = f.spec ->> 'to' "
+    f"WHERE f.organization_id = {_BOUND_ORG} AND f.type = 'relation' "
+    "AND (f.spec -> 'lines') IS NOT NULL ORDER BY p.id, f.key"
+)
+
 _SET_RULES_SQL = (
     "UPDATE studio_objects SET constraints = CAST(:rules AS jsonb), updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
@@ -407,6 +443,15 @@ _IN_PACKAGE = (
     "EXISTS (SELECT 1 FROM studio_objects o "
     f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
     "AND o.package_id = CAST(:pid AS uuid))"
+)
+
+#: The parent records that the lines of a batch name (C13), of one parent
+#: object of the package. A parent of another package or another org is not
+#: found, so its line is refused.
+_LINE_PARENTS_SQL = (
+    "SELECT id::text FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    f"AND id = ANY(CAST(:ids AS uuid[])) AND {_IN_PACKAGE}"
 )
 
 #: Every object of one package, and then every field of those objects. The
@@ -632,12 +677,19 @@ class Record:
 class Write:
     """One write of a batch. ``create`` takes ``data``. ``update`` takes
     ``record_id`` and ``data``, the fields that change. ``delete`` takes
-    ``record_id``."""
+    ``record_id``.
+
+    ``parent`` (C13) links a line to its parent in the same batch: the place
+    of an earlier create or update of the parent record. A create of a line
+    gets the parent field filled with that id. An update of a line must be a
+    line of that parent, and cannot change the parent field. A delete takes
+    no ``parent``."""
 
     op: str
     object_id: str
     record_id: str | None = None
     data: Mapping[str, Any] | None = None
+    parent: int | None = None
 
 
 def _actor(actor: object) -> str:
@@ -705,8 +757,20 @@ async def _lock_org(db: Any) -> None:
     :class:`StoreBusy` at the bound, and when Postgres picks this wait as the
     victim of a deadlock.
 
-    ⚠️ A deadlock on a later statement stays a database error. So a caller that
-    holds ``apps`` FOR UPDATE takes the org lock first.
+    ⚠️ **The one lock order is the ``apps`` row, then this lock.** A deadlock
+    on a later statement stays a database error. So a caller that holds the
+    ``apps`` row ``FOR UPDATE`` takes this lock next, before any other
+    statement. A publish (A5, ``publish_version`` and then
+    :func:`sync_objects`) and the delete of a package (A5c-1,
+    ``packages_store.delete_package`` and then :func:`lock_org`) do that. No
+    holder of this lock then waits for an ``apps`` row: a record write locks
+    object rows and record rows only, and the foreign key of a record names
+    ``studio_objects``, never ``apps``. The one exception is
+    :func:`define_object`, whose foreign key check reads the ``apps`` row
+    ``FOR KEY SHARE``, so its one caller is the sync of a publish, which holds
+    that row already. Fence:
+    ``test_r8_two_deletes_and_a_publish_in_one_org_never_deadlock`` in
+    ``test_studio_package_delete_r8.py``.
     """
     wait = await db.execute(text(_LOCK_WAIT_SQL), {"ms": str(ORG_LOCK_WAIT_MS)})
     old = str(wait.one()[0])
@@ -779,9 +843,10 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
     if int(in_package) >= MAX_OBJECTS_PER_PACKAGE:
         raise BudgetExceeded(f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects.")
     if int(in_org) >= MAX_OBJECTS_PER_ORG:
-        # No route deletes a package yet (A5c), so the refusal names a next step.
+        # The delete of a package (A5c-1) frees the room, so the refusal names it.
         raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects, "
-                             "so ask an admin to remove a package.")
+                             "so delete a package that you do not use, or ask its owner "
+                             "to delete it.")
     hot = sum(s.hot for s in specs)
     if hot and await _org_hot(db) + hot > MAX_HOT_PER_ORG:
         raise BudgetExceeded(
@@ -1073,7 +1138,7 @@ FIELD_REFUSED = "field_refused"
 STORE_REFUSED = "store_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
-_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label")
+_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label", "lines")
 
 
 @dataclass(frozen=True)
@@ -1426,6 +1491,187 @@ async def sync_objects(db: Any, actor: str, *, package_id: str,
     if problems:
         raise ObjectsOutOfSync(problems)
     return await _apply_sync(db, who, pid, items)
+
+
+# --- the delete of a package (A5c-1) ----------------------------------------
+#
+# ``packages_store.delete_package`` owns the delete. It locks the ``apps`` row
+# FOR UPDATE, takes the org lock through :func:`lock_org`, and then calls
+# :func:`purge_records` here, because this module holds all SQL of the four
+# tables. The cascade from ``apps`` deletes the objects, the fields and the hot
+# rows of the records that are left. So the purge is the only step whose size
+# has no cap: a record count has no limit.
+
+#: The most records that one step of a package delete removes.
+PURGE_CHUNK = 500
+#: A count of the records of one object stops past this number. The preview
+#: of a delete shows "100,000 or more" for a larger object.
+COUNT_CAP = 100_000
+#: The longest run of the counts of one preview, in milliseconds: the deadline
+#: of C1b. The route of a delete adds it once past its budget (A5c-1).
+COUNT_TIMEOUT_MS = studio_query.TIMEOUT_MS
+#: The longest run of one purge, in milliseconds. A caller can make it end
+#: earlier with ``deadline``, and never later.
+PURGE_TIMEOUT_MS = studio_query.TIMEOUT_MS
+
+#: The objects of one package by name, with their field count and their record
+#: count up to one past the cap (``:cap``). One statement for the package.
+_PACKAGE_COUNTS_SQL = (
+    "SELECT o.name, "
+    "(SELECT count(*) FROM studio_object_fields f "
+    f"WHERE f.organization_id = {_BOUND_ORG} AND f.object_id = o.id), "
+    "(SELECT count(*) FROM (SELECT 1 FROM studio_records r "
+    f"WHERE r.organization_id = {_BOUND_ORG} AND r.object_id = o.id LIMIT :cap) c) "
+    f"FROM studio_objects o WHERE o.organization_id = {_BOUND_ORG} "
+    "AND o.package_id = CAST(:pid AS uuid) ORDER BY o.name"
+)
+
+#: The object names of one package, for the check of a later step (A5c-1).
+_PACKAGE_OBJECT_NAMES_SQL = (
+    "SELECT name FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) ORDER BY name"
+)
+
+#: The object ids of one package, in id order, for the purge.
+_PACKAGE_OBJECT_IDS_SQL = (
+    "SELECT id::text FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) ORDER BY id"
+)
+
+#: At most ``:n`` records of one object, and their hot rows by cascade. The
+#: unique key ``(organization_id, object_id, id)`` serves the subselect.
+#: ⚠️ The ids come from an ARRAY of a subselect that names no outer column, so
+#: Postgres runs it once (an InitPlan) and reads each record by its key. With
+#: ``id IN (subselect)``, stale statistics after a bulk load made the planner
+#: run the LIMIT again for each record of the object: 21.5 s for 500 of 60,000
+#: records on the dev stack (2026-11-05). Fence:
+#: ``test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows``.
+_PURGE_SQL = (
+    "DELETE FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "AND id = ANY(ARRAY(SELECT id FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "ORDER BY id LIMIT :n))"
+)
+
+
+@dataclass(frozen=True)
+class ObjectCount:
+    """The size of one object of a package, for the preview of a delete.
+
+    ``records`` holds at most :data:`COUNT_CAP`. ``capped`` is True when the
+    object holds more."""
+
+    name: str
+    fields: int
+    records: int
+    capped: bool
+
+
+async def lock_org(db: Any) -> None:
+    """Take the advisory lock of the org with the bound of :func:`_lock_org`.
+
+    The delete of a package (A5c-1) calls it right after it locks the
+    ``apps`` row ``FOR UPDATE``: the one lock order. The lock holds to the end
+    of the caller's transaction. Raises :class:`StoreBusy` at the bound."""
+    await _lock_org(db)
+
+
+@asynccontextmanager
+async def bounded_wait(db: Any, ms: int) -> AsyncIterator[None]:
+    """Run the block with a LOCAL ``lock_timeout`` of *ms*, and put the old
+    value back after it (A5c-1, the ``apps`` row of a delete step).
+
+    A wait past the bound, or a deadlock at it, raises :class:`StoreBusy`.
+    It reuses the statements and the codes of :func:`_lock_org`, but it opens
+    no SAVEPOINT. So a busy wait aborts the caller's transaction, and the
+    caller ends that transaction."""
+    wait = await db.execute(text(_LOCK_WAIT_SQL), {"ms": str(ms)})
+    old = str(wait.one()[0])
+    try:
+        yield
+    except DBAPIError as exc:
+        if _sqlstate(exc) in _BUSY_SQLSTATES:
+            raise StoreBusy(_BUSY_MESSAGE) from None
+        raise
+    await db.execute(text(_LOCK_WAIT_BACK_SQL), {"ms": old})
+
+
+def _deadline(ms: int = studio_query.TIMEOUT_MS, cap: float | None = None) -> float:
+    """A deadline of *ms* from now, and never later than *cap* (a time of
+    ``_clock``)."""
+    end = float(_clock() + ms / 1000)
+    return end if cap is None else min(end, float(cap))
+
+
+async def object_names(db: Any, package_id: str) -> list[str]:
+    """The names of the objects of the package *package_id* in the bound org,
+    in name order (A5c-1). A later step of a delete compares them with the
+    names of the preview that the member confirmed. One statement on the
+    unique key of a name, under the 5 s deadline. A timeout raises
+    :class:`StoreBusy`."""
+    pid = _uuid(package_id, "package_id")
+    try:
+        async with _time_limit(db, _deadline(), _BUSY_MESSAGE) as timed:
+            rows = (await timed.execute(text(_PACKAGE_OBJECT_NAMES_SQL), {"pid": pid})).all()
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return [str(r[0]) for r in rows]
+
+
+async def package_counts(db: Any, package_id: str, *,
+                         cap: int = COUNT_CAP) -> list[ObjectCount]:
+    """The objects of the package *package_id* in the bound org, by name, with
+    their field count and their record count up to *cap* (A5c-1).
+
+    It checks no owner: the caller reads the package as its member first. The
+    statement runs under the 5 s deadline of :func:`_time_limit`. A timeout
+    raises :class:`StoreBusy`, and the caller's transaction stays usable."""
+    pid = _uuid(package_id, "package_id")
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ObjectStoreError("cap must be a whole number from 1")
+    try:
+        async with _time_limit(db, _deadline(COUNT_TIMEOUT_MS), _BUSY_MESSAGE) as timed:
+            rows = (await timed.execute(
+                text(_PACKAGE_COUNTS_SQL), {"pid": pid, "cap": cap + 1})).all()
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return [ObjectCount(name=str(r[0]), fields=int(r[1]), records=min(int(r[2]), cap),
+                        capped=int(r[2]) > cap) for r in rows]
+
+
+async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
+                        deadline: float | None = None) -> int:
+    """Delete at most *limit* records of the package *package_id*, and their
+    hot rows by cascade (A5c-1). Answers the number of records deleted.
+
+    ⚠️ The caller holds the ``apps`` row ``FOR UPDATE`` and then the org lock
+    (:func:`lock_org`), in that order. Each record write takes the org lock,
+    so no record of the package comes in while the caller holds it. So an
+    answer below *limit* means that the package holds no record now.
+
+    The statements run under one deadline of :data:`PURGE_TIMEOUT_MS`
+    (:func:`_time_limit`), or under *deadline* (a time of ``_clock``) when it
+    comes first. So the route of a delete keeps each purge inside its budget.
+    A timeout rolls back this call only, deletes nothing, and raises
+    :class:`StoreBusy`. A retry continues: nothing is lost. The purge runs no
+    rule of an object, because each record of the package goes."""
+    pid = _uuid(package_id, "package_id")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ObjectStoreError("limit must be a whole number from 1")
+    left = limit
+    try:
+        async with _time_limit(db, _deadline(PURGE_TIMEOUT_MS, deadline),
+                               _BUSY_MESSAGE) as timed:
+            found = (await timed.execute(text(_PACKAGE_OBJECT_IDS_SQL), {"pid": pid})).all()
+            for (oid,) in found:
+                if left <= 0:
+                    break
+                gone = await timed.execute(text(_PURGE_SQL), {"oid": str(oid), "n": left})
+                left -= int(gone.rowcount or 0)
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return limit - left
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,
@@ -2116,6 +2362,24 @@ class _Batch:
         self.readers: dict[str, set[str]] = {}
         #: The first write that made each parent stale, for the place of an error.
         self.firsts: dict[tuple[str, str], int] = {}
+        #: The lines relation of each line object of the batch (C13), by its id.
+        self.lines: dict[str, _Lines] = {}
+        #: The id of the record that each create of the batch made, by its place.
+        self.made: dict[int, str] = {}
+        #: The last write that gave each line a new parent (C13), for the place
+        #: of a refusal.
+        self.moved: dict[tuple[str, str], int] = {}
+
+
+@dataclass(frozen=True)
+class _Lines:
+    """One lines relation of the package (C13): the parent object, its field,
+    and ``via``, the field of the line object that names the parent."""
+
+    parent_id: str
+    parent: str
+    key: str
+    via: str
 
 
 def _clean_write(write: Any) -> Write:
@@ -2123,6 +2387,9 @@ def _clean_write(write: Any) -> Write:
     if not isinstance(write, Write) or write.op not in _WRITE_OPS:
         raise ObjectStoreError(f"A write is a Write with the op {', '.join(_WRITE_OPS)}.")
     oid = _uuid(write.object_id, "object_id")
+    if write.parent is not None and (
+            write.op == "delete" or type(write.parent) is not int or write.parent < 0):
+        raise ObjectStoreError("parent is the place of an earlier write, on a create or an update.")
     if write.op == "create":
         if write.record_id is not None:
             raise ObjectStoreError("A create takes no record_id, because the store gives the id.")
@@ -2141,10 +2408,15 @@ def _clean_writes(writes: Any) -> list[Write]:
         raise ObjectStoreError("writes must be a list of writes")
     if len(writes) > MAX_WRITES_PER_BATCH:
         raise BudgetExceeded(f"A batch holds at most {MAX_WRITES_PER_BATCH} writes.")
-    out = []
+    out: list[Write] = []
     for i, write in enumerate(writes):
         try:
-            out.append(_clean_write(write))
+            clean = _clean_write(write)
+            if clean.parent is not None and (
+                    clean.parent >= i or out[clean.parent].op not in ("create", "update")):
+                raise ObjectStoreError(
+                    "parent is the place of an earlier create or update in the batch.")
+            out.append(clean)
         except ObjectStoreError as exc:
             raise BatchError(i, exc) from exc
     return out
@@ -2216,23 +2488,200 @@ def _live_mark(batch: _Batch, step: Write) -> _Mark:
     return mark
 
 
+# --- the lines (C13) ------------------------------------------------------------
+#
+# A lines relation is a relation field of a parent object, with `lines` naming
+# the field of the line object (`via`) that points back to the parent. The
+# parent holds no value for it. The door saves a parent and its lines as ONE
+# batch, so they are written all or none. Three steps join the batch:
+#
+#   1c. `_find_lines` reads the lines relations of the package after the org
+#       lock, and `_check_lines_fit` checks each one against the fields of its
+#       line object after the object locks. A relation that does not fit
+#       refuses the batch (it fails closed).
+#   4.  A write with `parent` is linked to the create or the update of its parent
+#       earlier in the batch (`_link`). A linked create gets `via` from that
+#       record, and a linked update must be a line of it. Neither names `via`.
+#   4a. `_check_line_parents` runs after the writes. A line that names a new
+#       parent by itself, on a create or a move, must name a record of the
+#       parent object of this package. A record of another package or another
+#       org is not found, so the line is refused.
+
+
+def _parent_of(via: str, data: Mapping[str, Any] | None) -> str | None:
+    """The parent id that a line names in its field *via*, in the one form of
+    a hot relation, or None."""
+    raw = None if data is None else data.get(via)
+    if isinstance(raw, Mapping) and isinstance(raw.get("id"), str):
+        return relation_key(raw["id"])
+    return None
+
+
+def _link(batch: _Batch, step: Write) -> tuple[_Lines, str] | None:
+    """The lines relation of a linked write, and the id of its parent record,
+    or None for a write with no ``parent``. Runs no statement."""
+    if step.parent is None:
+        return None
+    link = batch.lines.get(step.object_id)
+    parent = batch.steps[step.parent]
+    if link is None or parent.object_id != link.parent_id:
+        raise RecordError("This write is not a line of the record of its parent write.")
+    if isinstance(step.data, Mapping) and link.via in step.data:
+        raise FieldError(link.via, f"Field `{link.via}` of a line comes from the record that "
+                         "it is saved with. Remove it from the line.")
+    rid = batch.made[step.parent] if parent.op == "create" else str(parent.record_id)
+    return link, rid
+
+
+async def _find_lines(db: Any, batch: _Batch) -> None:
+    """Step 1c (C13). The lines relation of each line object of the batch. The
+    org lock is held, and every change of a field takes it too, so the answer is
+    stable. One statement. An object that two relations name refuses the batch,
+    because its parent would be unclear."""
+    rows = (await db.execute(text(_LINES_SQL), {"pid": batch.pid})).all()
+    first: dict[str, int] = {}
+    for i, step in enumerate(batch.steps):
+        first.setdefault(step.object_id, i)
+    for parent_id, parent, key, via, child_id, child in rows:
+        if child_id is None or str(child_id) not in first:
+            continue
+        if str(child_id) in batch.lines:
+            batch.index = first[str(child_id)]
+            raise RecordError(f"Object `{child}` is the lines of two fields. "
+                              "Publish the app again with one.")
+        batch.lines[str(child_id)] = _Lines(str(parent_id), str(parent), str(key), str(via))
+
+
+def _check_lines_fit(batch: _Batch) -> None:
+    """Step 1c (C13), after the object locks. Fail closed: a stored lines
+    relation that does not fit its line object now refuses the batch. The rule
+    is ``studio_fields.lines_problem``, the one that A2 runs."""
+    for oid, link in batch.lines.items():
+        held = batch.objects[oid]
+        spec = FieldSpec(key=link.key, type="relation", to=held.name, lines=link.via)
+        problem = lines_problem(link.parent, spec, held.name, held.fields)
+        if problem is not None:
+            batch.index = next(i for i, s in enumerate(batch.steps) if s.object_id == oid)
+            raise RecordError(f"The lines of `{link.parent}` do not fit now. {problem}")
+
+
+def _plain_id(value: str) -> bool:
+    """True for a record id in its one form: 36 lower-case characters with 4
+    dashes. Python also reads `urn:uuid:`, `uuid:`, braces, capitals and 32 digits
+    as a UUID, and Postgres refuses some of them, so the store takes none of them
+    for a parent."""
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def _bad_parent(link: _Lines) -> FieldError:
+    return FieldError(link.via, f"Field `{link.via}` takes a record id of `{link.parent}` in "
+                      "one form: 36 lower-case characters with 4 dashes. Send the id as the "
+                      "app gave it.")
+
+
+def _line_moves(batch: _Batch, oid: str, before: Mapping[str, Any] | None,
+                after: Mapping[str, Any]) -> bool:
+    """True when a write gives a line a new parent (C13). It runs before the
+    statement of the write. A write that sets the parent field must send the
+    one form of the id, also for the same parent, so a refusal comes before
+    any statement reads it. A write that leaves the value as it is checks
+    nothing, so an old value never blocks another change of the line."""
+    link = batch.lines.get(oid)
+    raw = None if link is None else after.get(link.via)
+    rid = raw.get("id") if isinstance(raw, Mapping) else None
+    if link is None or not isinstance(rid, str):
+        return False
+    old = None if before is None else before.get(link.via)
+    if isinstance(old, Mapping) and old.get("id") == rid:
+        return False
+    if not _plain_id(rid):
+        raise _bad_parent(link)
+    return before is None or relation_key(rid) != _parent_of(link.via, before)
+
+
+def _new_parents(batch: _Batch) -> dict[str, dict[str, tuple[int, _Lines]]]:
+    """The parent ids that the lines of the batch name by themselves, by
+    parent object, each with the last write that moved the line. A write that
+    keeps the parent of the line names none.
+
+    A linked create took its parent from the batch, so it needs no read. Its
+    parent must still be there at the end of the batch: a later delete of the
+    parent refuses the line. An id of another form is refused again here, so
+    no such id reaches the statement."""
+    out: dict[str, dict[str, tuple[int, _Lines]]] = {}
+    for (oid, rid), mark in sorted(batch.marks.items(), key=lambda kv: kv[1].index):
+        link = batch.lines.get(oid)
+        if link is None or mark.after is None:
+            continue
+        new = _parent_of(link.via, mark.after)
+        if new is None or (mark.before is not None and new == _parent_of(link.via, mark.before)):
+            continue
+        batch.index = batch.moved.get((oid, rid), mark.index)
+        if not _plain_id(new):
+            raise _bad_parent(link)
+        if mark.before is None and batch.steps[mark.index].parent is not None:
+            parent = batch.marks.get((link.parent_id, new))
+            if parent is None or parent.after is None:
+                raise _no_parent(link)
+            continue
+        out.setdefault(link.parent_id, {}).setdefault(new, (batch.index, link))
+    return out
+
+
+def _no_parent(link: _Lines) -> FieldError:
+    return FieldError(link.via, f"Field `{link.via}` names no `{link.parent}` record of this "
+                      f"app. Pick a record of `{link.parent}` in this app.")
+
+
+async def _check_line_parents(db: Any, batch: _Batch, deadline: float) -> None:
+    """Step 4a (C13). Each new parent of a line is a record of the parent
+    object of this package. One statement for each parent object, under the one
+    deadline of the batch. The org lock is held, and every record write takes
+    it first, so no parent goes before the commit."""
+    wanted = _new_parents(batch)
+    if not wanted:
+        return
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for parent_id, ids in sorted(wanted.items()):
+            found = {str(r[0]) for r in (await timed.execute(text(_LINE_PARENTS_SQL), {
+                "oid": parent_id, "pid": batch.pid, "ids": sorted(ids)})).all()}
+            for rid, (index, link) in sorted(ids.items(), key=lambda kv: kv[1][0]):
+                if rid not in found:
+                    batch.index = index
+                    raise _no_parent(link)
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
     held = batch.objects[oid]
     plain = held.fields if held.plan is None else list(held.plan.plain)
+    linked = _link(batch, step)
     if step.op == "create":
+        if linked is not None and isinstance(step.data, Mapping):
+            # C13: the line takes its parent from the batch, never from its data.
+            step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
+        moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
+        batch.made[batch.index] = made.id
+        if moves:
+            batch.moved[(oid, made.id)] = batch.index
         return made
     mark = _live_mark(batch, step)
+    if linked is not None and _parent_of(linked[0].via, mark.after) != linked[1]:
+        raise RecordError("A line of this save is not a line of this record. "
+                          "Change it through its own record.")
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         await db.execute(text(_DELETE_RECORD_SQL), binds)
@@ -2242,6 +2691,8 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
+    if _line_moves(batch, oid, mark.after, clean):
+        batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()
@@ -2532,15 +2983,19 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     The caller holds the SAVEPOINT."""
     await _lock_org(db)
     await _find_rollups(db, batch)
+    await _find_lines(db, batch)
     await _lock_objects(db, batch)
+    _check_lines_fit(batch)
     await _lock_records(db, batch)
     answers: list[Record | bool] = []
     for i, step in enumerate(batch.steps):
         batch.index = i
         answers.append(await _apply_write(db, batch, step))
-    # One deadline (C1b) for every read after the writes: the aggregates and the
-    # derived writes of the roll-ups (C7b), then the key checks.
+    # One deadline (C1b) for every read after the writes: the parents of the
+    # lines (C13), the aggregates and the derived writes of the roll-ups (C7b),
+    # then the key checks.
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
     await _check_keys(db, batch, _check_records(batch), deadline)
     return answers

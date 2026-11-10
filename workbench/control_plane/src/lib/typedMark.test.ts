@@ -109,8 +109,9 @@ describe("each send path of the chat", () => {
     const calls = callsOf(chat, "submitText");
     const marked = calls.filter((c) => c.includes("typed"));
     expect(marked).toEqual([
-      "autoSend.text, askTyped ? { typed: true } : undefined",
-      "input, typed ? { typed: true } : undefined",
+      // STU-B2c-2c: the ask also passes `onKept`, which carries no mark.
+      "autoSend.text, askTyped ? { typed: true, onKept } : { onKept }",
+      "withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined",
     ]);
     // Every other call names its words only: no second argument.
     for (const call of calls.filter((c) => !c.includes("typed"))) {
@@ -162,7 +163,7 @@ describe("each send path of the chat", () => {
     expect(bar).toContain("toChat(() => openAssistant({ text: s }));");
     expect(read("lib/shell/interviewMessage.ts")).not.toContain("typed");
     expect(read("lib/shell/AssistantDock.tsx"))
-      .toContain("pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}");
+      .toContain("pendingInputTyped={!chat.recoveredInput && draftFor(st.draft, active.id)?.typed === true}");
   });
 
   it("a `/chat?q=` link never carries the mark", () => {

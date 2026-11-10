@@ -9,9 +9,10 @@ are rows of code, beside ``classes.REACH_CLASS``. A member cannot add a rule.
 1. ``approval_waiting``: an ``approval`` card that waits 2 hours or more.
 2. ``agent_asks``: an agent asks the member a question.
 3. ``block_soon_asked``: a ``block_soon`` card when the member asked to be
-   told (``facts.notify_me``). ⚠️ No provider sets ``notify_me`` yet, so this
-   rule never fires in v1. It is silent, which is the safe side. The setting
-   is an open item of BR-5 slice 2.
+   told (``facts.notify_me``). The member asks with one setting, the
+   ``my_day_prefs`` boolean ``block_notify`` (BR-5 slice 2b-2, Q8 "One
+   setting"). Reach reads it and :func:`with_notify` sets ``notify_me`` on
+   each ``block_soon`` card. With the setting off, the rule matches nothing.
 4. ``source_sync_failed``: a source stopped syncing.
 
 **What a rule tests.** Only the facts of the card, with ``==``, ``>=``,
@@ -32,10 +33,22 @@ feed shows it, and the brief carries it.
 **The switch** is ``BRIEF_EXCEPTIONS`` (``brief.flags.exceptions``), default
 OFF. Off, ``plan.interrupt_candidates`` decides by the class table.
 
-**Not in this slice.** A member's mute of a rule (a new ``my_day_prefs`` key),
-and the useful or not-useful rating of an alert. Both are BR-5 slice 2.
+**The mute** (BR-5 slice 2a, built). A member mutes a rule with the
+``my_day_prefs`` key ``rule_mutes`` (``routes/shell/prefs.py``). The loop and
+the preview read it through ``loop.muted_rules`` and pass it as *muted*.
 
-Fence: ``tests/unit/test_reach_exceptions.py``.
+**The rule of an alert** (BR-5 slice 2b-1). :func:`plan.interrupt_candidates`
+puts the id of the matched rule on each card it lets through, under the key
+:data:`RULE_KEY`. ``outbox.log`` writes it to ``reach_signal_log.rule_id``.
+The member rates the alert with ``outbox.rate_alert``, one of
+:data:`FEEDBACK`. A rating only stores: it mutes no rule and changes no
+budget.
+
+**Not in this slice.** The Settings screen of the mutes and of
+``block_notify`` (slice 2b-3).
+
+Fences: ``tests/unit/test_reach_exceptions.py`` and
+``tests/unit/test_reach_exceptions_feedback_r8.py``.
 """
 
 from __future__ import annotations
@@ -50,6 +63,13 @@ OPERATORS: tuple[str, ...] = ("==", ">=", "<=", "in")
 ACTIONS: tuple[str, ...] = ("interrupt", "hold")
 #: The kinds that always qualify: the member's own request, not an exception.
 EXPLICIT: frozenset[str] = frozenset({"notify_me"})
+#: The ratings of an alert (BR-5 slice 2b-1). Migration 350 holds the same set
+#: in the CHECK ``reach_signal_log_feedback_known``.
+FEEDBACK: tuple[str, ...] = ("useful", "not_useful")
+#: The key of a candidate card that holds the id of its matched rule.
+RULE_KEY = "rule_id"
+#: The card kind that the ``block_notify`` setting marks (rule 3).
+BLOCK_SOON = "block_soon"
 
 
 @dataclass(frozen=True)
@@ -149,10 +169,35 @@ def decide(card: dict[str, Any], now: datetime, *,
     return HOLD
 
 
+def admit(card: dict[str, Any], now: datetime, *,
+          muted: frozenset[str] = frozenset()) -> tuple[bool, str | None]:
+    """Whether *card* may enter the interrupt budget, and the id of the rule
+    that let it in. An explicit request enters with no rule id. Pure."""
+    if str(card.get("kind") or "") in EXPLICIT:
+        return True, None
+    decision = decide(card, now, muted=muted)
+    if decision.action != "interrupt":
+        return False, None
+    return True, decision.rule_id
+
+
 def may_interrupt(card: dict[str, Any], now: datetime, *,
                   muted: frozenset[str] = frozenset()) -> bool:
     """True when *card* may enter the interrupt budget: an explicit request,
     or a rule that says ``interrupt``."""
-    if str(card.get("kind") or "") in EXPLICIT:
-        return True
-    return decide(card, now, muted=muted).action == "interrupt"
+    return admit(card, now, muted=muted)[0]
+
+
+def with_notify(cards: list[dict[str, Any]], on: bool) -> list[dict[str, Any]]:
+    """The cards, with ``facts.notify_me`` set True on each card whose main
+    kind or a folded kind is ``block_soon``, when *on* (BR-5 slice 2b-2, Q8).
+    Each marked card is a copy, so the feed's own card does not change. Off,
+    the list is the same list. Pure."""
+    if not on:
+        return cards
+    out = []
+    for card in cards:
+        if BLOCK_SOON in _kinds(card):
+            card = {**card, "facts": {**(card.get("facts") or {}), "notify_me": True}}
+        out.append(card)
+    return out

@@ -103,8 +103,9 @@
  * WS-27bd recorded for the email `ContextMenu`. Do not add a sixth consumer.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import { Dialog } from "@base-ui/react/dialog";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -207,7 +208,7 @@ const CALLER_SETS_MAX_HEIGHT = /(?:^|\s)(?:[\w-]+:)*max-h-/;
  * The landmark focus lands on when the opener is gone. First in document
  * order, which on every Metorite page is `AppShell`'s own `<main>`.
  */
-const LANDMARK = "main, [role='main']";
+export const LANDMARK = "main, [role='main']";
 
 /**
  * Focus a landmark that is not focusable, and leave the DOM as it was found.
@@ -223,7 +224,7 @@ const LANDMARK = "main, [role='main']";
  * its **first tabbable child** — i.e. the first control on the page, which is
  * a jump, not a return.
  */
-function focusLandmark(el: HTMLElement): void {
+export function focusLandmark(el: HTMLElement): void {
   const owned = !el.hasAttribute("tabindex");
   if (owned) el.setAttribute("tabindex", "-1");
   queueMicrotask(() => {
@@ -364,6 +365,19 @@ export default function Modal({
       setOpener(active instanceof HTMLElement && active !== document.body ? active : null);
     }
   }
+
+  /**
+   * The phone's bottom bar counts as an outside press (MOB-9, task 2002).
+   *
+   * The bar paints above every overlay, and the scrim ends at its top edge. A
+   * tap on a tab is then a press outside the dialog, but the substrate does
+   * not dismiss on it: it treats the bar, inside the app root that it marked
+   * inert, as part of the page behind the scrim. Measured at 390 px: the tab
+   * opened its sheet and the dialog stayed under it. So a click on the bar
+   * closes the dialog, and the tab then does its own job. Fence:
+   * `e2e/phone-bar-always.spec.ts`.
+   */
+  useCloseOnBarTap(onClose, open);
 
   /** The order documented on `finalFocus`. Runs in Base UI's close cleanup. */
   const returnFocus = () => {

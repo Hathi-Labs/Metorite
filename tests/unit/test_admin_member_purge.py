@@ -547,6 +547,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "knowledge_proposals": 0,
         # WS-55 SW-10a: the fake holds no strand of her agent runs. They stay.
         "agent_run_strands": 0,
+        # WS-39 SP-1: the fake holds no cycle capacity row of hers. It stays.
+        "cycle_capacity": 0,
         # WS-PKG PKG-4: the org install and the group install she made.
         "shared_app_installs": 2,
         # WS-PKG PKG-4: her private install of the app she shared with Ravi.
@@ -990,9 +992,11 @@ def test_the_two_halves_of_package_install_do_not_overlap() -> None:
     # granted to herself, and the delete would then disagree with the count,
     # because her grants go first. A test that counted a grant that she did
     # not make would keep an install for a colleague's consent row.
-    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL, SHARE_ROW
 
     assert _OTHERS_SEE_THE_APP is OTHERS_SEE_THE_INSTALL
+    # The purge and the resolve of PKG-5b part 2 read one share rule.
+    assert f"WHERE {SHARE_ROW})" in _OTHERS_SEE_THE_APP
     assert _OTHERS_SEE_THE_APP == (
         "EXISTS (SELECT 1 FROM app_grants AS g"
         " WHERE g.app_id = package_install.app_id"

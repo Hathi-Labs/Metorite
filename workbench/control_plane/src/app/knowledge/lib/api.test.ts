@@ -9,6 +9,8 @@ import {
   KnowledgeError,
   archivePage,
   createPage,
+  createSpace,
+  updateSpace,
   getPage,
   listPages,
   listSpaces,
@@ -143,5 +145,26 @@ describe("a refusal", () => {
     const err = (await createPage({ title: "" }).catch((e: unknown) => e)) as KnowledgeError;
     expect(err.status).toBe(422);
     expect(err.message).toBe("field required; too long");
+  });
+});
+
+describe("the space writes (KB-2q)", () => {
+  it("createSpace posts the name, icon and purpose to the BFF", async () => {
+    const calls = stubFetch(201, { id: "ks-2", name: "Sales playbooks" });
+    const made = await createSpace({ name: "Sales playbooks", icon: "Rocket", purpose: "" });
+    expect(made.id).toBe("ks-2");
+    expect(calls[0].url).toBe("/api/knowledge/spaces");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ name: "Sales playbooks", icon: "Rocket", purpose: "" });
+  });
+  it("updateSpace patches the space by its encoded id", async () => {
+    const calls = stubFetch(200, { id: "ks 2" });
+    await updateSpace("ks 2", { name: "Sales" });
+    expect(calls[0].url).toBe("/api/knowledge/spaces/ks%202");
+    expect(calls[0].init?.method).toBe("PATCH");
+  });
+  it("a refusal keeps its status", async () => {
+    stubFetch(403, { detail: "Making a space needs knowledge:manage." });
+    await expect(createSpace({ name: "X" })).rejects.toMatchObject({ status: 403 });
   });
 });

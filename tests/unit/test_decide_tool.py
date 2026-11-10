@@ -10,10 +10,11 @@ this path, so R8 has nothing to bind. Two layers are faked:
 * the Console client's HTTP factory (``console_resolve._new_http_client``), to
   prove that the flag off and a deployment-key box send no request at all.
 
-🔴 **The tool sends NO member.** That is the R11 finding in §6A.14 CP-13d: a
-run's ``user_email`` can come from a caller's payload, so the tool must never
-let it select a tenant. The test that pins it is
-``test_the_tool_sends_agent_and_run_id_from_the_run_context_and_NO_member``.
+🔴 **The tool sends the session-proven member only (H-165).** That is the
+R11 finding in §6A.14 CP-13d: a run's ``user`` can come from a caller's
+payload, so only a binding with ``member_verified="1"`` may name the member.
+The memory user id never does. The tests that pin it are in the "Identity"
+section below.
 """
 from __future__ import annotations
 
@@ -134,9 +135,9 @@ async def test_flag_off_returns_the_unavailable_text_and_makes_NO_call(monkeypat
 
 
 async def test_a_deployment_key_box_is_unavailable_with_NO_request(monkeypatch):
-    """The tool sends no member, so the deployment arm refuses locally."""
+    """An unproven member, so the deployment arm refuses locally."""
     fake = _box(monkeypatch, enabled=True, deployment=True)
-    # Even a member bound for the run must not be sent (the R11 finding).
+    # A memory id is no proof, so it must not be sent (the R11 finding).
     from acb_skills.memory_tools import _set_memory_user_id
 
     _set_memory_user_id("someone@example.com")
@@ -296,6 +297,92 @@ async def test_the_tool_sends_agent_and_run_id_from_the_run_context_and_NO_membe
     assert call["run_id"] == "run-42"
     assert call["member"] is None, "a member reached the facade (R11)"
     assert call["member_proven"] is False
+
+
+# ── The proven member (H-165) ───────────────────────────────────────────────
+
+
+async def test_a_verified_run_member_is_sent_as_proven(monkeypatch):
+    """(1) A session-bound member travels, with the proof flag."""
+    fake = _facade(monkeypatch, answer=BooleanAnswer(probability=0.5))
+    bind_run_context(
+        run_id="run-7", agent="orchestrator", user="Ada@Example.com",
+        member_verified=True,
+    )
+    await decide("Q?", "ctx")
+    call = fake.calls[0]
+    assert call["member"] == "ada@example.com"
+    assert call["member_proven"] is True
+
+
+async def test_an_unverified_user_claim_sends_no_member(monkeypatch):
+    """(2) A body claim is bound with no proof, so no member travels."""
+    fake = _facade(monkeypatch, answer=BooleanAnswer(probability=0.5))
+    bind_run_context(run_id="run-8", user="claimed@example.com")
+    await decide("Q?", "ctx")
+    assert fake.calls[0]["member"] is None
+    assert fake.calls[0]["member_proven"] is False
+
+
+async def test_a_room_id_sends_no_member(monkeypatch):
+    """(3) A ``room:`` id is never a member, even with the proof flag.
+
+    The memory id holds a real address here. The tool must not read it.
+    """
+    fake = _facade(monkeypatch, answer=BooleanAnswer(probability=0.5))
+    from acb_skills.memory_tools import _set_memory_user_id
+
+    _set_memory_user_id("memory@example.com")
+    bind_run_context(run_id="run-9", user="room:thread-1", member_verified=True)
+    await decide("Q?", "ctx")
+    assert fake.calls[0]["member"] is None
+    assert fake.calls[0]["member_proven"] is False
+
+
+@pytest.mark.parametrize("user", ["", "   "])
+async def test_a_verified_empty_user_sends_no_member(monkeypatch, user):
+    """(3b) A binding with the proof flag and an empty user names nobody.
+
+    ``bind_run_context`` binds no user and no flag for an empty user, and
+    ``get_run_context`` drops an empty field. So neither can build this
+    binding. The test patches ``get_run_context`` to return it, and so it
+    reaches the guard in ``_proven_member`` itself.
+    """
+    import acb_common
+
+    fake = _facade(monkeypatch, answer=BooleanAnswer(probability=0.5))
+    from acb_skills.memory_tools import _set_memory_user_id
+
+    _set_memory_user_id("memory@example.com")
+    monkeypatch.setattr(
+        acb_common,
+        "get_run_context",
+        lambda: {"run_id": "run-9", "user": user, "member_verified": "1"},
+    )
+    await decide("Q?", "ctx")
+    assert fake.calls[0]["member"] is None
+    assert fake.calls[0]["member_proven"] is False
+
+
+async def test_a_verified_non_email_user_sends_no_member(monkeypatch):
+    """(4) A verified user that is not an address names no member."""
+    fake = _facade(monkeypatch, answer=BooleanAnswer(probability=0.5))
+    bind_run_context(run_id="run-10", user="service-bot", member_verified=True)
+    await decide("Q?", "ctx")
+    assert fake.calls[0]["member"] is None
+    assert fake.calls[0]["member_proven"] is False
+
+
+async def test_a_deployment_box_serves_a_proven_member(monkeypatch):
+    """The deployment arm takes the proven member, with its proof header."""
+    fake = _box(monkeypatch, enabled=True, deployment=True)
+    bind_run_context(user="ada@example.com", member_verified=True)
+    out = await decide("Is this urgent?", SECRET_CONTEXT)
+    assert out == "yes (p=0.90)"
+    assert len(fake.requests) == 1
+    sent = fake.requests[0]
+    assert sent.headers["x-cc-member"] == "ada@example.com"
+    assert sent.headers["x-cc-member-proven"] == "1"
 
 
 def test_the_schema_has_no_member_field() -> None:

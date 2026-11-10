@@ -89,10 +89,9 @@ def _apply_byok_provider_for_copilot_sdk(
         gw_base = (
             getattr(settings, "litellm_base_url", "") or "http://127.0.0.1:8080"
         ).rstrip("/")
-        # Internal-token precedence must match acb_auth.require_internal_auth
-        # (gateway_internal_token → litellm_master_key); presenting only the
-        # master key 401s when the two values diverge, which surfaces on the
-        # Copilot session as "Authorization error, run /login".
+        # A /v1 call: the LLM API key, never the identity token.
+        # acb_auth.require_llm_api_auth accepts it (WS-24b removed the
+        # identity token's fallback to this key, not this use of it).
         gw_key = (
             getattr(settings, "llm_api_key", "")
             or getattr(settings, "litellm_master_key", "")

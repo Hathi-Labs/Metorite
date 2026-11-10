@@ -135,7 +135,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                           'options': 'string', 'question': 'string'},
                'required': ['context', 'question']},
     'emit_generative_ui': {'params': {'ui': 'string'}, 'required': ['ui']},
-    'fetch_page': {'params': {'max_chars': 'integer', 'url': 'string'},
+    # WEB-7: + render (a boolean, optional), so no call breaks.
+    'fetch_page': {'params': {'max_chars': 'integer', 'render': 'boolean', 'url': 'string'},
                    'required': ['url']},
     'get_errors': {'params': {'filePaths': 'string'}, 'required': []},
     'get_workflow_run': {'params': {'run_id': 'string'},
@@ -189,6 +190,11 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # workspace and the thread come from the run's context, never the model.
     'read_attachment': {'params': {'name': 'string', 'offset': 'integer'},
                         'required': ['name']},
+    # WS-VOX VOX-3 (projects_ai_chat.md §31): an attached image to tier-vision.
+    # A file name and a question only: the workspace, the thread, the org and
+    # the member come from the run's context, never the model (R5).
+    'analyze_image': {'params': {'file_name': 'string', 'question': 'string'},
+                      'required': ['file_name', 'question']},
     'recall_agent': {'params': {'query': 'string'}, 'required': ['query']},
     'recall_notes': {'params': {'offset': 'integer', 'path': 'string',
                                 'query': 'string'},
@@ -216,7 +222,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                   'required': ['fact', 'path']},
     'save_org_memory': {'params': {'fact': 'string'}, 'required': ['fact']},
     'share_artifact': {'params': {'path': 'string'}, 'required': ['path']},
-    'web_search': {'params': {'max_results': 'integer', 'query': 'string'},
+    'web_search': {'params': {'max_results': 'integer', 'query': 'string', 'source': 'string'},
                    'required': ['query']},
     'write_artifact': {'params': {'content': 'string',
                                   'encoding': 'string',
@@ -226,7 +232,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 22 with decide, read_attachment and package_artifacts)
+# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 23 with decide, read_attachment, package_artifacts and analyze_image)
 # ---------------------------------------------------------------------------
 # Post-diet measurement 2026-08-01 (chars/4 run-context tokenizer), rounded up
 # with ~10% headroom so ordinary wording edits don't fail CI. The floor summed
@@ -250,7 +256,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # The tool returns them on demand (write_artifact.genui_guide), and the
     # docstring keeps the names. Measured 641.
     "emit_generative_ui": 700,
-    "fetch_page": 270,
+    "fetch_page": 310,  # WEB-7: + render (measured 233 -> 273, +40)
     "get_errors": 170,
     "list_integrations": 190,
     "load_artifact_kit": 430,
@@ -263,6 +269,9 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # joined the floor. Measured 277. The floor then measured 6534, under
     # the total ceiling.
     "read_attachment": 300,
+    # WS-VOX VOX-3: the "when to call" rule is in the docstring in full,
+    # because a native agent reads no addendum. Measured 252.
+    "analyze_image": 280,
     "recall_notes": 215,
     "run_diagnostics": 240,
     "run_script": 270,
@@ -271,7 +280,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # tools now say "name the file, and paste no link". share_artifact
     # measured 196 (was 201) and write_artifact 533 (was 575).
     "share_artifact": 210,
-    "web_search": 280,
+    "web_search": 320,  # WEB-4: + source (web, papers, wiki)
     "write_artifact": 550,
 }
 
@@ -281,7 +290,13 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
 #: (193 -> 215, +22), and paid for it itself. Its worked example left the
 #: docstring, so it measured 180, and the floor 6,693 -> 6,680.
-CORE_SCHEMA_TOTAL_CEILING = 6_700
+#: WEB-4 added `source` to web_search (+28).
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor as a NEW tool, not a nudge. The floor measured 6,771 before it and
+#: 7,023 with it (+252). The spec puts the "when to call" rule in its
+#: docstring in full, because a native agent reads no addendum, so no other
+#: tool pays for it. The email assistant and the worker opt out of it.
+CORE_SCHEMA_TOTAL_CEILING = 7_040  # WEB-7: + render on fetch_page (+40); VOX-3: + analyze_image (+252)
 
 
 def _tools_by_name() -> dict[str, object]:

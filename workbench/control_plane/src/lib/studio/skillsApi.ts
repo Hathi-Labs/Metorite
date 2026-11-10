@@ -133,6 +133,15 @@ export function listCatalogActions(): Promise<Reply<{ actions: CatalogAction[] }
 
 // ── The gallery reads the list as a state ──────────────────────────────────
 
+/**
+ * What the Skills section says when the org is not on `STUDIO_ORGS` (D179).
+ * It says what happened and what to do next. It never shows a raw error.
+ */
+export const SKILLS_OFF_COPY = {
+  message: "Skills are not open for your organization yet.",
+  hint: "Metorite turns them on for your organization soon. Your apps and workflows work as before.",
+} as const;
+
 export type SkillsView =
   /** The org is outside STUDIO_ORGS (404), or nobody is signed in (401), or the member lacks access (403). */
   | { kind: "off" }

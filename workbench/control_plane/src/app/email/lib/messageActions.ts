@@ -12,6 +12,29 @@
  * `messageActions.test.ts`.
  */
 
+export type ReplyMode = "reply" | "reply-all" | "forward";
+
+/** The three replies, in the order that the top row and the bottom row draw them. */
+export const REPLY_ACTIONS: ReadonlyArray<{ mode: ReplyMode; label: string; icon: string }> = [
+  { mode: "reply", label: "Reply", icon: "Reply" },
+  { mode: "reply-all", label: "Reply all", icon: "ReplyAll" },
+  { mode: "forward", label: "Forward", icon: "Forward" },
+];
+
+/**
+ * True when the buttons below a message draw (owner, 2026-11-06). They hide
+ * only while the composer answers THAT message: they would sit right above the
+ * composer, and a second press would start the reply again. Another open card
+ * keeps its buttons, because a reply to it is a different reply.
+ */
+export function showsReplyBar(
+  messageId: string,
+  replyMode: ReplyMode | null,
+  replyTargetId: string | null,
+): boolean {
+  return replyMode === null || replyTargetId !== messageId;
+}
+
 /** How much of the row fits. `collapsed` moves Reply all and Forward into the menu. */
 export type RowTier = "labels" | "icons" | "collapsed";
 

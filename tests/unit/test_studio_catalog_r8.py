@@ -118,7 +118,7 @@ def world(promoted, monkeypatch):  # noqa: F811
 def _user(org: str) -> UserContext:
     return UserContext(
         email="m@example.test", role=UserRole.EMPLOYEE,
-        access=build_access(["feature:workflows"]), organization_id=org)
+        access=build_access(["feature:studio"]), organization_id=org)
 
 
 def _as(world, org: str):
@@ -274,7 +274,7 @@ def _list(world, org: str, email: str, app: str | None = None) -> list[dict]:
         token = bind_tenant(org)
         try:
             user = UserContext(email=email, role=UserRole.EMPLOYEE,
-                               access=build_access(["feature:workflows"]),
+                               access=build_access(["feature:studio"]),
                                organization_id=org)
             return (await actions.list_actions(user, app=app))["actions"]
         finally:
@@ -369,7 +369,7 @@ def test_r8_the_statement_count_does_not_grow_with_the_packages(pworld):
             token = bind_tenant(pworld.a)
             try:
                 user = UserContext(email=member, role=UserRole.EMPLOYEE,
-                                   access=build_access(["feature:workflows"]),
+                                   access=build_access(["feature:studio"]),
                                    organization_id=pworld.a)
                 body = (await actions.list_actions(user, app=None))["actions"]
             finally:

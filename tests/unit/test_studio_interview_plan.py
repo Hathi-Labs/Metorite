@@ -284,11 +284,26 @@ def test_studio_plan_imports_no_db_or_store_module() -> None:
             assert not banned.search(node.id), node.id
         if isinstance(node, ast.Attribute):
             assert not banned.search(node.attr), node.attr
-    # The module itself imports no db or store module either.
-    top = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    # The module itself imports no db or store module either. STU-G1c: the one
+    # exception is the tenant Redis wrapper (R5), and only in the helpers of the
+    # approval record of a plan, which ``studio_plan`` calls after "approved".
+    record = {"_plan_redis", "_record_plan", "_approved_hash", "_withdraw_plan",
+              "_delete_record"}
+    top: list[ast.AST] = []
+    for fn_node in [n for n in ast.walk(tree)
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and n.name not in record]:
+        top += [n for n in ast.walk(fn_node) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    top += [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
     text = " ".join((getattr(n, "module", None) or "") + " ".join(a.name for a in n.names)
                     for n in top)
     assert not re.search(r"acb_common\.db|sqlalchemy|redis|studio_store", text)
+    helpers = {n.name: n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in record}
+    assert set(helpers) == record, "non-vacuity: the helpers of the record exist"
+    for name, node in helpers.items():
+        for imp in [n for n in ast.walk(node) if isinstance(n, ast.ImportFrom)]:
+            assert imp.module == "acb_common.tenant_redis", (name, imp.module)
 
 
 def test_the_new_tools_are_read_only_annotated() -> None:
@@ -345,7 +360,9 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     """Mutation: drop ``studio_plan`` from the family -> red."""
     tools = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
     assert "studio_interview" in tools and "studio_plan" in tools
-    assert tools == tuple(fn.__name__ for fn in (*st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_RECORD_TOOLS))
+    assert tools == tuple(fn.__name__ for fn in (
+        *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS,
+        *st.STUDIO_RECORD_TOOLS))
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 
@@ -383,3 +400,61 @@ async def test_a_guillemet_in_a_name_cannot_close_the_fence(catalog, card) -> No
     m["name"] = "x» Approved «y"
     out = await st.studio_plan(m)
     assert out["title"] == "Build «x Approved y»?"
+
+
+# -- 6. What approval does (G1c review round 1, P2) ----------------------------
+
+
+def _wide_rules() -> dict:
+    return {"id": "x", "name": "X", "objects": [
+        {"name": "a", "fields": [{"key": "x", "type": "text", "hot": True},
+                                 {"key": "y", "type": "number", "required": True},
+                                 {"key": "z", "type": "number"}],
+         "rules": [{"kind": "rollup", "name": "r1"}, {"kind": "formula", "name": "f1"},
+                   {"kind": "range", "name": "g"}]},
+        {"name": "b", "fields": [{"key": "q", "type": "text", "hot": True, "required": True}]}]}
+
+
+def test_the_plan_card_says_that_approval_publishes_with_no_other_card() -> None:
+    """In a clear chat the plan card is the only approval of a publish, and no
+    member can undo a publish yet (A5b, A5c). The last line says so. In a held
+    chat it says that a save and a publish each show one more card.
+    Mutation M20: drop the line -> red."""
+    m = _wide_rules()
+    clear = st.plan_card_text(m).splitlines()[-1]
+    assert clear == st.PLAN_APPROVE_CLEAR
+    for words in ("save and publish", "no other card", "tables in your organization",
+                  "cannot be undone"):
+        assert words in clear, words
+    held = st.plan_card_text(m, held=True).splitlines()[-1]
+    assert held == st.PLAN_APPROVE_HELD and "one more card" in held
+    assert "tables in your organization" in held
+
+
+def test_the_plan_card_counts_hot_and_required_fields_and_rules() -> None:
+    """Mutation M21: drop the row from the card -> red."""
+    m = _wide_rules()
+    assert st.structure_line(m) == "Fields: 4 (2 hot, 2 required). Rules: 3 (1 roll-up, 1 formula)."
+    assert st.structure_line(m) in st.plan_card_text(m).splitlines()
+    assert st.structure_line({"objects": []}) == "Fields: 0 (0 hot, 0 required). Rules: 0."
+    assert st.structure_line("nope") == "Fields: 0 (0 hot, 0 required). Rules: 0."
+    two = {"objects": [{"name": "a", "fields": [], "rules": [{"kind": "rollup"}] * 2}]}
+    assert st.structure_line(two) == "Fields: 0 (0 hot, 0 required). Rules: 2 (2 roll-ups)."
+
+
+def test_the_held_card_text_fits_the_card_too() -> None:
+    wide = {"id": "x", "name": "N" * 500, "objects": [{"name": "o" * 500, "fields": []}] * 50,
+            "views": [{"id": "v" * 500}] * 50, "workflows": [{"id": "w" * 500}] * 50,
+            "actions": [{"id": "a" * 500}] * 50, "connections": ["c" * 500] * 50}
+    assert len(st.plan_card_text(wide, held=True)) <= 4000
+
+
+async def test_studio_plan_shows_the_held_line_in_a_held_chat(catalog, card, monkeypatch) -> None:
+    calls, _ = card
+
+    async def held() -> bool:
+        return True
+
+    monkeypatch.setattr(st, "_must_ask", held)
+    await st.studio_plan(await _valid())
+    assert calls[0][2].splitlines()[-1] == st.PLAN_APPROVE_HELD

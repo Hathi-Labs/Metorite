@@ -81,7 +81,7 @@ def _client(org: str | None = ORG) -> TestClient:
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
         email="m@example.test", role=UserRole.EMPLOYEE,
-        access=build_access(["feature:workflows"]), organization_id=org)
+        access=build_access(["feature:studio"]), organization_id=org)
     return TestClient(app)
 
 

@@ -76,6 +76,14 @@ export const ASSISTANT_PERSONA = [
 export const CHAT_FIRST_PERSONA_LINE =
   "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
 
+/**
+ * The line that joins the persona when the guide is on for the org (WS-OB GD-7,
+ * `assistant_guide.md` §5.4, `guide` of `GET /auth/me/shell`). The dock joins it,
+ * so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const GUIDE_PERSONA_LINE =
+  "When the member asks how to do something in Metorite, call find_guide. Answer in at most three short steps from its result, then offer Show me (show_guide) or Open. Never invent a button.";
+
 // ── The forms ────────────────────────────────────────────────────────────────
 
 /**
@@ -279,6 +287,25 @@ export function navigateAct(a: {
 }
 
 /**
+ * What the assistant does when the live run names a guide (WS-OB GD-4,
+ * `assistant_guide.md` §3 G1). The same page-move rule as `navigateAct`: only
+ * while the member watches that chat, and a tour starts at once only beside
+ * the side panel (`runMovesPage`). Elsewhere (a phone, the full view) the run
+ * leaves a "Show me" chip and the member taps it.
+ */
+export function guideAct(a: {
+  open: boolean;
+  threadId: string | undefined;
+  activeId: string | null | undefined;
+  guideId: string | undefined;
+  phone: boolean;
+  form: AssistantMode;
+}): "start" | "offer" | "none" {
+  if (!a.open || !a.threadId || a.threadId !== a.activeId || !a.guideId) return "none";
+  return runMovesPage(a) ? "start" : "offer";
+}
+
+/**
  * The browser-session mark of the landing open (CF-2). `sessionStorage`, so
  * a new tab lands on the chat again and a reload in this tab does not.
  * ⚠️ The key keeps the shell prefix. A key that starts with "cc-" and then
@@ -335,11 +362,24 @@ export interface AssistantAsk {
    */
   join?: boolean;
   /**
+   * A draft that asked for a new chat (`fresh`): the chat that the dock held
+   * when the draft was made. The mounted chat must not take the draft. Only the
+   * chat that the fresh request starts takes it (BETA-1 fix, `draftFor`).
+   */
+  after?: string | null;
+  /**
    * WS-63 D-PZ-37: the member typed these words, in the Ask field or the
    * command bar. Only then does the send carry the typed mark
    * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
    */
   typed?: boolean;
+  /**
+   * STU-B2c-2c fix round 1: the words go into the chat that the open names, or
+   * into no chat. The dock never opens a fresh chat for them: a room, an
+   * archived chat and a chat of another member mark the ask `lost`
+   * (`joinOnlyTakes`). The answer of an approval card in the chat sets it.
+   */
+  joinOnly?: boolean;
 }
 
 export interface AssistantState {
@@ -364,6 +404,11 @@ export interface AssistantState {
    * message once, then takes it (`consumeReminder`).
    */
   reminder: string | null;
+  /**
+   * The next fresh chat opens with the hello (WS-BUD BUD-1). The dock asks
+   * the server for the first message once, then takes it (`consumeHello`).
+   */
+  hello: boolean;
   /** Grows when the cursor should go to the assistant's composer. */
   focusSeq: number;
   /** The side panel's width. */
@@ -409,6 +454,7 @@ const CLOSED: AssistantState = {
   draft: null,
   freshSeq: 0,
   reminder: null,
+  hello: false,
   focusSeq: 0,
   width: DOCK_DEFAULT,
 };
@@ -440,9 +486,13 @@ export interface OpenOptions {
   fresh?: boolean;
   /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
   reminder?: string;
+  /** The fresh chat that this open asks for opens with the hello (BUD-1): pass `fresh` too. */
+  hello?: boolean;
   /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
    *  shell. Leave it unset for words that a click sends. */
   typed?: boolean;
+  /** STU-B2c-2c: `text` joins the named chat or no chat (`AssistantAsk.joinOnly`). */
+  joinOnly?: boolean;
 }
 
 /**
@@ -473,8 +523,11 @@ export function modeOnOpen(a: { phone: boolean; open: boolean; current: Assistan
  *
  * The form: an open from closed is the side panel, unless `mode` asks for the
  * full view. An open while it is open keeps the form it has.
+ *
+ * Returns the `seq` of the ask that `text` made, or null with no `text`. A
+ * card reads what became of its ask with `useAskOutcome(seq)` (STU-B2c-2c).
  */
-export function openAssistant(opts: OpenOptions = {}): void {
+export function openAssistant(opts: OpenOptions = {}): number | null {
   const base = withPrefs(_state);
   const text = opts.text?.trim();
   const draft = opts.draft?.trim();
@@ -482,27 +535,52 @@ export function openAssistant(opts: OpenOptions = {}): void {
   // Only a phone stores `peek` (the handle, the chevron, and `onChatLink` on
   // a phone), so a stored `peek` is the phone. The store reads no viewport.
   const phone = base.mode === "peek";
+  // New words take the place of an ask that no chat took yet: that one is lost.
+  if (text && base.ask) _noteOutcome(base.ask.seq, "lost");
+  const askSeq = text ? ++_askSeq : null;
   _set({
     ...base,
     open: true,
     mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
-    ask: text
-      ? { seq: ++_askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
+    ask: text && askSeq !== null
+      ? {
+        seq: askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}),
+        ...(opts.joinOnly === true ? { joinOnly: true } : {}),
+      }
       : base.ask,
     draft: draft
-      ? { seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}) }
+      ? {
+        seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}),
+        ...(opts.fresh ? { after: base.sessionId } : {}),
+      }
       : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
+    hello: opts.hello === true ? true : base.hello,
     focusSeq: base.focusSeq + 1,
   });
+  return askSeq;
 }
 
 /** Close the assistant. The chat it showed stays its chat for next time. */
 export function closeAssistant(): void {
   if (!_state.open) return;
-  _set({ ..._state, open: false, ask: null, draft: null, reminder: null });
+  // An ask that no chat took yet goes with the close.
+  if (_state.ask) _noteOutcome(_state.ask.seq, "lost");
+  _set({ ..._state, open: false, ask: null, draft: null, reminder: null, hello: false });
+}
+
+/**
+ * The draft that the chat on screen may take. A draft that asked for a new chat
+ * waits while the chat of the dock is still the old one. The mounted chat reads
+ * the draft in its own effect, before the dock switches to the new chat, so a
+ * draft that it took would be lost. Same race as the ask (owner report 2026-10-26).
+ */
+export function draftFor(draft: AssistantAsk | null, activeId: string | null): AssistantAsk | null {
+  if (!draft) return null;
+  if (draft.after === undefined) return draft;
+  return activeId && activeId !== draft.after ? draft : null;
 }
 
 /** The composer took the draft. */
@@ -515,6 +593,12 @@ export function consumeDraft(): void {
 export function consumeReminder(): void {
   if (!_state.reminder) return;
   _set({ ..._state, reminder: null });
+}
+
+/** The dock asked the server for the hello: drop it, so it opens once. */
+export function consumeHello(): void {
+  if (!_state.hello) return;
+  _set({ ..._state, hello: false });
 }
 
 /** Change the form of this open. Nothing is kept for the next one. */
@@ -542,10 +626,77 @@ export function focusAssistant(): void {
   _set({ ..._state, focusSeq: _state.focusSeq + 1 });
 }
 
-/** The chat took the ask: drop it, so a remount never sends it twice. */
-export function consumeAsk(seq: number): void {
+/**
+ * The chat took the ask: drop it, so a remount never sends it twice. With an
+ * `outcome`, the store also keeps what became of the words (STU-B2c-2c):
+ * `sent`, or `kept` when the chat refused the send and the words wait in the
+ * composer. A steer that the server refuses later calls this again with
+ * `kept`. That call only changes the outcome.
+ */
+export function consumeAsk(seq: number, outcome?: AskOutcome): void {
+  if (outcome) _noteOutcome(seq, outcome);
   if (_state.ask?.seq !== seq) return;
   _set({ ..._state, ask: null });
+}
+
+// ── What became of an ask (STU-B2c-2c) ──────────────────────────────────────
+
+/**
+ * What became of the words of one ask. `sent`: the chat sent them as the
+ * member's turn. `kept`: the chat refused the send, and the words wait in the
+ * composer for the member to press Send. `lost`: no chat took them, because
+ * the assistant closed or newer words took their place.
+ */
+export type AskOutcome = "sent" | "kept" | "lost";
+
+/**
+ * The most outcomes the store keeps. The oldest goes first. Memory only. A
+ * page makes far fewer asks than this, so a card never loses its outcome.
+ */
+export const MAX_ASK_OUTCOMES = 500;
+
+/**
+ * Whether a join-only ask (`AssistantAsk.joinOnly`) may go into `chat`: the
+ * member's own private chat that is not archived. Its age does not count,
+ * because the member pressed a control inside that chat. Else the ask is lost.
+ */
+export function joinOnlyTakes(
+  chat: Pick<ChatSession, "archivedAt" | "isOwner" | "participantCount"> | null | undefined,
+): boolean {
+  return Boolean(chat && !chat.archivedAt && chat.isOwner !== false && (chat.participantCount ?? 0) <= 1);
+}
+
+const _outcomes = new Map<number, AskOutcome>();
+const _outcomeListeners = new Set<() => void>();
+
+function _noteOutcome(seq: number, outcome: AskOutcome): void {
+  if (_outcomes.get(seq) === outcome) return;
+  _outcomes.delete(seq);
+  _outcomes.set(seq, outcome);
+  while (_outcomes.size > MAX_ASK_OUTCOMES) {
+    const oldest = _outcomes.keys().next().value;
+    if (oldest === undefined) break;
+    _outcomes.delete(oldest);
+  }
+  _outcomeListeners.forEach((l) => l());
+}
+
+/** What became of the ask `seq`, or null while no chat answered it. */
+export function askOutcome(seq: number | null | undefined): AskOutcome | null {
+  if (seq === null || seq === undefined) return null;
+  return _outcomes.get(seq) ?? null;
+}
+
+function subscribeOutcomes(listener: () => void): () => void {
+  _outcomeListeners.add(listener);
+  return () => {
+    _outcomeListeners.delete(listener);
+  };
+}
+
+/** What became of the ask `seq`, live. */
+export function useAskOutcome(seq: number | null): AskOutcome | null {
+  return useSyncExternalStore(subscribeOutcomes, () => askOutcome(seq), () => null);
 }
 
 function subscribe(listener: () => void): () => void {
@@ -572,6 +723,7 @@ export function __resetAssistantForTests(): void {
   _state = CLOSED;
   _prefsRead = false;
   _askSeq = 0;
+  _outcomes.clear();
   _facts.clear();
   _factsSnapshot = NO_FACTS;
   _listeners.clear();

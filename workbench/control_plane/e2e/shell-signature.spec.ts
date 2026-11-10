@@ -1,17 +1,17 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 /**
- * Our comet in the shell bar (owner, 2026-10-11), and what is left of it
- * after 2026-10-12.
+ * Our comet in the shell's brand zone (owner, 2026-10-11), and what is left
+ * of it after 2026-10-12. The zone sits in the sidebar's head since GL-11.
  *
  * ⚠️ **The right-end signature is retired** (owner, 2026-10-12), and the
  * Metorite logo left the shell on 2026-10-14. The bar's right end is the
  * assistant, the bell and the activity control, and the sidebar's foot is the
  * account (`e2e/shell-account.spec.ts`). This file keeps the cases that
  * still hold:
- *   1. With a logo, the bar draws no comet at all. The left end is the
- *      customer's logo alone, and the bar holds no account.
- *   2. With no logo, the left lockup is our comet, once.
+ *   1. With a logo, the shell draws no comet at all. The head of the sidebar
+ *      is the customer's logo alone, and no top bar holds an account.
+ *   2. With no logo, the head's lockup is our comet, once.
  *   3. The phone has no shell row (`ShellFrame bar={false}`) and no sidebar,
  *      so it shows no signature at 390px or at 360px. With no logo, the
  *      drawer's head shows our comet as the workspace badge, once.
@@ -62,19 +62,21 @@ async function flags(page: Page, nav = true, extra: Record<string, string> = {})
   );
 }
 
-const bar = (page: Page) => page.locator("[data-shell-bar]");
-const signature = (page: Page) => bar(page).locator("[data-shell-signature]");
+// The top bar is gone (GL-12, 30e72d332), and its brand zone moved into the
+// sidebar's head (GL-11, 8f497e7b8). The lockup sits there now.
+const head = (page: Page) => page.locator("aside[data-collapsed] [data-sidebar-head]");
+const signature = (page: Page) => page.locator("[data-shell-signature]");
 
 test.describe("desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("with a logo: the bar draws no comet, and the signature is gone", async ({ page }) => {
+  test("with a logo: the sidebar's head draws no comet, and the signature is gone", async ({ page }) => {
     await flags(page);
     await stub(page, WITH_LOGO);
     await page.goto("/settings/appearance");
-    await expect(bar(page).locator("[data-shell-brand] img").first()).toBeAttached();
+    await expect(head(page).locator("[data-head-brand] img").first()).toBeAttached();
     await expect(page.locator("aside [data-account-foot]")).toBeVisible();
-    await expect(bar(page).locator("[data-shell-account]")).toHaveCount(0);
+    await expect(page.locator("[data-shell-account]")).toHaveCount(0);
     await expect(signature(page)).toHaveCount(0);
     await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(0);
   });
@@ -83,11 +85,11 @@ test.describe("desktop", () => {
     await flags(page);
     await stub(page, NO_LOGO);
     await page.goto("/settings/appearance");
-    const brand = bar(page).locator("[data-shell-brand]");
+    const brand = head(page).locator("[data-head-brand]");
     await expect(brand.locator("a[href='/']")).toContainText("Acme");
     await expect(brand.locator("svg[data-metorite-mark]")).toBeVisible();
     await expect(signature(page)).toHaveCount(0);
-    await expect(bar(page).locator("svg[data-metorite-mark]")).toHaveCount(1);
+    await expect(head(page).locator("svg[data-metorite-mark]")).toHaveCount(1);
     // The badge is the one comet on the page: the foot draws none.
     await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(1);
   });

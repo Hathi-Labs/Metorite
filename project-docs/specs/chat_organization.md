@@ -110,7 +110,7 @@ search, and three company features (§8).
 | Match | Outcome |
 |---|---|
 | Same record or same subject, last message within 14 days, a chat that may join | **Join.** The chip reads "Continuing: <title> ✕" |
-| Related, older, or a chat that may not join | **Carry.** A new chat holds the old summary and shows "Related: <title>" |
+| Related, older, or a chat that may not join | **Carry.** A new chat holds the old summary and shows "Related: <title>". A carry from a HELD chat copies no summary (`one_assistant_context.md` §9). CO-5 reads `chat_session.continued_from` and never writes it. |
 | Unsure between join and carry | **Ask.** "Same as <title>? Continue there" |
 | Nothing | **Clean.** Nothing shows |
 

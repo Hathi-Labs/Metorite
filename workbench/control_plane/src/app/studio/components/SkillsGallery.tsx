@@ -18,7 +18,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { EmptyState } from "@/components/EmptyState";
 import Button from "@/components/ui/Button";
-import { loadSkillsView, type SkillsView } from "@/lib/studio/skillsApi";
+import { loadSkillsView, SKILLS_OFF_COPY, type SkillsView } from "@/lib/studio/skillsApi";
 import SkillStateBadge from "./SkillStateBadge";
 
 export default function SkillsGallery() {
@@ -80,8 +80,8 @@ export default function SkillsGallery() {
       {(view?.kind === "off" || (on && rows.length === 0)) && (
         <EmptyState
           icon="Sparkles"
-          message={on ? "No skills yet." : "Skills arrive with the skill creator."}
-          hint={on ? "Make one, and it lists here with your apps and workflows." : "Your skills will list here with your apps and workflows."}
+          message={on ? "No skills yet." : SKILLS_OFF_COPY.message}
+          hint={on ? "Make one, and it lists here with your apps and workflows." : SKILLS_OFF_COPY.hint}
           action={on ? { label: "New skill", icon: "Plus", onClick: () => router.push("/studio/skills/new") } : undefined}
         />
       )}

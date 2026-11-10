@@ -131,6 +131,8 @@ const APP_BAR_HOME: Record<string, string> = {
   // Live since 2026-10-18 (WS-61 KB-12). It was in `PREVIEW_BAR_HOME` before.
   // The layout draws the bar over every Knowledge route.
   "/knowledge": "app/knowledge/layout.tsx",
+  // Live since 2026-11-05 (D179, STU-BETA). It was in `PREVIEW_BAR_HOME` before.
+  "/studio": "app/studio/page.tsx",
 };
 
 /**
@@ -143,8 +145,7 @@ const PREVIEW_BAR_HOME: Record<string, string> = {
   // My Tasks left the nav at the OP-4 flip (2026-10-25). The page still
   // routes, and still draws its bar until the OP-4 retire.
   "/tasks": "app/tasks/page.tsx",
-  // AI Studio A1 (`ai_studio.md` §14): the one library pane, preview.
-  "/studio": "app/studio/page.tsx",
+  // AI Studio A1 went live (D179), and its row moved to `APP_BAR_HOME`.
 };
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */

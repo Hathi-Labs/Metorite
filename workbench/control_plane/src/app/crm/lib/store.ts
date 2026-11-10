@@ -14,7 +14,7 @@
 
 import { create } from "zustand";
 import * as api from "./api";
-import { CrmError } from "./api";
+import { CrmError, TRY_AGAIN } from "./api";
 import {
   applyLeadMove,
   applyMove,
@@ -37,7 +37,16 @@ import {
   listQuery,
   queryString,
 } from "./filters";
+import type { NewPipelineDraft, PipelineKind } from "./newPipeline";
 import type { SettingsDraft, VocabularyState } from "./settings";
+
+/** The New pipeline dialog of CRM settings (CRM-M3a), and its kind (CRM-M4a). */
+export type NewPipelineState = {
+  open: boolean;
+  draft: NewPipelineDraft | null;
+  /** `lead` for a lead pipeline. Absent or `deal`: a deal pipeline. */
+  kind?: PipelineKind;
+};
 import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
@@ -51,6 +60,7 @@ import type {
   CrmReports,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   Lead,
   LostReason,
@@ -66,6 +76,10 @@ type Rows = Record<string, unknown>[];
 
 /** The record whose related lists were asked for last. */
 let latestRelated = "";
+// The record the card asked for last. With a docked card the member can click
+// A and then B, and A's slow answer must not draw over B: an edit would then go
+// to the record on screen, not the one in the URL (ORC-1).
+let latestRecord = "";
 
 /**
  * The list read asked for last (CRM-X1). `loadList` counts up, and an answer
@@ -132,6 +146,8 @@ type CrmState = {
   contacts: Contact[];
   organizations: Organization[];
   record: Record<string, unknown> | null;
+  /** The read of the open record failed. The card says so, with a Retry. */
+  recordFailed: boolean;
   timeline: TimelineEntry[];
   dealContacts: DealContact[];
   /** The four WS-26g report blocks, or null before the tab has been opened. */
@@ -152,6 +168,14 @@ type CrmState = {
   settingsDrafts: Record<string, SettingsDraft>;
   /** Keep a draft, or drop it with `null`. */
   setSettingsDraft: (key: string, draft: SettingsDraft | null) => void;
+  /**
+   * WS-CRM CRM-M3a: the New pipeline dialog, open or shut, and its draft. In
+   * the store, because the page mounts another tree at the phone width, and
+   * the dialog must stay open with what the member typed. CRM-M4a: `kind`
+   * says which pipeline the one dialog makes. Absent: a deal pipeline.
+   */
+  newPipeline: NewPipelineState;
+  setNewPipeline: (next: Partial<NewPipelineState>) => void;
   /**
    * The view the visible collection was loaded for.
    *
@@ -260,6 +284,13 @@ type CrmState = {
    * failed, the stage stays at the end and the error says so.
    */
   addStageBeforeClosed: (kind: StatusKind, body: Record<string, unknown>) => Promise<string | null>;
+  /**
+   * WS-CRM CRM-M3a: create a deal pipeline. Null when it is made, else the
+   * words of the refusal. The dialog shows them, so the page banner does not.
+   * The stages re-read, because a create can make new ones, and
+   * `usePipelines` wakes through the api call.
+   */
+  createPipeline: (body: Record<string, unknown>) => Promise<string | null>;
   saveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
@@ -327,6 +358,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   contacts: [],
   organizations: [],
   record: null,
+  recordFailed: false,
   timeline: [],
   dealContacts: [],
   reports: null,
@@ -336,8 +368,10 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   refusal: null,
   lastView: null,
   settingsDrafts: {},
+  newPipeline: { open: false, draft: null },
 
   setError: (error) => set({ error }),
+  setNewPipeline: (next) => set((state) => ({ newPipeline: { ...state.newPipeline, ...next } })),
   setSettingsDraft: (key, draft) =>
     set((state) => {
       const next = { ...state.settingsDrafts };
@@ -571,21 +605,30 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadRecord(entity, id) {
-    set({ record: null, timeline: [], dealContacts: [], related: NO_RELATED });
+    const asked = `${entity}:${id}`;
+    latestRecord = asked;
+    set({ record: null, recordFailed: false, timeline: [], dealContacts: [], related: NO_RELATED });
     try {
       const [record, timeline] = await Promise.all([
         api.getRecord<Record<string, unknown>>(entity, id),
         api.getTimeline(entity, id),
       ]);
+      if (latestRecord !== asked) return;
       set({ record, timeline: timeline.entries, error: null });
       if (entity === "deals") {
         const people = await api.listDealContacts(id);
+        if (latestRecord !== asked) return;
         set({ dealContacts: people.rows });
       }
     } catch (err) {
-      set({ error: message(err) });
+      if (latestRecord !== asked) return;
+      // With no record on screen the card says so. At the full stop a banner
+      // on the page behind it would stay out of sight, and the card would say
+      // "Loading…" for ever. A later read that failed keeps the banner.
+      if (get().record === null) set({ recordFailed: true });
+      else set({ error: message(err) });
     }
-    await get().loadRelated(entity, id);
+    if (latestRecord === asked) await get().loadRelated(entity, id);
   },
 
   async loadRelated(entity, id) {
@@ -925,6 +968,19 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().loadVocabulary();
     }
     return created.id;
+  },
+
+  async createPipeline(body) {
+    set({ saving: true });
+    try {
+      await api.createPipeline(body);
+      return null;
+    } catch (err) {
+      return message(err) || TRY_AGAIN;
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
   },
 
   async saveLostReason(reasonId, body) {

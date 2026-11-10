@@ -27,7 +27,7 @@ import { statusAccent } from "@/lib/statusAccent";
 import { displayValue, labelOf } from "@/lib/studio/blocks";
 import { buildLanes, keyStep, optionOf, parseBoard, recordsOf, rowId, type BoardConfig, type Lane } from "@/lib/studio/boardModel";
 import { createMover, type MoverState } from "@/lib/studio/boardMove";
-import type { Row, StudioDataDoor } from "@/lib/studio/dataDoor";
+import { moreLine, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
 /** The value of one card field: a chip for a select or a person, else the words. */
@@ -50,6 +50,7 @@ const NO_UNSUBSCRIBE = () => {};
 
 function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: Row[]; door: StudioDataDoor | null }) {
   const { update, group } = config;
+  const more = moreLine(given);
   // Records only, once, for every use below.
   const rows = useMemo(() => recordsOf(given) as Row[], [given]);
   const mover = useMemo(
@@ -118,6 +119,7 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
       {st.alert ? (
         <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">{st.alert}</p>
       ) : null}
+      {more ? <p role="status" className="text-xs text-muted-foreground">{`${more} The lane counts cover these records only.`}</p> : null}
       <p className="sr-only" aria-live="polite">{st.live}</p>
       <Board
         aria-label="Board"
