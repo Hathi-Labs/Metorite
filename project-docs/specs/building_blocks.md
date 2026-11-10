@@ -1,6 +1,6 @@
 # Metorite building blocks: one company OS that adapts to any company
 
-**Status: ACTIVE, 2026-11-11 (D205).** This is the product shape of Metorite and the contract of its seams. Read it before you add a table, a registry, a manifest, a queue, an engine or a spec. Points 1 to 4 of D205 are the owner's. Points 5 to 10 are proposed, owner review (§7.2).
+**Status: ACTIVE, 2026-11-11 (D205).** This is the product shape of Metorite and the contract of its seams. Read it before you add a table, a registry, a manifest, a queue, an engine or a spec. Points 1 to 4 of D205 are the owner's of 2026-11-10. The owner approved points 5 to 10 on 2026-11-11 (decision pack task 2816). D206 holds the decisions of the epics.
 
 **D-numbers.** `main` held D204 on 2026-11-11. D205 holds every decision of this spec. Re-check the number at merge, because the first merge wins.
 
@@ -123,7 +123,7 @@ The run answers from Knowledge pages with the `customer-safe` audience (P 2725).
 ### 4.1 Custom objects and fields
 
 - An admin adds fields to a built-in record. Projects keeps `pm_custom_fields` (V). The CRM keeps `crm_field_defs` (V). A package adds fields through `package_field_value` (V).
-- An admin or a builder adds a new object. A new object is a Studio object (D205.5, proposed). It gets fields, rules, state machines, formulas, views, door ops and chat tools.
+- An admin or a builder adds a new object. A new object is a Studio object (D205.5). It gets fields, rules, state machines, formulas, views, door ops and chat tools.
 - Every field uses one type vocabulary and one value check (V `studio_fields.py`).
 - Records link through one association table with labels (P 2734).
 
@@ -153,7 +153,7 @@ A company builds an app in four shapes: a skill, a workflow, an app, or an app w
 
 ### 4.5 Bots
 
-A bot is a Studio package with a number, instructions, an allow list of actions and an audience (D205.6, D205.8 proposed). The bot owner picks a template (P 2694) and tests it in a sandbox (P 2671). A reviewer approves each version of the instructions (P 2692). A bot write is a draft that a member approves (P 2658).
+A bot is a Studio package with a number, instructions, an allow list of actions and an audience (D205.6, D205.8). The bot owner picks a template (P 2694) and tests it in a sandbox (P 2671). A reviewer approves each version of the instructions (P 2692). A bot write is a draft that a member approves (P 2658).
 
 ### 4.6 Workflows
 
@@ -268,7 +268,7 @@ These need no owner call. The task text must change before a build starts.
 | Four consent stores | D174.7, CRM-M11 | 2657, 2753, 2684 use 1439 |
 | Id prefixes clash: CX (`company_context.md`), CH (`skills_registry.md`), WS-CM (Console and Money), WB-1 and WB-2 (`hardening_backlog.md`) | R2, an id is never reused | The CRM epic uses CRX-n, the sales harness uses SLH-n, the mirror epic is WS-MIR with MIR-n, and the two web rows become WEBH-1 and WEBH-2 |
 
-### 7.2 Decisions for the owner
+### 7.2 The decisions that the owner approved on 2026-11-11
 
 | Proposed | Question | Recommendation | Why |
 |---|---|---|---|

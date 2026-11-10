@@ -186,14 +186,14 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (ACTIVE) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a, BR-5 slices 1 and 2a built (dark where a flag exists) · next BR-2b, BR-5 slice 2b, BR-7b-1 (task 2171) |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
 | WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · The buddy (the hello, then Reach's chat channel, mark, pop and pause): D177, epic 1693, `specs/onboarding.md` §13 and `specs/proactive_reach.md` §19, next BUD-1 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
-| WS-BB | **Building blocks**: the product shape, the seams and the rule that a vertical is a preset over core blocks | 🟢 active · M1 | `specs/building_blocks.md` (D205) | Read it before a new table, registry, manifest, queue or engine · D205 points 5 to 10 wait for the owner |
+| WS-BB | **Building blocks**: the product shape, the seams and the rule that a vertical is a preset over core blocks | 🟢 active · M1 | `specs/building_blocks.md` (D205) | Read it before a new table, registry, manifest, queue or engine · D205 points 5 to 10 decided 2026-11-11 (task 2816) |
 | WS-LL | **Learning loop**: each week Metorite reviews the agent sessions and the plan, learns, and changes the harness | 🟢 active · M2 | `specs/orchestration_playbook.md` §6c, §7a | Metorite: epic 2624 (MCP & External Agents), LL-0 to LL-13 = tasks 2625 to 2639 · until LL-3 ships a person runs the review each Monday |
 | WS-KIT | **Agent kit**: one neutral core and a pack for each coding agent (Claude Code, Codex, Copilot, Gemini) | 🟢 active · M2 | `specs/orchestration_playbook.md` §6a, §6b | Metorite: epic 2547, KIT-0 to KIT-9 · next KIT-0 (task 2548) |
 | WS-RC | **Rich email composer**: formatting, tables, images, and a faithful send | 🟢 active · M1 | `specs/email_app_master_plan.md`, new section (RC-0, task 2641) | Metorite: epic 2640 (My Email), RC-0 to RC-8 = tasks 2641 to 2649 |
-| WS-WB | **WhatsApp bots**: a company's own number, with bots for customers, the team and scheduling (D205.3) | 🟢 active · M2 | `specs/whatsapp_bots.md`, planned (WB-0, task 2651) · base `specs/whatsapp_assistant_channel.md` | Metorite: epic 2650 (WhatsApp) · D205.6 and D205.8 wait for the owner · owner gate: task 666 (Meta Tech Provider review) |
+| WS-WB | **WhatsApp bots**: a company's own number, with bots for customers, the team and scheduling (D205.3) | 🟢 active · M2 | `specs/whatsapp_bots.md`, planned (WB-0, task 2651) · base `specs/whatsapp_assistant_channel.md` | Metorite: epic 2650 (WhatsApp) · D205.6 and D205.8 decided, D206.1 · owner gate: task 666 (Meta Tech Provider review) |
 | WS-BK | **Booking**: a guest books a person's free time and pays the company (D205.2) | 🟢 active · M2 | booking section of `specs/calendar_events_reminders.md`, planned (BK-0, task 2676) | Metorite: epic 2675 (Calendar App), BK-0 to BK-14 = tasks 2676 to 2690 · payments through task 1515 |
-| WS-KS | **Knowledge everywhere**: one shared read seam, a home article for each project, media, and MCP access with review | 🟢 active · M2 | `specs/knowledge_shared.md`, planned (KS-0, task 2714) | Metorite: epic 2713 (Knowledge), KS-0 to KS-16 = tasks 2714 to 2730 · D205.10 waits for the owner |
-| WS-CX | **CRM complete**: quotes, forecast, automation, AI on every part, the CRM through the MCP (D205.4) | 🟢 active · M2 | `specs/crm_complete.md`, planned (CRX-0, task 2733) · base `specs/crm_platform.md` | Metorite: epic 2732 (CRM), slices CRX-n · D205.5 and D205.7 wait for the owner · the Zoho cutover (tasks 806, 803) stays first |
+| WS-KS | **Knowledge everywhere**: one shared read seam, a home article for each project, media, and MCP access with review | 🟢 active · M2 | `specs/knowledge_shared.md`, planned (KS-0, task 2714) | Metorite: epic 2713 (Knowledge), KS-0 to KS-16 = tasks 2714 to 2730 · D205.10 decided, D206.3 |
+| WS-CX | **CRM complete**: quotes, forecast, automation, AI on every part, the CRM through the MCP (D205.4) | 🟢 active · M2 | `specs/crm_complete.md`, planned (CRX-0, task 2733) · base `specs/crm_platform.md` | Metorite: epic 2732 (CRM), slices CRX-n · D205.5 and D205.7 decided, D206.4 · the Zoho cutover (tasks 806, 803) stays first |
 | WS-HX | **App harness**: setup items, nudges, insights and agent prompts declared in the app manifest | 🟢 active · M2 | contribution points in `specs/package_host.md`, planned (HX-0, task 2762) | Metorite: epic 2757 (Proactive Intelligence), HX-0 to HX-7 = tasks 2762 to 2769 · extends My Day, Reach and setup health, never a second engine |
 | WS-CH | **CRM sales harness**: nudges, insights, the setup coach and agent skills for the CRM | 🟢 active · M2 | `specs/crm_complete.md`, planned (SLH-0, task 2770) | Metorite: epic 2758 (CRM), slices SLH-n · waits on WS-HX |
 | WS-MIR | **CRM mirror and connectors**: HubSpot, Salesforce, Pipedrive, Zoho and files, with AI mapping | 🟢 active · M2 | `specs/crm_connectors.md`, planned (MIR-0, task 2791) | Metorite: epic 2790 (CRM), slices MIR-n · keeps the Zoho adapter first |
@@ -5960,24 +5960,38 @@ Fence: none new. The rules stay advisory until the slices name their tests (R7).
 
 ### D205 — The product shape: Metorite is one company OS built from reusable blocks, and a company adapts it (2026-11-11)
 
-The owner decided points 1 to 4 in chat on 2026-11-10. Points 5 to 10 are proposed in `specs/building_blocks.md` §7.2. Proposed, owner review. Metorite: replan task 2518.
+The owner decided points 1 to 4 in chat on 2026-11-10. The owner approved points 5 to 10 on 2026-11-11, in decision pack task 2816. Metorite: replan task 2518.
 
 1. **`specs/building_blocks.md` is the product shape** and the contract of the seams. A vertical is a preset over the core blocks. An agent extends a seam and never adds a parallel one.
 2. **Booking is in scope** (epic task 2675). A guest sees free slots and never a calendar view. Rooms stay out. Metorite's own mail sender stays off. This narrows `calendar_events_reminders.md` §12 for booking only. The Studio Bookings block (O11) uses the same booking API.
 3. **WhatsApp is bots** (epic task 2650). The inbox and ingest direction of `whatsapp_message_manager.md` is on hold.
 4. **The CRM becomes complete** (epics 2732 and 2790). Quotes are in scope, which reverses the non-goal in `crm_app.md`.
-5. A CRM custom object is a Studio object (proposed).
-6. A bot is an install that acts as a `run_as` member. D140.2 stands (proposed).
-7. The CRM product catalog owns product and price (proposed).
-8. A WhatsApp bot runs as a Studio package on O6 to O8. WS-WB is the product layer (proposed).
-9. An app manifest also declares MCP resources and prompts. The MCP keeps its four tools (D136.2) (proposed).
-10. The publish audience (`internal`, `customer-safe`, `public`) is a page property. It narrows and never widens D12 (proposed).
+5. A CRM custom object is a Studio object.
+6. A bot is an install that acts as a `run_as` member. D140.2 stands.
+7. The CRM product catalog owns product and price.
+8. A WhatsApp bot runs as a Studio package on O6 to O8. WS-WB is the product layer.
+9. An app manifest also declares MCP resources and prompts. The MCP keeps its four tools (D136.2).
+10. The publish audience (`internal`, `customer-safe`, `public`) is a page property. It narrows and never widens D12.
 
 **Ids (R2).** CX and CH were taken, so the CRM epics use CRX-n and SLH-n. WS-CM means Console and Money, so the mirror epic is WS-MIR with MIR-n. The two web rows of `hardening_backlog.md` become WEBH-1 and WEBH-2.
 
 **What D205 amends.** D138 §12 for booking only (point 2), D115 for the direction of WhatsApp (point 3), and the quote non-goal of `crm_app.md` (point 4).
 
 Fence: `tests/unit/test_doc_names_resolve.py` for the new spec name. The seam rules of `specs/building_blocks.md` §6.2 name their fences. The rest stays advisory (R7).
+
+### D206 — The decisions of the epics of 2026-11-10 (2026-11-11)
+
+The owner approved each recommendation of decision pack task 2816 on 2026-11-11. The epic task of each point holds the detail.
+
+1. **WhatsApp bots (epic task 2650).** No unofficial driver for existing office groups. Group bots only for an organization with an Official Business Account. A person reads the live Business Solution Terms (section 4.7) before launch (WB-12). Bots count in the seat tiers through AI credits only (WB-21).
+2. **Booking (epic task 2675).** A bookable host is a member with a seat, and a guest is free. The cancellation and refund policy is a setting of the organization, with a safe default. A payment goes to the organization's own Razorpay account. Metorite holds no money and takes no cut (D174.3).
+3. **Knowledge (epic task 2713).** Each project and epic gets a home article on first open, and a task does not. Video comes by link or embed first, and upload with a size cap later. All agent content lands as a draft. The project owner or the space steward reviews it.
+4. **CRM complete (epic task 2732).** E-sign starts as an accept link, and an Indian eSign provider comes later. The forecast uses explainable math, not machine learning. Rules run at stage exit, not as mandatory fields at creation. Parts of the CRM items deleted on 2026-11-10 come back (renewals, the automation half of M14, enrichment, the thank-you mail of a form, the digest toggle). One workflow engine serves CRM rules, Studio and automation. Tier packaging (CRX-30): the core CRM is in every tier, forecast and workflows start at the second tier, and the mirror, the MCP and agents are metered in credits. The first telephony provider stays open until a check of the provider terms.
+5. **CRM mirror (epic task 2790).** An own thin connector SDK first. Self-hosted Nango only for OAuth, after a licence review. A mirror is the default, and it reads only. Two-way sync is opt-in, with a source of truth for each field. The connector order is HubSpot, Pipedrive and Salesforce, with a file source for any other CRM.
+
+**Still the owner's acts (task 2816, section F):** the CRM pilot organization, the owner and date of the Zoho cutover run (tasks 806 and 803), the owners of the first slices, the grants renewal (task 2580), and the marketplace listings (MIR-13).
+
+Fence: none new. Each slice names its test (R7).
 
 Re-check this number at merge. The first merge wins a D-number.
 
