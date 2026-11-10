@@ -1,11 +1,12 @@
 """The kit packs: one folder per client under packs/ (KIT-2b). R7: this file is the fence.
 
 A pack is static files outside content/, so the loader never serves them as topics.
-KIT-2c and KIT-2d add a pack by adding a folder and a row to CLIENT_FILES.
+A later pack adds a pack by adding a folder and a row to CLIENT_FILES.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -24,7 +25,12 @@ PACKS_DIR = CONTENT_DIR.parent / "packs"
 CORE = CONTENT_DIR / "kit" / "agents-md.md"
 VERSION_LINE = re.compile(r"^kit_version: (\d+)$", re.M)
 # The files each client pack must hold. Add a row for a new client.
-CLIENT_FILES = {"codex": ["README.md", "config.toml.example"]}
+CLIENT_FILES = {
+    "codex": ["README.md", "config.toml.example"],
+    "copilot": ["README.md", "copilot-instructions.md", "vscode-mcp.json.example", "coding-agent-mcp.json.example"],
+    "gemini": ["README.md", "GEMINI.md", "settings.json.example"],
+    "antigravity": ["README.md", "mcp_config.json.example"],
+}
 PACKS = sorted(p.name for p in PACKS_DIR.iterdir() if p.is_dir() and not p.name.startswith("_"))
 PACK_FILES = [f for pack in PACKS for f in sorted((PACKS_DIR / pack).rglob("*")) if f.is_file() and f.suffix != ".pyc"]
 
@@ -128,3 +134,61 @@ def test_codex_readme_sentences_are_short():
 
 def test_the_core_stays_under_the_codex_limit():
     assert len(CORE.read_bytes()) < 32 * 1024
+
+
+# --- Copilot, Gemini CLI, Antigravity ---
+
+
+def _json(pack: str, name: str) -> dict:
+    return json.loads(_text(PACKS_DIR / pack / name))
+
+
+@pytest.mark.parametrize("path", [p for p in PACK_FILES if p.name.endswith(".json.example")], ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_every_json_example_parses_as_written(path):
+    assert isinstance(json.loads(_text(path)), dict)
+
+
+def test_vscode_mcp_uses_servers_with_http_and_no_inline_secret():
+    data = _json("copilot", "vscode-mcp.json.example")
+    server = data["servers"]["metorite"]
+    assert server["type"] == "http" and server["url"].startswith("https://")
+    assert "mcpServers" not in data
+    assert not {"headers", "env"} & set(server)  # a secret would go through `inputs`
+
+
+def test_coding_agent_mcp_has_type_tools_and_url():
+    server = _json("copilot", "coding-agent-mcp.json.example")["mcpServers"]["metorite"]
+    assert server["type"] == "http" and server["tools"] and server["url"].startswith("https://")
+
+
+def test_gemini_settings_read_agents_md_and_use_httpurl():
+    data = _json("gemini", "settings.json.example")
+    assert "AGENTS.md" in data["context"]["fileName"]
+    assert data["mcpServers"]["metorite"]["httpUrl"].startswith("https://")
+
+
+def test_antigravity_uses_serverurl_and_not_httpurl():
+    server = _json("antigravity", "mcp_config.json.example")["mcpServers"]["metorite"]
+    assert server["serverUrl"].startswith("https://")
+    assert "httpUrl" not in server and "url" not in server
+
+
+def test_antigravity_ships_no_rule_file_and_reuses_the_gemini_file():
+    assert [p.name for p in (PACKS_DIR / "antigravity").rglob("*.md")] == ["README.md"]
+    assert "packs/gemini/GEMINI.md" in _text(PACKS_DIR / "antigravity" / "README.md")
+
+
+@pytest.mark.parametrize("rel", ["copilot/copilot-instructions.md", "gemini/GEMINI.md"])
+def test_a_pointer_file_names_the_core_and_its_version(rel):
+    text = _text(PACKS_DIR / rel)
+    assert "AGENTS.md" in text and "kit/agents-md.md" in text
+    assert [int(v) for v in VERSION_LINE.findall(text)] == [_core_version()]
+    assert len(text.splitlines()) <= 15
+    assert "## The protocol" not in text
+
+
+def test_pack_readme_sentences_are_short_for_every_pack():
+    for pack in PACKS:
+        for line in _text(PACKS_DIR / pack / "README.md").splitlines():
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                assert len(sentence.split()) <= 25, (pack, sentence)
