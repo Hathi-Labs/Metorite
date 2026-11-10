@@ -20,4 +20,4 @@ The core is the file `kit/agents-md.md`. For Codex, the core is the `AGENTS.md` 
 
 Codex custom prompts in `~/.codex/prompts` are deprecated and local only. This pack has no prompt file.
 
-A headless box uses a box token and not OAuth. The steps are in `docs/box_connect.md`. Never write a token in a file of this pack.
+A headless box uses a box token and not OAuth. The steps are in the box connect guide of the Metorite docs. Never write a token in a file of this pack.

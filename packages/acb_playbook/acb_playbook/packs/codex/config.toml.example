@@ -7,4 +7,4 @@
 url = "https://mcp.metorite.com/mcp"
 
 # Headless box: connect with a box token instead of OAuth.
-# Follow docs/box_connect.md. Never write the token in this file.
+# Follow the box connect guide of the Metorite docs. Never write the token in this file.
