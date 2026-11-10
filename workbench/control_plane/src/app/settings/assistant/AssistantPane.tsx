@@ -43,11 +43,14 @@ import {
   KIND_LABELS,
   LANGUAGES,
   LENGTHS,
+  MONTHS,
   ProfileError,
   addAlias,
   addFact,
   areaLabel,
+  celebrationsGate,
   chatHref,
+  daysInMonth,
   deleteAlias,
   DELETE_ONE_BODY,
   deleteAllBody,
@@ -62,6 +65,7 @@ import {
   fetchSummaries,
   forgetAll,
   mergeAddress,
+  mergeCelebrations,
   mergeStyle,
   nearCap,
   patchAlias,
@@ -70,6 +74,7 @@ import {
   resetArea,
   resetInterview,
   saveAddress,
+  saveCelebrations,
   saveKeepSummaries,
   saveLearning,
   saveStyle,
@@ -79,6 +84,7 @@ import {
   withoutInterview,
   type Address,
   type Alias,
+  type CelebrationsGate,
   type ChatSummary,
   type ProfileBlock,
   type SummariesPage,
@@ -115,6 +121,8 @@ export interface PaneHandlers {
   onResetArea: (id: InterviewAreaId) => Promise<boolean>;
   /** Ask to reset the whole interview. A confirm dialog follows. */
   onResetInterview: () => void;
+  /** Save the birthday, the festival picks or the work-anniversary switch (PZ-43). */
+  onCelebrations: (edit: Parameters<typeof mergeCelebrations>[1]) => Promise<boolean>;
   /** The switch "Keep chat summaries" (PZ-35). */
   onKeepSummaries: (value: boolean) => Promise<boolean>;
   /** Ask to delete the summary of one chat. A confirm dialog follows (PZ-35). */
@@ -166,6 +174,8 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   fallbackName?: { name: string; from: "preferred" | "display" } | null;
   /** "What the assistant sees". Without it, the section does not draw. */
   block?: BlockState;
+  /** "Celebrations" (PZ-43). Without it, the section does not draw (the flag is off). */
+  celebrations?: CelebrationsGate;
   /** "Recent chats". Without it, the section does not draw (the flag is off). */
   summaries?: SummariesView;
   confirmDeleteSummaries?: boolean;
@@ -195,6 +205,7 @@ export const NO_HANDLERS: PaneHandlers = {
   onGetToKnow: () => {},
   onResetArea: noop,
   onResetInterview: () => {},
+  onCelebrations: noop,
   onKeepSummaries: noop,
   onDeleteSummary: () => {},
   onDeleteAllSummaries: () => {},
@@ -214,12 +225,17 @@ const JUMPS = [
   { id: "assistant-forget", label: "Forget" },
 ] as const;
 
-/** The same links with "Recent chats", which draws only with the flag on (PZ-35). */
-const JUMPS_WITH_SUMMARIES = [
-  ...JUMPS.slice(0, 7),
-  { id: "assistant-summaries", label: "Recent chats" },
-  ...JUMPS.slice(7),
-] as const;
+
+/** The jump links of the sections that draw. "Celebrations" and "Recent chats" come only with their flags. */
+function jumpsFor(v: { summaries?: unknown; celebrations?: unknown }) {
+  const out: { id: string; label: string }[] = [...JUMPS];
+  if (v.celebrations) out.splice(3, 0, { id: "assistant-celebrations", label: "Celebrations" });
+  if (v.summaries) {
+    const at = out.findIndex((j) => j.id === "assistant-download");
+    out.splice(at, 0, { id: "assistant-summaries", label: "Recent chats" });
+  }
+  return out;
+}
 
 function Section({
   id,
@@ -656,6 +672,135 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
   );
 }
 
+// ── Celebrations (PZ-43) ──────────────────────────────────────────────────
+
+/** The words shown while the list of festivals is empty (`personalization.md` §16.9 Q3). */
+export const FESTIVALS_LATER = "The list of festivals comes later. Until then, I greet no festival.";
+
+/**
+ * "Celebrations". The birthday is a day and a month, with no year field. The
+ * festival picker draws only when the server lists a festival. The assistant
+ * greets once on the day, and never guesses a festival from your name, your
+ * region or your mail. Draws only with the flag on.
+ */
+function CelebrationsSection({
+  p,
+  gate,
+  v,
+}: {
+  p: Profile;
+  gate: CelebrationsGate;
+  v: AssistantPaneViewProps;
+}) {
+  const c = p.celebrations;
+  const [month, setMonth] = useDraft<string>(c?.birthday ? String(c.birthday.month) : "", v.epoch ?? 0);
+  const [day, setDay] = useDraft<string>(c?.birthday ? String(c.birthday.day) : "", v.epoch ?? 0);
+  const busy = v.busy.celebrations;
+  const stored = c?.birthday ? `${c.birthday.month}-${c.birthday.day}` : "";
+  const draft = month && day ? `${month}-${day}` : "";
+  // Save when the draft is a whole date, or when both parts are cleared.
+  const whole = (month === "") === (day === "");
+  const canSave = !busy && whole && draft !== stored;
+  const max = month ? daysInMonth(Number(month)) : 31;
+  const days = Array.from({ length: max }, (_, i) => String(i + 1));
+  const monthLabels = Object.fromEntries(MONTHS.map((m, i) => [String(i + 1), m]));
+  const picked = c?.festivals ?? [];
+  return (
+    <Section
+      id="assistant-celebrations"
+      title="Celebrations"
+      description="Tell the assistant which days to greet you on. It greets once on the day. It never guesses, and other members never see it."
+    >
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="Birthday month">
+          <Choice
+            label="Birthday month"
+            value={month}
+            values={MONTHS.map((_, i) => String(i + 1))}
+            labels={monthLabels}
+            none="Not set"
+            disabled={busy}
+            onChange={(x) => {
+              setMonth(x);
+              if (x && day && Number(day) > daysInMonth(Number(x))) setDay("");
+            }}
+          />
+        </Field>
+        <Field label="Birthday day">
+          <Choice
+            label="Birthday day"
+            value={day}
+            values={days}
+            labels={Object.fromEntries(days.map((d) => [d, d]))}
+            none="Not set"
+            disabled={busy}
+            onChange={setDay}
+          />
+        </Field>
+        <div className="flex items-end">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={busy}
+            disabled={!canSave}
+            onClick={() =>
+              v.onCelebrations({
+                birthday: draft ? { month: Number(month), day: Number(day) } : null,
+              })
+            }
+          >
+            Save birthday
+          </Button>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        A day and a month only. I do not keep a year.
+      </p>
+      {gate.festivals.length === 0 ? (
+        <p data-testid="celebrations-festivals-later" className="text-xs text-muted-foreground">
+          {FESTIVALS_LATER}
+        </p>
+      ) : (
+        <fieldset className="space-y-2" data-testid="celebrations-festivals">
+          <legend className="text-xs font-medium text-foreground">Festivals to greet me on</legend>
+          {gate.festivals.map((f) => (
+            <label key={f.id} className="flex items-center gap-2.5">
+              <Checkbox
+                checked={picked.includes(f.id)}
+                disabled={busy}
+                onChange={(e) =>
+                  v.onCelebrations({
+                    festivals: e.target.checked ? [...picked, f.id] : picked.filter((x) => x !== f.id),
+                  })
+                }
+                aria-label={f.name}
+              />
+              <span className="text-sm text-foreground">{f.name}</span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      <label className="flex items-start gap-2.5">
+        <Checkbox
+          checked={c?.work_anniversary === true}
+          disabled={busy}
+          onChange={(e) => v.onCelebrations({ work_anniversary: e.target.checked })}
+          aria-label="Greet me on my work anniversary"
+        />
+        <span className="space-y-0.5">
+          <span className="block text-sm font-medium text-foreground">
+            Greet me on my work anniversary
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            It uses the join date in your People profile. It is off until you turn it on.
+          </span>
+        </span>
+      </label>
+      <RowError text={v.errors.celebrations} />
+    </Section>
+  );
+}
+
 // ── Facts ─────────────────────────────────────────────────────────────────
 
 function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
@@ -1000,7 +1145,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
   return (
     <div className="space-y-8">
       <nav aria-label="Sections on this page" className="flex flex-wrap gap-1.5">
-        {(v.summaries ? JUMPS_WITH_SUMMARIES : JUMPS).map((j) => (
+        {jumpsFor(v).map((j) => (
           <Button
             key={j.id}
             size="sm"
@@ -1039,6 +1184,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       </Section>
       <AddressSection p={p} v={v} />
       <StyleSection p={p} v={v} />
+      {v.celebrations ? <CelebrationsSection p={p} gate={v.celebrations} v={v} /> : null}
       <FactsSection p={p} v={v} />
       <InterviewSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
@@ -1148,6 +1294,8 @@ export default function AssistantPane() {
   // Recent chats (PZ-35). The gate is what the profile read says, and the list
   // loads only when the organization has the flag on.
   const [gate, setGate] = useState<SummaryGate>({ enabled: false, keep: true });
+  // Celebrations (PZ-43): the flag of the organization and the festival list.
+  const [celeb, setCeleb] = useState<CelebrationsGate>(celebrationsGate(null));
   const [summaries, setSummaries] = useState<SummariesList>({ status: "loading" });
   const [summariesTry, setSummariesTry] = useState(0);
   const [confirmDeleteSummaries, setConfirmDeleteSummaries] = useState(false);
@@ -1207,6 +1355,7 @@ export default function AssistantPane() {
       const read = await fetchProfileAndGate();
       setProfile(read.profile);
       setGate(read.gate);
+      setCeleb(read.celebrations);
       setStatus("ready");
     } catch (e) {
       setLoadError(e instanceof ProfileError ? e.message : errorText("", 502));
@@ -1315,6 +1464,10 @@ export default function AssistantPane() {
         setProfile((p) => (p ? withoutArea(p, id) : p));
       }),
     onResetInterview: () => setConfirmResetInterview(true),
+    onCelebrations: (edit) =>
+      run("celebrations", async () =>
+        setProfile(await saveCelebrations(mergeCelebrations(base.celebrations, edit))),
+      ),
     onKeepSummaries: (value) =>
       run("summaries", async () => {
         await saveKeepSummaries(value);
@@ -1349,6 +1502,7 @@ export default function AssistantPane() {
       epoch={epoch}
       fallbackName={fallbackName}
       block={block}
+      celebrations={celeb.enabled ? celeb : undefined}
       summaries={gate.enabled ? { keep: gate.keep, list: summaries } : undefined}
       confirmDeleteSummaryId={confirmDeleteSummaryId}
       onCancelDeleteSummary={() => setConfirmDeleteSummaryId(null)}

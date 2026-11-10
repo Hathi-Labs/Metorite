@@ -110,6 +110,10 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
+    # but it says open_world as each CRM write does, so a covered run holds it off.
+    "crm_create_pipeline",
+    "crm_update_record", "crm_update_task",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -137,6 +141,11 @@ def _no_database(monkeypatch):
     """
     import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
+    import orchestrator._tool_injection as _ti_vox
+
+    # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
+    # of a lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -818,7 +827,15 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: card, and says open_world=False. None sends anything outside Metorite.
 #: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
 #: update_task patch through the gateway, behind one card, and says open_world=False.
+#: 2026-11-08 (WS-39 LP-1a): list_project_updates (a read) and post_project_update (one
+#: card) joined. Each reaches only the gateway, and says open_world=False.
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor. It sends an attached image only to the metered tier-vision model of the
+#: Console, writes nothing, and says open_world=False.
+#: 2026-11-08 (SP-12, task 2295): get_plan (a read) joined. It reads one gateway route,
+#: the one plan engine, writes nothing and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
+    "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
@@ -829,6 +846,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_area", "delete_area", "rename_area",
     "nudge_task", "export_tasks", "attach_to_task",
     "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
+    "list_project_updates", "post_project_update", "delete_project_update",
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",
@@ -838,7 +856,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "file_tasks",
     "file_access_ls", "file_access_read", "file_access_read_lines",
     "file_access_replace", "file_access_replace_lines", "file_access_write",
-    "find_conflicts", "find_tasks", "fit_for_task",
+    "find_conflicts", "find_tasks", "fit_for_task", "get_plan",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
     "move_project", "convert_folder_to_project",
@@ -855,6 +873,9 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "update_type", "vocabulary", "watch", "watchers",
     "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
     "reopen_reminder", "reschedule_reminder", "promote_reminder",
+    # WS-39 TPL-1a: the templates. Each act is the member's own, through the
+    # gateway, and says open_world=False.
+    "list_templates", "save_as_template", "create_project_from_template",
 })
 
 
@@ -2477,19 +2498,19 @@ def _task_manager_block() -> str:
 #: and the risky tools of task-manager, whatever else this process imported.
 TASK_MANAGER_RISK_BLOCK = (
     "### Tool risk annotations\n"
-    "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
+    "- Read-only (call freely): analyze_image, ask_questions, ask_user, decide, fetch_page, get_errors, "
     "get_workflow_run, github_repo_search, github_search, list_integrations, "
     "list_workflows, load_design_system, my_tasks_accounts, my_tasks_clarify, "
-    "my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, my_tasks_list_projects, "
-    "my_tasks_people, my_tasks_subtasks, my_tasks_sync, query_history, read_attachment, "
+    "my_tasks_day_digest, my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, "
+    "my_tasks_list_projects, my_tasks_list_schedule, my_tasks_people, my_tasks_subtasks, my_tasks_sync, query_history, read_attachment, "
     "recall_notes, recall_timeline, remember, request_confirmation, run_diagnostics, "
     "share_artifact, web_search\n"
     "- State-writing (reversible): call_agent, call_agent_background, "
     "call_agents_parallel, code_task, make_document, make_report, manage_todo_list, "
     "my_tasks_add_subtasks, "
     "my_tasks_archive, my_tasks_capture, my_tasks_capture_many, my_tasks_complete, "
-    "my_tasks_day_digest, my_tasks_delegate, my_tasks_estimate_stats, "
-    "my_tasks_list_schedule, my_tasks_move, my_tasks_organize, my_tasks_plan_day, "
+    "my_tasks_delegate, my_tasks_estimate_stats, "
+    "my_tasks_move, my_tasks_organize, my_tasks_plan_day, "
     "my_tasks_plan_project, my_tasks_replan_day, my_tasks_rollover, my_tasks_schedule, "
     "my_tasks_set_one_thing, my_tasks_set_stage, my_tasks_unschedule, my_tasks_update, "
     "package_artifacts, run_script, run_workflow, save_episode, save_memory, save_note, "

@@ -32,3 +32,16 @@ export function chipsInRow(width: number, total: number): number {
   const room = Math.floor((width - MORE_PX) / (CHIP_PX + GAP_PX));
   return Math.max(1, Math.min(total - 1, room));
 }
+
+/**
+ * The list row stands in for a mail whose detail fetch threw. If the row
+ * advertises files and holds none, its files did not load, so the slot says
+ * so and offers Try again. This reads the thrown fetch, never an empty list.
+ */
+export function withFailedFiles<T extends { hasAttachments: boolean; attachments?: unknown[] }>(
+  row: T,
+): T & { attachmentsStatus?: "ok" | "failed" } {
+  return row.hasAttachments && (!row.attachments || row.attachments.length === 0)
+    ? { ...row, attachmentsStatus: "failed" }
+    : row;
+}

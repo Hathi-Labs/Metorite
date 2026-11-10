@@ -1040,12 +1040,18 @@ async def _prompt_reply(
 
 
 class _Written:
-    """What one write did, for the response and the event after commit."""
+    """What one write did, for the response and the event after commit.
 
-    def __init__(self, activity: Any, created: bool, commented: bool) -> None:
+    *cleared* names each member whose question bell rows the write marked
+    read (:func:`_close_question_bells`, AP-BUG-3). The route moves their My
+    Day after its commit (:func:`_bump_cleared`)."""
+
+    def __init__(self, activity: Any, created: bool, commented: bool,
+                 cleared: list[str] | None = None) -> None:
         self.activity = activity
         self.created = created
         self.commented = commented
+        self.cleared = list(cleared or [])
 
 
 def _refuse_a_marked_prompt(kind: str, run_id: str) -> None:
@@ -1213,13 +1219,13 @@ async def _write_activity(
             quiet=quiet,
         )
 
-    await _move_run(
+    cleared = await _move_run(
         db, run, new_status, ts=ts, user=user, via=via,
         error_body=body if kind == "error" else None,
         error_activity=str(made.id) if kind == "error" else None,
         stop=(kind == "prompt" and signal_out == "stop"),
     )
-    return _Written(made, True, commented)
+    return _Written(made, True, commented, cleared)
 
 
 async def _comment(
@@ -1299,9 +1305,15 @@ async def _move_run(
     db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext | None,
     via: str | None,
     error_body: str | None = None, error_activity: str | None = None, stop: bool = False,
-) -> None:
+) -> list[str]:
     """Set the run's status and stamps. Column names are fixed here, and
     only the values are bound.
+
+    AP-BUG-3. A move OUT of ``awaiting`` closes the run's questions, so it
+    marks their bell rows read for every recipient
+    (:func:`_close_question_bells`). It returns those recipients, so the
+    route moves their My Day after its commit. Every other move returns
+    ``[]``.
 
     *user* is ``None`` only for a move that the server makes with no caller:
     the archive close of the SW-10a sweep (:func:`close_archived_run`). Such a
@@ -1356,7 +1368,9 @@ async def _move_run(
     update = text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)")
     if not (run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES):
         await db.execute(update, params)
-        return
+        return await _close_question_bells(db, run, new_status)
+    # A reopen starts from a terminal status, never from `awaiting`, so it
+    # closes no question and returns `[]` below.
     # H-409 item 1. Two members prompt two completed runs of one task at once.
     # Both pass `_clear_for_reopen`, and the second UPDATE breaks
     # `pm_agent_runs_one_open_per_task`. Inside a savepoint that error is a
@@ -1372,6 +1386,70 @@ async def _move_run(
         if holder is None:
             raise HTTPException(status_code=409, detail="Try the call again.") from None
         raise _task_held(holder) from None
+    return []
+
+
+#: AP-BUG-3. The unread bell rows of every question of one run, for every
+#: recipient. ``_comment`` writes an ``agent_question`` row with
+#: ``activity_id`` = the timeline row of the question, and the question keeps
+#: that row as ``pm_activity_id``.
+_RUN_QUESTION_BELLS_SQL = (
+    "SELECT n.id, n.recipient FROM pm_notifications n"
+    " WHERE n.kind = 'agent_question' AND n.read_at IS NULL"
+    "   AND n.activity_id IN (SELECT a.pm_activity_id FROM pm_agent_run_activities a"
+    "                          WHERE a.run_id = CAST(:rid AS uuid)"
+    "                            AND a.type = 'elicitation'"
+    "                            AND a.pm_activity_id IS NOT NULL)"
+)
+
+
+async def _close_question_bells(db: Any, run: Any, new_status: str) -> list[str]:
+    """AP-BUG-3 (owner, 2026-11-08). Mark read the bell rows of the run's
+    questions when the run leaves ``awaiting``, in the caller's transaction.
+
+    My Day's "Needs you" and its feed cards read the UNREAD Projects bell
+    (``shell.needs._projects``). A member's answer is a ``prompt``, and it
+    never touched the bell, so an answered question stayed in My Day. One
+    rule now: when a run leaves ``awaiting``, no question of it waits, so no
+    bell row of it asks. That holds for an answer, an outside decision, Stop,
+    Release, Finish, a failure and each sweep, because each one moves the run
+    here.
+
+    Every recipient's row goes, not only the answerer's:
+    ``waiting_on_me.md`` V10, "the first answer closes it for all of them".
+    A watcher still learns the answer, because the answer is a timeline
+    comment and sends them its own ``comment`` row.
+
+    The write goes through the ONE writer of ``read_at``
+    (``notifications.mark_rows_read``), once for each recipient. It returns
+    the recipients it marked, sorted. Fence (R8):
+    ``tests/unit/test_mcp_edge_outside_decision.py``,
+    ``TestTheQuestionBellClosesWithTheRun`` and ``test_d2b``.
+    """
+    if run.status != "awaiting" or new_status == "awaiting":
+        return []
+    rows = (await db.execute(text(_RUN_QUESTION_BELLS_SQL), {"rid": str(run.id)})).fetchall()
+    by_recipient: dict[str, list[str]] = {}
+    for row in rows:
+        by_recipient.setdefault(str(row.recipient), []).append(str(row.id))
+    cleared: list[str] = []
+    for recipient in sorted(by_recipient):
+        if await mark_rows_read(db, recipient, by_recipient[recipient]):
+            cleared.append(recipient)
+    return cleared
+
+
+async def _bump_cleared(user: UserContext, recipients: list[str]) -> None:
+    """After the commit: move the My Day of each member whose question rows
+    :func:`_close_question_bells` marked read. A read emits no ``pm.*``
+    event, so a member with a cached feed needs this bump
+    (``personal.bump_my_day``, as ``notifications.mark_read`` does)."""
+    if not recipients:
+        return
+    from gateway.routes.projects.personal import bump_my_day
+
+    for email in recipients:
+        await bump_my_day(user.organization_id, email)
 
 
 @asynccontextmanager
@@ -1525,19 +1603,24 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     """Move a run whose lease ended to ``abandoned``, and write the line
     "Taken over by <member>/<client>". False when the run moved in the
     meantime: a heartbeat changes ``last_activity_at``, so the guard misses
-    and the caller reads the holder again."""
+    and the caller reads the holder again.
+
+    AP-BUG-3. This is the one move out of ``awaiting`` that does not go
+    through :func:`_move_run`, so it closes the question bells itself."""
     ts = await _clock(db)
+    to = transition(holder.status, "abandon")
     moved = (await db.execute(
         text(
             "UPDATE pm_agent_runs SET status = :to, ended_at = :ts, session_key = NULL "
             " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
             "   AND last_activity_at = :seen RETURNING id"
         ),
-        {"to": transition(holder.status, "abandon"), "ts": ts, "rid": str(holder.id),
+        {"to": to, "ts": ts, "rid": str(holder.id),
          "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at},
     )).fetchone()
     if moved is None:
         return False
+    await _close_question_bells(db, holder, to)
     client = agent_oauth.client_label(via) if via else "the app"
     await _system_activity(
         db, holder, actor_email=me, via=via,
@@ -1770,7 +1853,8 @@ async def start_agent_run(
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
                 text(
-                    "SELECT id, client_origin, client_id FROM agent_connection "
+                    "SELECT id, client_origin, client_id, credential, client_name"
+                    "  FROM agent_connection "
                     " WHERE id = CAST(:cid AS uuid) AND lower(member_email) = :me "
                     "   AND revoked_at IS NULL AND expires_at > now()"
                 ),
@@ -1780,7 +1864,13 @@ async def start_agent_run(
             # branch 0 gives the agent's calls on this connection.
             origin = getattr(conn, "client_origin", None)
             client_via = (
-                actor_via_for(origin, client_id=getattr(conn, "client_id", None))
+                actor_via_for(
+                    origin, client_id=getattr(conn, "client_id", None),
+                    # EA-19b: the stamp of a box connection.
+                    credential=getattr(conn, "credential", None),
+                    connection_id=str(getattr(conn, "id", "")),
+                    client_name=getattr(conn, "client_name", None),
+                )
                 if conn else ""
             )
             if conn is None or not ACTOR_VIA_PATTERN.fullmatch(client_via):
@@ -2096,6 +2186,8 @@ async def post_agent_activity(
         out_activity = _activity_out(written.activity)
     if written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    # AP-BUG-3: an answer closed the question, so its bell rows are read.
+    await _bump_cleared(user, written.cleared)
     return {"activity": out_activity, "run": out_run, "created": written.created}
 
 
@@ -2151,6 +2243,7 @@ async def finish_agent_run(
         raise HTTPException(status_code=403, detail="Only the agent finishes its run.")
     summary = _clean_body(payload.summary)
     written: _Written | None = None
+    cleared: list[str] = []
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2184,12 +2277,14 @@ async def finish_agent_run(
             )
         else:
             new_status = transition(run.status, "agent_finish")
-            await _move_run(db, run, new_status, ts=await _clock(db), user=user,
-                            via=_agent_via(user))
+            cleared = await _move_run(db, run, new_status, ts=await _clock(db), user=user,
+                                      via=_agent_via(user))
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         out_activity = _activity_out(written.activity) if written is not None else None
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    # AP-BUG-3: a finish of an awaiting run closes its question.
+    await _bump_cleared(user, written.cleared if written is not None else cleared)
     return {"run": out_run, "activity": out_activity}
 
 
@@ -2402,6 +2497,7 @@ async def release_agent_run(
     _require_write_scope(user)
     via = _agent_via(user)
     me = _member(user)
+    cleared: list[str] = []
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2412,13 +2508,16 @@ async def release_agent_run(
         if run.status != "released":
             new_status = transition(run.status, "release")
             ts = await _clock(db)
-            await _move_run(db, run, new_status, ts=ts, user=user, via=via)
+            cleared = await _move_run(db, run, new_status, ts=ts, user=user, via=via)
             client = agent_oauth.client_label(via) if via else "the app"
             await _system_activity(
                 db, run, actor_email=me, via=via,
                 body=f"Released by {await _member_name(db, me)}/{client}",
             )
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+    # AP-BUG-3: a release of an awaiting run closes its question, and a
+    # release emits no `pm.*` event, so each cleared member's My Day moves here.
+    await _bump_cleared(user, cleared)
     return {"run": out_run, "released": True}
 
 
@@ -3107,10 +3206,11 @@ async def record_outside_decision(
       member's answer (:func:`option_labels`). Else 422 ``selected_refused``.
     * The same ``idempotency_key`` again returns the first response with
       200. A key of another activity gets 409.
-    * **The bell** (fix round 1). The member's ``agent_question`` row of the
-      question becomes read in the same transaction
-      (:func:`_clear_question_bell`), so the bell and My Day stop asking.
-      After the commit, ``personal.bump_my_day`` moves My Day.
+    * **The bell** (fix round 1, widened by AP-BUG-3). The move out of
+      ``awaiting`` marks the ``agent_question`` rows of the run read for
+      every recipient, in the same transaction (:func:`_close_question_bells`,
+      inside :func:`_move_run`). So the bell and My Day stop asking. After
+      the commit, ``personal.bump_my_day`` moves each cleared member's My Day.
 
     Fences: ``tests/unit/test_mcp_edge_outside_decision.py`` (R8 and
     database-free).
@@ -3165,20 +3265,14 @@ async def record_outside_decision(
         )
         if not written.created:
             response.status_code = 200
-        # Fix round 1 (P2). The member answered, so the bell row of the
-        # question, and the My Day card it makes, must go too.
-        cleared = (await _clear_question_bell(db, _member(user), question)
-                   if written.created else 0)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         out_activity = _activity_out(written.activity)
     if written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
-    if cleared:
-        # After the commit, as `notifications.mark_read` does: a read note
-        # leaves My Day, and a read emits no `pm.*` event.
-        from gateway.routes.projects.personal import bump_my_day
-
-        await bump_my_day(user.organization_id, _member(user))
+    # Fix round 1 (P2), widened by AP-BUG-3. The member answered, so each
+    # bell row of the question, and the My Day card it makes, went in the
+    # move out of `awaiting`. A replay clears nothing, so it moves no My Day.
+    await _bump_cleared(user, written.cleared)
     return {"activity": out_activity, "run": out_run, "created": written.created}
 
 
@@ -3195,31 +3289,6 @@ def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
         return option_labels(meta, selected)
     except HTTPException as exc:
         raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
-
-
-#: The member's unread bell rows of one question: ``kind = 'agent_question'``,
-#: and ``activity_id`` is the timeline row of the question (``_comment``
-#: writes the bell with ``activity_id`` = that row).
-_QUESTION_BELL_SQL = (
-    "SELECT id FROM pm_notifications"
-    " WHERE recipient = :me AND kind = 'agent_question'"
-    " AND activity_id = CAST(:aid AS uuid) AND read_at IS NULL"
-)
-
-
-async def _clear_question_bell(db: Any, me: str, question: Any) -> int:
-    """Mark the member's bell row of *question* read, in the caller's
-    transaction, through the ONE writer of ``read_at``
-    (``notifications.mark_rows_read``). Only the member's own row: the bell
-    of an assignee or a watcher stays theirs to read. The count it marked."""
-    activity = getattr(question, "pm_activity_id", None)
-    if activity is None:
-        return 0
-    found = (await db.execute(text(_QUESTION_BELL_SQL),
-                              {"me": me, "aid": str(activity)})).fetchall()
-    if not found:
-        return 0
-    return await mark_rows_read(db, me, [str(row.id) for row in found])
 
 
 __all__ = [

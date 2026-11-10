@@ -43,6 +43,9 @@ const CRM: Record<string, unknown> = {
   "statuses/lead": [],
   "lost-reasons": [],
   pipelines: [],
+  // Since CRM-U17a (1b2df77da, 2026-11-02) the rail reads `/crm/modules` in
+  // Native mode too. The rail calls `.filter` on it, so it must be an array.
+  modules: [],
   connection: null,
   settings: { mode: "native" },
   "reports/pipeline": {

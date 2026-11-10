@@ -15,6 +15,7 @@
  *   other               → hex-dump excerpt + download button
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -438,6 +439,9 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
       if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
     };
   }, []);
+
+  // A bar tap closes the viewer, as Escape does (MOB-9).
+  useCloseOnBarTap(onClose);
 
   // Close on Escape
   useEffect(() => {

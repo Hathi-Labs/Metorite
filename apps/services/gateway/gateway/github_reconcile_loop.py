@@ -30,7 +30,9 @@ the write session, and its events go out after that commit.
 :func:`start_github_reconcile_loop`, never as an ``if`` in ``main.py``
 (``main.py`` says why a loop's flag has one reader). ``_organization_ids`` is
 the one unbound read, a tenant-discovery site registered in
-``tests/unit/test_db_engine_seam.py``. Fence:
+``tests/unit/test_db_engine_seam.py``. **SW-53:** :func:`run_org` skips an org
+that ``GITHUB_APP_ORGS`` does not name, before it reads anything of that org
+(``github_app.github_app_org_allowed``, read on each tick). Fence:
 ``tests/unit/test_github_reconcile_r8.py`` (R8).
 """
 
@@ -212,6 +214,10 @@ async def _reconcile_checks(org: str, installation: int, row: Any, result: TickR
 async def run_org(org: str, tick: str) -> TickResult:
     """One org's tick. It never raises past a rate limit or a GitHub failure."""
     result = TickResult()
+    # SW-53: an org off GITHUB_APP_ORGS is skipped. The poll reads nothing of
+    # it: no installation, no tick guard, no reference.
+    if not github_app.github_app_org_allowed(org):
+        return result
     installation = await github_sync.installation_of_org(org)
     if installation is None:
         return result

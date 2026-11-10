@@ -69,6 +69,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
   "assignees": { label: "Assignees", kind: "person", many: true },
+  // WS-39 LP-1a: who wrote a project update, on its delete card.
+  "author": { label: "Author", kind: "person" },
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
   "body": { label: "Text" },
@@ -108,10 +110,14 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "estimate_mins": { label: "Estimate", kind: "minutes" },
   "expected_by": { label: "Expected by", kind: "date" },
   "expected_close_date": { label: "Expected close", kind: "date" },
+  // WS-CRM CRM-M4a: the deal pipeline that a new lead pipeline feeds.
+  "feeds deals into": { label: "Feeds deals into" },
   "field": { label: "Field" },
   "field *": { label: "Field" },
   "field_type": { label: "Field type", kind: "words" },
   "file": { label: "File" },
+  // IMG-2: the files that `create_task` attaches, with their sizes.
+  "files": { label: "Files" },
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
@@ -120,6 +126,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "from": { label: "From", kind: "task" },
   "gives access to": { label: "Gives access to" },
   "group by": { label: "Group by", kind: "words" },
+  // WS-39 LP-1a: the health of a project update, in words ("At risk").
+  "health": { label: "Health", kind: "words" },
   "icon": { label: "Icon" },
   "icon_slot": { label: "Icon colour" },
   "impact": { label: "Impact" },
@@ -165,6 +173,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "place": { label: "Place" },
   "people on the list now": { label: "On the list now" },
   "person": { label: "Person" },
+  // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.
+  "pipeline": { label: "Pipeline" },
   "position": { label: "Position" },
   "priority": { label: "Priority" },
   "project": { label: "Project", kind: "project" },
@@ -189,9 +199,15 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "source N": { label: "Source", kind: "task" },
   "source_ref": { label: "Reference" },
   "stage": { label: "Stage" },
+  // WS-CRM CRM-M3a: each stage of a new pipeline, in order.
+  "stage N": { label: "Stage", plural: "Stages" },
   "start": { label: "Start", kind: "date" },
   "start_date": { label: "Start", kind: "date" },
+  // WS-CRM CRM-M3a: where a new pipeline starts, "new" or "a copy of X".
+  "starts from": { label: "Starts from" },
   "status": { label: "Status", kind: "status" },
+  // WS-CRM CRM-M4a: each lead status of a new lead pipeline, in order.
+  "status N": { label: "Status", plural: "Statuses" },
   "status set": { label: "Status set", kind: "project" },
   "status_category": { label: "Status category", kind: "category" },
   "status_id": { label: "Status" },

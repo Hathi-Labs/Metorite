@@ -201,8 +201,48 @@ def _agent_tool(fn: Any) -> Any:
     )
 
 
-def _agent_tools() -> list[Any]:
+# CAL-1a (task 1675): the day planner tools, for the ``calendar-day`` pack.
+# They are the My Tasks functions, so no second write path exists. They are NOT
+# in ``_TOOLS``: ``skill_projects.__all__``, ``own_tool_scope`` and the specialist's
+# own tool list stay as they were. Only ``_agent_tools()`` builds them, and that
+# is the builder of the pack (``acb_skills.tool_packs.owner_tools``). Fence:
+# ``tests/unit/test_calendar_day_pack.py``.
+_CALENDAR_DAY_NAMES: tuple[str, ...] = (
+    "my_tasks_add_day_rule",
+    "my_tasks_close_my_day",
+    "my_tasks_day_digest",
+    "my_tasks_delete_day_rule",
+    "my_tasks_edit_day_rule",
+    "my_tasks_get_calendar_settings",
+    "my_tasks_list_day_rules",
+    "my_tasks_list_schedule",
+    "my_tasks_plan_day",
+    "my_tasks_replan_day",
+    "my_tasks_rollover",
+    "my_tasks_schedule",
+    "my_tasks_set_one_thing",
+    "my_tasks_start_my_day",
+    "my_tasks_unschedule",
+    "my_tasks_update_calendar_settings",
+)
+_CALENDAR_DAY_TOOLS: list[Any] = []
+try:
+    import skill_my_tasks
+
+    _CALENDAR_DAY_TOOLS = [getattr(skill_my_tasks, name) for name in _CALENDAR_DAY_NAMES]
+except ImportError:
+    # skill-my-tasks is not installed: the pack is then empty, not broken.
+    pass
+
+
+def _own_tools() -> list[Any]:
+    """The tools of the specialist itself: ``skill_projects.__all__``, strict."""
     return [_agent_tool(fn) for fn in _TOOLS]
+
+
+def _agent_tools() -> list[Any]:
+    """The own tools, then the day planner tools of the ``calendar-day`` pack."""
+    return [*_own_tools(), *(_agent_tool(fn) for fn in _CALENDAR_DAY_TOOLS)]
 
 
 def _llm_provider() -> dict[str, Any]:
@@ -282,7 +322,7 @@ def build_agents() -> list[Any]:
             "project or an app in the member's page. It never deletes a "
             "project or a task."
         ),
-        tools=_agent_tools(),
+        tools=_own_tools(),
     )
     # WS-43d (maf_coding_engine.md §16.3, D86): the sandbox tools join THIS
     # run only, as a per-run view, and only when the broker covers this

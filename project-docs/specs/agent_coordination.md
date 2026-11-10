@@ -1,6 +1,14 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`. **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. No P9 slice is built.**
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
+
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+
+**SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
+
+**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
+
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -43,7 +51,7 @@ The next slices fix liveness first, because the board shows most agent work as i
 
 - The model of §3: the nouns, the run states, the liveness contract, wake-ups, notes, sequences and cost.
 - The design of the agent session identity and its trust limits (SW-6, §3.7).
-- The slices SW-0 to SW-36, the two liveness bugs of tasks 1045 and 1054, the P9 slices SW-44 to SW-63, and the P10 slices SW-64 to SW-99 (§5).
+- The slices SW-0 to SW-36, the two liveness bugs of tasks 1045 and 1054, the P9 slices SW-44 to SW-63, and the P10 slices SW-64 to SW-100 (§5).
 - The MCP tools and arguments that these slices add, through the allowlist of `external_agent_access.md` §9.5.
 - The Projects surfaces that these slices add. These are the card states, the agent roster, the agent profile, the delegate field, guidance in Settings and the run plan.
 
@@ -169,7 +177,7 @@ A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 
 - **The conflict radar** (SW-26) catches what a sequence cannot prevent. Two open runs whose pull requests change the same file, or add the same new number, each get an affects note. Needs attention lists the pair as "Will collide".
 - **A Check** (SW-23) is the field that lets `HANDOFF.md` retire into tasks (D135.1). An agent runs it, and a pass closes the task with its evidence.
 
-**One link tool.** SW-16 adds `add_task_link` and `remove_task_link` for `blocks`. SW-25 adds `affects` and `relates_to` to the same two tools. The name `set_dependencies` in the first text of SW-16 changes to `add_task_link`, so no second link tool exists.
+**One link tool.** SW-16a adds `add_task_link` and `remove_task_link` for `blocks`. SW-25 adds `affects` and `relates_to` to the same two tools. The name `set_dependencies` in the first text of SW-16 changes to `add_task_link`, so no second link tool exists.
 
 ### 3.6 Cost
 
@@ -492,7 +500,7 @@ Seven causes explain the 36. The owner asked that this plan fix the causes. Each
 | **Park and wake** | The `waiting` state (1045a, up to 120 minutes). SW-60 parks a run on its CI. SW-15 wakes a run when its last blocker closes, and SW-16 sets the blocker. SW-9 is the wait record. SW-17 (push) is deferred. Task 1731 restarts a session for an answer | **SW-66.** Park on a pull request merge, on another run, or on a time, beside the CI park. One cap for all (Q13). One wake path. Blocker wakes stay with SW-15 |
 | **A notice to a coordinator** | The first nudge goes to the run's member, and the recovery record goes to the app lead (SW-10a, SW-47). SW-62 writes one digest. All of them reach people. Nothing reaches an agent that coordinates other agents | **SW-65.** A coordinator run watches runs. Idle, ended, question and merged events arrive as notices |
 | **Lanes as records** | SW-8 is a roster by member, agent and session. SW-29b is an agent profile. SW-45 gives a member own apps. SW-50 shows the box. MCP-G6 (task 360) caps open runs for each connection. SW-31b plans the Settings, Agents screen. A lane today is a text file that a person assembles by hand | **SW-67.** A lane is a record: purpose, app project, model, rules, box and concurrency. It is display and scheduling data and grants nothing. Its cap binds only a session that declares the lane, so it is advisory (R7) |
-| **A queue that knows capacity** | SW-30a hands a task to an agent. SW-45 lists free tasks in own apps. SW-49 caps what waits on a person. Task 1731 starts a session for an answered or queued run | **SW-68.** One queue route ranks the candidates for a box and a lane. It names the reason for each task that cannot start: lane full, review cap, box memory, account limit, CI lane busy, release cut-off |
+| **A queue that knows capacity** | SW-30a hands a task to an agent. SW-45 lists free tasks in own apps. SW-49 caps what waits on a person. Task 1731 starts a session for an answered or queued run | **SW-68.** One queue route ranks the candidates for a box and a lane: runs in flight, then ready slices by least slack, then priority. It names the reason for each task that cannot start: lane full, review cap, box memory, account limit, CI lane busy, release cut-off |
 | **Path and area claims below the task** | SW-26 reads the changed files of open pull requests. SW-27 reserves numbers. SW-52 adds `owned_paths` for seams. SW-45 warns on a claim outside an app | **SW-69.** An agent declares the paths it will touch before it edits. Overlap warns at once and writes an affects note (SW-25). SW-26 confirms later from the pull request |
 | **Agent-to-agent requests through the task** | SW-25 is a one-way affects note. SW-30a hands a task over. SW-16 lets an agent make tasks inside a fence. AP-8 and AP-16 are asks between people, and from an agent to one person | **SW-65.** A typed request from the task of one agent to the task of another, with a reply. The exchange is a comment on both tasks. No free chat exists |
 | **Each sub-agent as a child run** | Task 1065 (SW-39) plans child run rows under the parent task. It has no spec text yet, and SW-0c (task 1069) copies the research | No new slice. P10 adds one constraint to SW-39: a child run is excluded from the index `pm_agent_runs_one_open_per_task` (migration 289), or the child cannot start. See §3.11.9 |
@@ -555,7 +563,7 @@ SW-60 parks a run on its CI. SW-66 gives the park three more kinds, in one new t
 | **Card controls** | Stop and Release (built). Resume (SW-11a). Delegate (SW-30a). SW-48 lets the lead Release and Resume | **SW-86.** Steer, Pause, Take over and Hand to another agent. Each is a composition of existing routes with one confirm. No new authority |
 | **An evidence panel** | CIV-14b (task 1727) shows images. SW-54 shows "5 of 7 required". SW-59 shows a verifier chip | **SW-87.** One panel that draws the stages of SW-71 with their evidence |
 | **"Run with an agent"** | `external_agent_dispatch.md` DX-2 (the Run with… menu) and SW-30a (Delegate to…, also on the bulk bar) | **SW-89.** Select tasks, pick a lane, set an order or an overnight window. The runs chain through `run_done` wakes (SW-66) |
-| **A planning view** | WS-27t built a timeline with `blocks` links, cycle refusal and start and due dates. SW-16 lets agents set blocks | **SW-90.** A ready set and a critical path, as an overlay on that timeline and as one read tool |
+| **A planning view** | WS-27t built a timeline with `blocks` links, cycle refusal and start and due dates. SW-16 lets agents set blocks | **SW-90.** A ready set and a critical path, as an overlay on that timeline and as one read tool. It reads the engine of PJP-6 (D195) |
 | **Digests** | SW-36 drafts a weekly project update. WS-BRIEF (`core_brief.md`) holds the brief and its 18:30 close-out | **SW-91.** Two brief sections: a morning fleet digest, and a release-eve digest before 21:30 UTC. Plain counts, with no AI credit |
 | **Phone-first approvals** | AP-2 and §5.7 of the Waiting spec give the phone layout. AP-6 answers in chat. SW-46 routes a preview to the lead | **SW-92.** "Approve the LOW-tier items" in one act. Each item still gets its own answer that names the member |
 | **Delivery analytics** | RA-2 and RA-4 measure outcome, run time and silent runs. SW-20 holds cost, deferred behind H-42 | **SW-93.** Time in each stage, idle-hold hours, answer latency, merge rate, rework and cost per merged slice. Cost reads "unknown" until SW-20 |
@@ -574,6 +582,7 @@ The runner is a small program that the member installs on the member's own box. 
 
 - **Credential.** The box token of EA-19. The first release keeps the owner's decision on task 1731: the scope `projects:read` only. It starts a local session for an answered or queued run, and it never wakes an old session. The heartbeat, the server-side start of a run and the wake of a live session need a second token with the scope `box:runner` (decided, Q18). Minting it on a live box is an owner act. SW-77 defines `box:runner` and adds a pointer in `external_agent_access.md` §10.9. Never the OAuth token of a session. The session that the runner starts logs in with the member's own Claude login on the box.
 - **Loop.** Every 2 minutes it reads `needs_agent` runs of its lanes and the queue of SW-68. For each run it starts a session in the lane, with the run id in the prompt. Or it wakes the live session that holds the link (CIV-14a). It never starts two sessions for one run.
+- **Pull start (SW-100, task 2527).** The runner also starts a session for a READY slice that has no run. It takes the slices in the queue order of SW-68 and obeys the lane rules of SW-67. A lane serves one app project, so it never takes a slice of another project. It stops at each cap: the open runs of the lane, the review cap (SW-49), the box memory and the account limit. A member declares AI accounts and their limits once (task 2526). Pull start is off until the member turns it on for a lane.
 - **Heartbeat.** Every minute it posts memory, load, sessions, the sign-in state, the account state and whether the CI lane is busy (SW-77). The server treats the numbers as untrusted display data.
 - **Caps.** It starts no session when the lane is full, the box lacks memory, or the account is rate-limited. Memory and account state come from the box, so those caps are advisory (R7). The lane count binds only a session that declares its lane, so it is advisory too. The review cap comes from the server and binds.
 - **Recover.** `metorite-runner recover`, and the button on the Machines tab (SW-79, the button SW-81), list the open runs of the box that have no live process. They restart each in its lane, with the reason `box_restarted`.
@@ -781,7 +790,7 @@ P10 starts after the first group of §5.0a is live. Each slice also needs its ow
 2. **Reach a running agent.** SW-64, then SW-66, then SW-65.
 3. **One store for settings, then the stages.** SW-31b first, then SW-94, before SW-49 and SW-54 where the order allows. Then SW-70, SW-71, SW-76, SW-73, then SW-72. SW-70 and SW-71 use a fixed default until SW-94 has merged.
 4. **Tabs.** The tabs of SW-67 and SW-98 follow SW-31b and SW-94.
-5. **Lanes and machines.** SW-67, SW-68, the later releases of SW-78 (it then reads lanes and caps), SW-79, SW-80, SW-85, SW-81.
+5. **Lanes and machines.** SW-67, SW-68, the later releases of SW-78 (it then reads lanes and caps), SW-79, SW-80, SW-85, SW-81. SW-100 (pull start) follows release 2 of SW-78.
 6. **Sessions.** SW-82, SW-83, and SW-84 at any time.
 7. **The platform.** SW-86, SW-87, SW-88, SW-91, SW-93.
 8. **Limits.** SW-95, SW-96, SW-97.
@@ -1018,6 +1027,18 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** A connection through the read-only path lists only reads. A call of each write tool gets 403 `insufficient_scope` at the edge.
 - **Fence.** An edge test that walks every tool of `MCP_WRITE_ROUTES` on the read-only path.
 - **Risk.** HIGH (auth). **Gate.** AGENT-SAFE.
+- **Status.** BUILT, 2026-11-07, task 1051. It is not merged yet.
+- **As built (SW-34b).**
+  - The anchors moved. In `mcp.py`, check 8 is in `_serve` (about line 540), and `tools/list` is in `_dispatch` (about line 594). In `tools.py`, `listed` and `listed_for` are at about line 8258 and line 8283. `MCP_WRITE_ROUTES` is at `agent_oauth.py:824`, and `SCOPE_COPY` is at `consent.ts:133`.
+  - The door is not a boundary against an agent that holds the token. The gateway reads the scopes of the connection row, so that agent can call `/mcp` itself. Only the "Read only" grant on the consent page limits such an agent.
+  - The edge serves `POST /mcp/readonly` (`mcp.readonly_path`, `mcp.readonly_endpoint`). It runs the same checks in the same order as `/mcp`.
+  - Right after the bearer check, `bearer.read_only` narrows the caller's scopes. The one rule is `agent_oauth.read_only` with `agent_oauth.READ_SCOPES`. It only removes a scope.
+  - `tools/list`, check 8, the prompt, the resources and the instructions read the narrowed scopes. A write tool gets 403 `insufficient_scope`, and no request reaches the gateway.
+  - The token is the same on both paths. Its audience stays the resource `/mcp`, so a client that connects to `/mcp/readonly` signs in against `/mcp`. An MCP client usually keeps one token for each server entry, so the read-only entry signs in by itself. This was not checked against each client.
+  - `app_write` has no fixed scope. `tools._covered` now shows it only when the scopes hold a write scope. So a read-only token on `/mcp` no longer lists it either.
+  - The consent page has a "Read only" button above the permission switches (`consent.ts`: `readOnlyChoice`, `offersReadOnly`, `isReadOnly`). The gateway needed no change, because the page already sends a subset of the requested scopes.
+  - Caddy proxies each path of `mcp.metorite.com` to the edge, so the route needs no Caddy change.
+  - Fences: `tests/unit/test_mcp_edge_readonly.py` (the walk, the list and the surfaces, under four named mutations) and `consent.test.ts` ("the Read only choice").
 
 ### 5.6 P5 — dependencies, delegation, wake-ups and shared resources
 
@@ -1064,22 +1085,30 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Fence.** R8 tests for each case.
 - **Risk.** HIGH (the fingerprint store is a migration). **Gate.** AGENT-SAFE. **Depends on.** SW-9.
 
-#### SW-16 · Agents split work and set dependencies, inside a fence
+#### SW-16a · Agents set dependencies: the link tools
+
+**Status: BUILT 2026-11-08 (task 347).** The chat tools `link_tasks` and `unlink_tasks` were built before it (class B, one confirm card).
+
+- **Scope.** `add_task_link` and `remove_task_link` over the MCP, for `blocks`, through `POST /projects/tasks/{task_id}/links` and `DELETE /projects/tasks/{task_id}/links/{link_id}`. `task_id` blocks `target_task_id`. The `links` rows of `get_task` carry `link_id`. A hidden task answers the same text as a task that does not exist. A loop and a link from a task to itself are refused with a plain text. A removal writes one `link` activity on each task, with the member and the client. A signed agent must see both ends of a link that it removes. A repeated add writes no activity and moves neither task. `remove_task_link` removes a `blocks` link only. The loop check holds a per-organization lock to the end of its transaction, and it compares ids in one case. `my_work` does not offer a blocked task, and a claim is not refused.
+- **Done when.** An agent makes A1 and A2, and sets A2 blocked by A1. `get_task` shows the link. `remove_task_link` removes it.
+- **Fence.** `tests/unit/test_task_links_mcp_r8.py` (R8, a real database) and `tests/unit/test_mcp_edge_coverage.py`.
+- **Risk.** HIGH (it changes the MCP write-route allowlist). **Gate.** AGENT-SAFE.
+
+#### SW-16b · Agents split work inside a fence
 
 - **Scope.**
-  1. `add_task_link` and `remove_task_link` over the MCP, for `blocks`, through `POST /projects/tasks/{task_id}/links`. Class B, with one confirm card in chat.
-  2. **The write fence, behind a flag.** An agent run may change only the task it holds, that task's descendants, and a comment on the direct parent. For anything else it makes a new task.
-  3. **Fan-out once.** The protocol tells agents to key each subtask `<parent short_id>:<step>` with `create_task`'s `idempotency_key`.
+  1. **The write fence, behind a flag.** An agent run may change only the task it holds, that task's descendants, and a comment on the direct parent. For anything else it makes a new task.
+  2. **Fan-out once.** The protocol tells agents to key each subtask `<parent short_id>:<step>` with `create_task`'s `idempotency_key`.
 - **Done when.** An agent that holds A makes A1 and A2, and sets A2 blocked by A1. The same agent gets 403 on sibling task B, and the text names the fence. A retried fan-out makes no second tree.
 - **Fence.** R8 route tests, an edge test for the tools, and a test for the retried fan-out.
-- **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE.
+- **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-16a. **Metorite:** task 2298.
 
 #### SW-25 · Affects notes between tasks
 
 - **Scope.** As task 859. The link type `affects`, with a short note (widen the CHECK of `pm_task_links`, expand only). `add_task_link` takes `affects` and `relates_to` with a `note`. `my_work` gains the reason `note_from_task`, once per note. A person holder gets the bell. The task panel lists "Affects" and "Affected by".
 - **Done when.** Agent A links its task to task B as `affects`. Agent B sees the note on its next `my_work`, once. R8: a link to a task that the caller cannot see is refused, and the answer never shows that the task exists.
 - **Fence.** A new R8 suite for the link and the visibility.
-- **Risk.** HIGH (a migration, visibility). **Gate.** AGENT-SAFE. **Depends on.** SW-16.
+- **Risk.** HIGH (a migration, visibility). **Gate.** AGENT-SAFE. **Depends on.** SW-16a.
 
 #### SW-26 · The conflict radar
 
@@ -1103,7 +1132,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-17 · Push a wake-up to an agent host
 
-- **Status.** Deferred. **Gate.** OWNER-GATE: it waits on a decision for WS-56 (`external_agent_dispatch.md`). **Risk.** HIGH.
+- **Status.** Deferred. Parked 2026-11-09 (Later epic, task 2543). **Gate.** OWNER-GATE: it waits on a decision for WS-56 (`external_agent_dispatch.md`). **Risk.** HIGH.
 - **Rules when it comes.** Save each wake with an idempotency key and merge duplicates. A delivered wake is never proof that work started. The member turns it on for each host, and Metorite owns the app.
 
 ### 5.7 P6 — review and oversight
@@ -1175,13 +1204,26 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Fence.** `test_mcp_edge_claim.py` (`ci14a` tests, including the real database), `test_mcp_edge_agent_runs.py`, `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. No migration: the column exists since the table.
 
+#### CIV-14f · An answer watcher on the home box (Metorite task 1731, G2b)
+
+- **Scope.** A systemd user timer on `metorite-home` runs `scripts/home_server/answer_watcher.py` every 2 minutes. The script calls `list_agent_runs` with `needs_agent` true. For each run that needs an agent, it starts ONE fresh headless session in a new worktree `wt-answer-<run id 8>-<wake 6>`, with the run id in the prompt. The owner chose a fresh session for each run (task 1731, 2026-11-06). The watcher never wakes an old session, because no tool can reach a session that ended its turn.
+- **Which runs.** The list already holds only runs that wait for an agent. The state is not a filter, because an answered run reads `stale` five minutes after its answer, and the edge wire carries no reason. The watcher skips a run that is `stopping`, a `stranded` run (a nudge, not an answer), a run with a bad id, and a run with activity in the last 2 minutes, so a live session of the owner acts first. **The vet:** before a start it reads the run, and starts only when the newest person prompt is by the member of the run. A prompt by another member starts nothing.
+- **One session for one wake.** A wake is a run id plus its `last_activity_at`. An attempt file with `O_CREAT | O_EXCL` per wake means a second tick starts nothing. A new answer changes the stamp, so it is a new wake. A wake that no session took up is tried again after 2 hours, at most 3 times.
+- **Each session is a transient unit.** The watcher runs as a `oneshot` unit, and systemd kills what stays in its cgroup. So each session starts with `systemd-run --user --collect --unit=answer-<slug>`. The live count is the number of running `answer-*` units, and the cap is 2. It starts nothing when less than 5000 MB is free (lane rule 11). A sweep removes a `wt-answer-*` worktree that holds no change and no commit, after 24 hours, and only when no session runs.
+- **The credential (decided by the owner, 2026-11-06, task 1731).** The watcher has its own read-only token: a box token (D-EA-5, `external_agent_access.md` §10.9) with the scope `projects:read` only. The owner makes it in Integrations, AI agents once EA-19c and EA-19d merge. The owner drops it in `~/.config/metorite/watcher.env` (mode 0600) through the secrets drop (`docs/secrets_drop.md`). The script reads it from the environment and never prints it, and no child gets it. A session that the watcher starts uses the login of its own lane. The default session command allows the Metorite tools only (`--allowedTools mcp__metorite__*`), and `WATCHER_CLAUDE_CMD` overrides it.
+- **A known gap: other clients.** `list_agent_runs` lists the runs of every client of the member. The watcher cannot tell a run of the owner's PC from a run of the box, so the 2-minute quiet window is its only guard. A session that cannot claim the run (another connection holds it) ends with `release_task`.
+- **OPEN, the answer rule (owner, task 1731).** The platform says a session acts on an answer only when `yours` is true and it asked the question itself. A fresh session did not ask. So the session the watcher starts reads the run and, under today's rule, must not act on the answer. The question is on the task.
+- **Status.** BUILT 2026-11-06, dark, not merged (Metorite task 1731). `answer_watcher.sh install` copies the script and the units and enables nothing. `enable` refuses a token file that is not mode 0600. Enabling the timer is OWNER-GATE (`deploy`). Two Opus readers reviewed the first draft. They found the oneshot kill, the lost `stale` answers, a second answer that never started, a lock cap that did not cap, and the answer rule above. The text and the code now fix all but the last.
+- **Fence.** `uv run pytest tests/unit/test_answer_watcher.py`, with a fake `list_agent_runs`, a fake starter and a fake live count. It covers one start for one wake, a new answer, a `stale` run, the skips, the live cap, the vet, the retries, a failed read, the transient unit, the token never in a child, and the sweep.
+- **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. OWNER-GATE to enable the timer (`deploy`) and to mint the token.
+
 ### 5.9 P8 — deferred, the owner decides
 
 | Slice | What | Waits on | Gate |
 |---|---|---|---|
-| SW-20 | Cost for each agent, task and request. A self-reported `usage` first | H-42, the rate card | OWNER-GATE |
+| SW-20 | Cost for each agent, task and request. A self-reported `usage` first | H-42, the rate card. Parked 2026-11-09 (Later epic, task 2543) | OWNER-GATE |
 | SW-21 | Goals linked to projects, given to agents as context | A product-shape call. Q4 of §8 | OWNER-GATE |
-| SW-22 | A watchdog: a verifier agent for a finished subtree | P3 live, then SW-10, SW-15 and SW-16 | OWNER-GATE |
+| SW-22 | A watchdog: a verifier agent for a finished subtree | P3 live, then SW-10, SW-15 and SW-16. Parked 2026-11-09 (Later epic, task 2543) | OWNER-GATE |
 
 ### 5.10 P9 — many people, each with their own agents
 
@@ -1277,6 +1319,7 @@ They keep their own gates.
   2. Group by person, box, agent and session. Fields as §3.10.6 lists. Cost reads "unknown".
   3. A Fleet tab in the Agents panel (SW-8). No new nav pane.
   4. A class A chat read in `skill_projects/manifest.py`.
+  5. The member view of agents (WS-AGA) folds into this tab (replan of 2026-11-09). AGA-1 and AGA-7 to AGA-10 become sections of the Fleet tab, and the rest of the AGA tree is parked.
 - **Done when.** R8 with two members and two apps under two different roots: the owner sees both apps and the lead sees only theirs. No row shows a task the viewer cannot see. `visual-review` passes at four widths.
 - **Fence.** `test_projects_agent_focus_r8.py`, `test_projects_chat_coverage.py`, and a vitest for the tab.
 - **Risk.** HIGH (visibility across the organization, as AP-12). **Gate.** AGENT-SAFE. D145 owner preview, because the tab is a new screen. **Depends on.** SW-8, SW-45, SW-50.
@@ -1299,6 +1342,7 @@ They keep their own gates.
 - **Done when.** R8: with the master on and organization B off the list, a delivery for B writes nothing, and one for A links its pull request.
 - **Fence.** `test_github_webhook_r8.py` (new cases) and `test_github_reconcile_r8.py`.
 - **Risk.** HIGH (webhook ingress, tenancy). **Gate.** AGENT-SAFE dark. The turn-on is GH-8. **Depends on.** GH-4 to GH-6.
+- **Built.** 2026-11-07, dark. `GITHUB_APP_ORGS` is in `settings.py`, and `github_app.github_app_org_allowed` is its one reader. With the master on, an empty list turns every org off. `github.installation_of` asks it too, so it is the single gate, and no lazy App-mode reader writes for an org off the list. The backfill is NOT built, and it stays an OWNER-GATE production one-off.
 
 #### SW-54 · Required checks on the task
 
@@ -1323,6 +1367,7 @@ They keep their own gates.
 - **Done when.** A client that ignores instructions and prompts still reads the block in the claim result.
 - **Fence.** `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`. The 3500-character budget fence belongs to task 1803.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** Task 1803 (no spec).
+- **As built (2026-11-07).** `tools.PROTOCOL_LINES` holds five lines. The key `protocol` is optional in the output schema of both tools. It shows only while the runs flag is on, because each line names a run tool, and only for an organization on `agent_protocol_orgs` (`agent_oauth.protocol_allowed`). The park-on-CI line waits for SW-60. Fence: `test_mcp_edge_context.py` `TestTheProtocolBlock` and `test_mcp_edge_claim.py` `TestTheClaimProtocolBlock`.
 
 #### SW-57 · The evidence of a pull request is a GitHub check
 
@@ -1394,6 +1439,7 @@ They keep their own gates.
 - **Done when.** R8: a claim of a parent with 2 open subtasks carries the warning and works. A claim of a leaf has no warning.
 - **Fence.** `test_mcp_edge_claim.py` and `test_agent_run_exclusive.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **Built 2026-11-06.** SW-63 is built and live under `agent_runs_enabled`, because it only adds the optional result fields `warning` and `open_subtasks`. The gateway counts only the subtasks that the caller can see. The fence is `TestAClaimOfAnEpicWarns` in `test_mcp_edge_claim.py`.
 
 ### 5.11 P10 — Metorite runs the fleet and teaches it
 
@@ -1428,7 +1474,7 @@ They keep their own gates.
 #### SW-67 · Lanes as records
 
 - **Metorite task.** 1913.
-- **Scope.** The table `pm_agent_lanes`. Its columns are the name, the purpose (required, the bottleneck this lane removes), the app project, the model and a rules note of 2,000 characters. It also holds the box connection, `max_open_runs` (default 1), the owner member, a shared flag. PB-9 adds the template column. The column `pm_agent_runs.lane_id`. `claim_task` and `start_agent_run` take an optional `lane`. A claim outside the lane's app returns a `warning`. A session that declares a lane is capped by it. A session that declares none is not, so the lane cap is advisory (R7). The hard cap stays the cap of each connection (MCP-G6). The flag `AGENT_LANE_MODES` adds `refuse` for a full declared lane (429 `lane_full`). The screen is a tab "Lanes" of the Settings, Agents screen of SW-31b. The Fleet tab groups by lane.
+- **Scope.** The table `pm_agent_lanes`. Its columns are the name, the purpose (required, the bottleneck this lane removes), the app project, the model and a rules note of 2,000 characters. It also holds the box connection, `max_open_runs` (default 1), the owner member, a shared flag. PB-9 adds the template column. The column `pm_agent_runs.lane_id`. `claim_task` and `start_agent_run` take an optional `lane`. A claim outside the lane's app returns a `warning`. A session that declares a lane is capped by it. A session that declares none is not, so the lane cap is advisory (R7). The hard cap stays the cap of each connection (MCP-G6). The flag `AGENT_LANE_MODES` adds `refuse` for a full declared lane (429 `lane_full`). The screen is a tab "Lanes" of the Settings, Agents screen of SW-31b. The Fleet tab groups by lane. A lane serves one app project (D183.1). No lane crosses projects. The order across projects is a separate read that PJP-6c (task 2508) gives later.
 - **Done when.** R8: two lanes of two members. A claim from a lane outside its app warns and writes one timeline line. In `refuse` the second open run of a declared lane with cap 1 gets 429. A claim with no lane is unchanged. A lane of another organization is invisible. A lane never reaches an authorization check.
 - **Fence.** `test_agent_lanes_r8.py` (new), the structural test of §3.7 extended to lane fields, `test_tenant_coverage.py`, a vitest for the tab.
 - **Risk.** HIGH (a migration, a refusal on a write). **Gate.** AGENT-SAFE dark. D145 owner preview for the tab. **Depends on.** SW-7b, SW-45, SW-31b.
@@ -1436,14 +1482,17 @@ They keep their own gates.
 #### SW-68 · A queue that knows capacity
 
 - **Metorite task.** 1914.
-- **Scope.** The MCP tool `list_agent_queue(lane)` ranks the tasks a box may start next: answered and queued runs first, then tasks that fit the release cut-off, then priority. The tool is a read with a named scope in `MCP_ROUTES` and the scope list of `external_agent_access.md` §10.9. Each task that cannot start carries a reason from a fixed list. The reasons are `lane_full`, `review_cap`, `box_memory`, `account_limit`, `ci_lane_busy` and `cut_off`. The last four come from the heartbeat (SW-77) or from the organization's `release_cutoff` policy (SW-94, default none), and are advisory. `lane_full` binds only for a declared lane (SW-67). `review_cap` binds.
+- **Scope.** The MCP tool `list_agent_queue(lane)` ranks the tasks a box may start next. The owner set the order in the replan of 2026-11-09. First come runs already in flight: answered, woken and stopping. Then come ready slices, by the critical path with the least slack. Priority breaks a tie. The release cut-off adds a reason and never changes the order. The tool is a read with a named scope in `MCP_ROUTES` and the scope list of `external_agent_access.md` §10.9. Each task that cannot start carries a reason from a fixed list. The reasons are `lane_full`, `review_cap`, `box_memory`, `account_limit`, `ci_lane_busy` and `cut_off`. The last four come from the heartbeat (SW-77) or from the organization's `release_cutoff` policy (SW-94, default none), and are advisory. `lane_full` binds only for a declared lane (SW-67). `review_cap` binds.
+- **Dispatch rule (D195 Q6).** An agent pulls its work. The tool applies the order above. The critical path and the slack come from the engine of `project_planning.md` §3.4 (PJP-6). The WIP limits and the reasons above still bind. A person can still assign a slice by hand (SW-30a). Fence: `test_agent_queue_r8.py` (new). The order is advisory until the plan engine reads across epics (PJP-6c, task 2508). It binds inside one epic now, through `MY_WORK_PLAN_ORDER_ORGS` (SW-68a). This order replaces the earlier rule that put answered and queued runs first and then the cut-off.
 - **Done when.** R8: a full lane lists its tasks with `lane_full`. A lead at the review cap lists `review_cap` for the tasks of the lead's apps. With no `release_cutoff` no task carries `cut_off`. A stale heartbeat adds no reason and writes a note. The tool lists no task the caller cannot see.
 - **Fence.** `test_agent_queue_r8.py` (new), `test_mcp_edge_coverage.py`. The advisory reasons are labelled so (R7).
 - **Risk.** HIGH (visibility, a refusal reason on a write). **Gate.** AGENT-SAFE dark. **Depends on.** SW-67, SW-49, SW-77, SW-94.
+- **SW-68a, BUILT 2026-11-08 (task 2322).** The first release is a read and has no migration. `my_work` (MCP and chat) ranks a task that sits under an epic by the one engine, through `GET /projects/plan/order` (`routes/projects/plan_order.py`, which calls `plan_analysis.compute_plan`). The rule: a ready slice before a blocked one, then the least slack, then the priority rank, then the id. A task outside every epic keeps its slot. A slice that the plan names as blocked goes after the other tasks, so it is never the top row. Run rows stay above task rows. The MCP row gains an optional `plan` field: `epic_id`, `ready`, `slack_mins`, `blocked_by` (ids) and `blocked_by_hidden` (a count, never a name). The cap is 100 tasks and 10 epics for each read. An epic over the cap, over the engine's task limit, with a cycle, or that the caller cannot open keeps the old order. Repair rounds (2026-11-09): the plan ranks the whole assigned list of each surface, and the edge hides its held and blocked rows after. So the slices of one epic get the same relative order in the MCP and the chat. Plain rows keep the base order of each surface. The feature is dark behind `MY_WORK_PLAN_ORDER_ORGS` (default empty), which only the gateway route reads. A hidden open blocker on a slice, on a task above it or on the epic holds the slice, and it counts once. The plan read has a 2 second limit on both surfaces, and any failure keeps the old order. Fence: `test_my_work_plan_order_r8.py`, `test_my_work_plan_order_edge.py`, `test_my_work_plan_order_chat.py`. **Still open in SW-68:** the queue route `list_agent_queue`, the lane, review, box and account reasons, the release cut-off, and the WIP caps. The "active cycle" filter waits for SP-1 (task 960).
 
 #### SW-69 · Path claims below the task
 
 - **Metorite task.** 1915.
+- **Status.** Parked 2026-11-09 (Later epic, task 2543).
 - **Scope.** The table `pm_agent_path_claims` and the tool `declare_paths(task_id, paths)`. At most 50 paths for each run. An overlap with another open run returns the other task when the caller may see it. It writes an affects note both ways once (SW-25). The note needs comment authority on the other task, through the existing seam. A path under an `owned_paths` entry (SW-52) warns with the seam lead. Claims end with the run. It only warns.
 - **Done when.** R8: two runs declare one path, and each gets one warning. A declared path never blocks a write. A claim ends when the run ends. A note never names a task its reader cannot see. A caller with no comment authority on the other task writes no note.
 - **Fence.** `test_agent_path_claims_r8.py` (new), `test_conflict_radar_r8.py` (new, from SW-26) for the confirm step. The feature is advisory (R7).
@@ -1484,6 +1533,7 @@ They keep their own gates.
 #### SW-74 · Merged and shared questions
 
 - **Metorite task.** 1920.
+- **Status.** Parked 2026-11-09 (Later epic, task 2543).
 - **Scope.** Two parts, one flag. (1) Two open questions on one task with the same purpose and the same option ids show as one card, and an answer closes both. (2) "Answer the N similar" on a card: the same project and the same option ids. It writes one answer for each question and names the member. A question with a `confirm: true` option is never in the set. The surfaces are `/waiting` and `WaitCard`, which belong to AP-2 and AP-4. SW-74 adds its acts through them and files the request in `waiting_on_me.md`. Quiet hours are dropped: AP-5 makes every agent question an interrupt, so a quiet-hours rule would change nothing.
 - **Done when.** R8: duplicates merge and one answer closes both. A bulk answer writes N answers and skips the `confirm` question.
 - **Fence.** `test_agent_questions_r8.py`, `test_waiting_seam_r8.py`, a vitest for the card.
@@ -1492,6 +1542,7 @@ They keep their own gates.
 #### SW-75 · A question taken by policy
 
 - **Metorite task.** 1921.
+- **Status.** Parked 2026-11-09 (Later epic, task 2543).
 - **Scope.** The policy `question_auto_after_minutes` (SW-94), null by default. After the deadline, a question that the agent marked `reversible` and `recommended` gets the recommended option. The answer writes `content.by_policy` and the card reads "Taken by policy after 4 hours: Wait for the shards". The Change button of SW-43b stays. It never applies to `purpose` `preview` or `review`, to an auth question, to a `confirm: true` option, or to a task whose tier is not LOW. A task with no tier (NULL) is excluded. Quiet hours do not apply (SW-74). The minimum is 240 minutes. This slice amends D140.2 and the answer set of D-EA-14 (D186.10). Q16 is decided: build it dark, off by default.
 - **Done when.** R8 with a moved clock: a reversible question on a LOW task is taken at the deadline. Each excluded case is not, and a NULL tier is one of them. The timeline names the policy and not a member. The policy off writes nothing.
 - **Fence.** `test_agent_auto_answer_r8.py` (new), one named mutation for each exclusion.
@@ -1516,7 +1567,8 @@ They keep their own gates.
 #### SW-78 · The runner
 
 - **Metorite task.** 1924.
-- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token.
+- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token. Later it also starts a session for a ready slice that has no run (pull start, SW-100).
+- **Workstation order (D195 Q7).** The first path for a non-developer is one workstation with this runner (path B of the design): EA-19 first, then this slice. Cloud agents (WS-56) come later. Advisory (R7).
 - **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll.
 - **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path.
 - **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. Minting the second token on a live box is an owner act. The install on the home box is `deploy`. **Depends on.** Release 1: task 1731 and EA-19. Release 2: also SW-77, SW-64, SW-67 and SW-68.
@@ -1604,6 +1656,7 @@ They keep their own gates.
 #### SW-89 · A run queue for a selection
 
 - **Metorite task.** 1935.
+- **Status.** Parked 2026-11-09 (Later epic, task 2543).
 - **Scope.** Select tasks, pick a lane, set an order, and optionally a window such as overnight. The columns are `pm_agent_runs.queue_id` and `queue_pos`. The runs are `created`. The next run wakes when the one before it ends (`run_done`, SW-66). The policy `overnight_allowed` (SW-94) limits the tiers. The review cap stops the queue.
 - **Done when.** R8: three tasks run one after the other. A HIGH task in an overnight queue is refused by default. A cancelled run does not stall the queue.
 - **Fence.** `test_agent_run_queue_r8.py` (new).
@@ -1612,10 +1665,11 @@ They keep their own gates.
 #### SW-90 · A ready set and a critical path
 
 - **Metorite task.** 1936.
-- **Scope.** A read tool and a timeline overlay (WS-27t). The ready set is the open tasks of an epic with no open blocker. The critical path is the longest chain of `blocks` by estimate. No new table.
-- **Done when.** A test epic with a known chain returns the right ready set and path. A task the caller cannot see is left out.
-- **Fence.** `test_plan_view_r8.py` (new).
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview for the overlay. **Depends on.** SW-16.
+- **Status.** Parked 2026-11-09 (Later epic, task 2543). The read half is live as the tool `get_plan`.
+- **Scope.** A read tool and a timeline overlay (WS-27t). Both read the one engine of `project_planning.md` §3.4 (PJP-6, task 1483). The engine computes the ready set, the waves and the critical path (D195 Q8, SP-11). This slice does no maths of its own. No new table.
+- **Done when.** A test epic with a known chain returns what the engine returns. A task the caller cannot see is left out.
+- **Fence.** `test_plan_view_r8.py` (new). It also fails when the overlay or the tool does not call the module of PJP-6.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview for the overlay. **Depends on.** SW-16, PJP-6.
 
 #### SW-91 · Fleet digests
 
@@ -1628,6 +1682,7 @@ They keep their own gates.
 #### SW-92 · Approve many
 
 - **Metorite task.** 1938.
+- **Status.** Parked 2026-11-09 (Later epic, task 2543).
 - **Scope.** On `/waiting`, "Approve the LOW-tier items". It lists the questions with `purpose` `preview` or `review` on tasks whose tier a person set to LOW. A NULL tier is excluded. The `verify` and `ci` stages must have passed, and `verify` must come from a run of another session than the builder (SW-59), never from `report_stage`. One confirm. It writes one answer for each, naming the member. It chooses the option the agent marked recommended. A `confirm: true` option is never in the list. The surface belongs to AP-2 and AP-4, and the request is filed in `waiting_on_me.md`.
 - **Done when.** R8: a batch of 3 writes 3 answers. A task with a failed stage, a NULL tier or a HIGH tier is not in the list. A `verify` claimed by the building run does not count. A member outside the answer set gets 403.
 - **Fence.** `test_agent_questions_r8.py`, a vitest.
@@ -1688,6 +1743,14 @@ They keep their own gates.
 - **Done when.** R8: the sweep tags a parked run `ci_wait`, an epic claim `epic_hold` and a revoked connection `signed_out`. A value outside the list gets 422.
 - **Fence.** `test_agent_run_sweep_r8.py`, `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** SW-10a, SW-62.
+
+#### SW-100 · Pull start and declared AI accounts
+
+- **Metorite task.** 2527. The account declaration is task 2526.
+- **Scope.** §3.11.4, "Pull start". The runner starts a session for a READY slice that has no run. It reads the queue of SW-68 in order and obeys the lane rules of SW-67. It claims the slice and starts the run with `claim_task` and `start_agent_run`, so the one-hold rule stays. It stops at each cap: the open runs of the lane, the review cap (SW-49), the box memory and the account limit. A member declares AI accounts once, each with a name and a limit of runs at one time (task 2526). The setting `pull_start` of a lane is off by default.
+- **Done when.** A fake `list_agent_queue` lists three ready slices, and the lane cap is 2. The runner makes two starts and reads `lane_full` for the third. At the review cap it makes no start. A slice of another project gets no start. Two polls give one session for each slice. An account at its limit gets no start.
+- **Fence.** `test_agent_queue_r8.py` (new), a runner test in `scripts/home_server/` (new), `test_runner_no_secret.py` (new). The box memory and the account limit are advisory (R7). The review cap binds.
+- **Risk.** HIGH (it starts sessions that spend credits). **Gate.** AGENT-SAFE to build, dark. The install on a box is `deploy` under a dated grant. **Depends on.** SW-78 release 2, SW-67, SW-68, SW-49, SW-77.
 
 #### Deferred in P10
 
@@ -1841,7 +1904,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-11 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` and `npx vitest run src/app/projects/lib/needsAttention.test.ts` |
 | SW-12 to SW-14, SW-13b | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-15 | `uv run pytest -q -p no:cacheprovider tests/unit/test_blocker_wake_r8.py` (new) |
-| SW-16, SW-25 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_links_mcp_r8.py` (new) `tests/unit/test_mcp_edge_coverage.py` |
+| SW-16a, SW-16b, SW-25 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_links_mcp_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | SW-18 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_review_r8.py` (new) |
 | SW-19a, SW-19c | `node .claude/hooks/session-handoff.test.mjs`, and the test of the PR hook (new) |
 | SW-19, SW-19b | `uv run pytest -q -p no:cacheprovider tests/unit/test_handoff_queue.py` |
@@ -1911,6 +1974,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-97 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_audit_export_r8.py` (new) |
 | SW-98 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_lessons_r8.py tests/unit/test_mcp_edge_prompts.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-99 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_sweep_r8.py tests/unit/test_needs_attention_r8.py` |
+| SW-100 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_queue_r8.py tests/unit/test_runner_no_secret.py` (new files first), and the runner tests in `scripts/home_server/` (new) |
 
 ---
 
@@ -1954,7 +2018,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **The `push` event.** It is not known whether the GitHub App subscribes to `push` (1045b).
 - **The board half of SW-5.** EA-13g may already draw part of the holder line. Read it at dispatch.
 - **The production flags.** This spec uses the reading of 2026-10-29. Read the env files of the box again before SW-7a and SW-10b.
-- **The read-only door.** The edge already hides write tools from a connection with read scopes only, and it refuses their call (SW-34b, "What exists"). It is not known yet how a client keeps a separate token for the path `/mcp/readonly`. SW-34b settles it.
+- **The read-only door.** SW-34b settled it. The path is the mode, and one token works on both paths. An MCP client usually keeps one token for each server entry (SW-34b, "As built").
 - **Stale status lines in `external_agent_access.md`.** Its header still calls SW-7, SW-10a and SW-11a "not merged". They merged as #1312, #1333 and #1345. The next slice that touches that file fixes the lines.
 - **The owner map.** CODEOWNERS (task 1872, ONB-7) and the leads on the board are two maps. A pr-check test cannot read the board. SW-52 keeps them in step by hand, and it is advisory.
 - **The login-to-member map.** SW-55 needs to know which GitHub login is which member. Read at dispatch whether such a map exists.
@@ -2043,3 +2107,4 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-06.** P9 amendment for task 1874. It adds §3.10, D183 (§4.1), §5.0a, the slices SW-44 to SW-63 (§5.10), Q6 to Q12 and five open points in §9. It adds no code.
 - **2026-11-06, evening.** The owner accepted Q1 to Q12. §3.10.11 and SW-60 to SW-63 answer the board audit of task 1900. Q13 is new.
 - **2026-11-06, night.** P10 amendment for task 1906. It adds §3.11, D186 (§4.2), §5.0b, the slices SW-64 to SW-99 (§5.11), §7.1, Q14 to Q17 (§8.1), and the new spec `orchestration_playbook.md`. It adds no code. Three Opus audit rounds fixed 32, 34 and 16 defects.
+- **2026-11-09.** Replan (task 2518). It sets the queue order of SW-68, the lane scope of SW-67 and the pull start of SW-100 (new). It parks nine slices (Later epic, task 2543). SW-51 takes the member view of agents (WS-AGA).

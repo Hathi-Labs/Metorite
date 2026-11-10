@@ -75,6 +75,9 @@ export function desktopFrame(bar: boolean, nav: boolean): DesktopFrame {
 export const TEAM_GROUPS: readonly { team: string; label: string }[] = [
   { team: "personal", label: "Personal Center" },
   { team: "across", label: "Across teams" },
+  // The panes that installs give (PKG-6b). Empty groups are dropped, so it
+  // shows only while an install has a pane.
+  { team: "apps", label: "Apps" },
   { team: "studio", label: "AI Studio" },
   { team: "admin", label: "Admin" },
 ];

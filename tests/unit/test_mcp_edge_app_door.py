@@ -828,7 +828,7 @@ class TestBranchZero:
         assert event.payload == {
             "organization_id": ORG, "connection_id": CONN, "member": MEMBER, "via": VIA,
             "app": "testdoor", "op": "get_item", "class": "A", "request_id": None,
-            "decision": "allowed"}
+            "decision": "allowed", "policy": "testdoor:read"}
         assert event.organization_id == ORG and event.action == "agent_door_call"
 
     async def test_a_door_read_with_no_app_scope_is_refused(self, world):

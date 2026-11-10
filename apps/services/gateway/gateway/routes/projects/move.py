@@ -79,6 +79,7 @@ from gateway.routes.projects.custom_fields import (
     _is_blank,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.landing import (
     CHOICE_TYPES as _CHOICE_TYPES,
 )
@@ -933,6 +934,8 @@ async def move_tasks(
                 field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [*moved, *carried], by=actor(user))
 
     for task_id in [*moved, *carried]:
         await emit("pm.task.moved", {"task_id": task_id})
