@@ -161,6 +161,33 @@ Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks ea
 
 ---
 
+## 6c. The learning loop
+
+**Owner directive, 2026-11-10.** Metorite holds the plan and the orchestration. It also holds the harness of every agent that connects. Each week it reviews the agent sessions and the plan, learns from them, and changes the harness. Any organization can run the loop on its own data. Epic task 2624.
+
+**The weekly cycle has five stages.**
+1. **Collect.** Signals come from agent runs, task events, pull requests and CI, the tool failure log and MCP refusals. A signal holds ids and counts and never task text.
+2. **Analyze.** Each failed or stopped run gets one cause code. The registry has about 12 codes, among them `spec_gap`, `stale_anchor`, `wrong_seam`, `tool_gap`, `rate_limit`, `env_flake`, `scope_creep`, `verify_miss`, `owner_wait`, `merge_conflict`, `plan_drift` and `unknown`.
+3. **Recalibrate.** A read-only health report of the board lists duplicates, stale tasks, "done" tasks with no proof, slices with no estimate, link or epic, and estimate against actual. It proposes. A member approves a list in chat. A bulk tool applies it.
+4. **Learn.** A finding becomes a lesson: pattern, cause code, evidence links, fix and its kind, metric and baseline, status. An approved lesson changes the guidance, a kit file, a hook, an agent definition, a fence test, a spec or the code. The kit version rises with each change to a kit file.
+5. **Measure.** The next reviews compare the metric over 4 weeks before and 4 weeks after. The verdict is helped, no effect, worse, or too early.
+
+**The rules.**
+- The loop proposes and a member approves. It never merges and never approves its own request.
+- Data is tenant-scoped (R5). The loop reads only the repositories an org connected.
+- Model calls go through the router. Sorting uses the decide tier.
+- The default layer holds no HathiLabs text (PB-4).
+- The loop ships dark behind `LEARNING_ORGS`.
+- Fences: `tests/unit/test_learn_signals_r8.py`, `test_cause_codes.py`, `test_lessons_lifecycle.py`, `test_lesson_promotion.py`, `test_learning_org_neutral.py` (all new, named by their slices). Until then the rules are advisory.
+
+**The settings (LL-12).** The Projects app holds these as switches, per organization and per space: on or off, the day (default Monday), the time and zone (default 07:00 of the org zone), the sources, the recipients, and the limit of fix tasks (default 5). The chat changes them with the same result. The scheduler reads them and hard-codes nothing.
+
+**The guide (LL-13).** One guide teaches the best workflow to people and to agents. The member guide and the help chapters show it in the app. A chapter of the playbook serves it through `read_playbook` for agents. The neutral `AGENTS.md` of the kit points to it and holds no copy (PB-10). The guide explains each setting, the first week (connect, import the board, set the weekly time, run one review by hand, approve the first lesson), and what an agent never does.
+
+**Until LL-3 ships,** a person runs the review by hand each Monday, with the pattern of the replan of 2026-11-09 and 2026-11-10.
+
+---
+
 ## 7. The slices
 
 Each names its scope, its done-when, its fence (R7), its risk tier and its gate. All are AGENT-SAFE and ship dark behind `PLAYBOOK_ORGS`, unless they say more. A migration makes a slice HIGH.
@@ -343,6 +370,29 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 - **Done when.** Each recipe names its pattern and each template holds a `version`.
 - **Fence.** `tests/unit/test_playbook_content.py`, `test_agent_lanes_r8.py` (extended).
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-1, PB-9.
+
+---
+
+## 7a. The learning loop slices (WS-LL, epic task 2624)
+
+| Slice | Task | Scope | Risk | Depends on |
+|---|---|---|---|---|
+| LL-0 | 2625 | This section and §6c (docs) | LOW | none |
+| LL-1 | 2626 | Signal store, tenant-scoped (`learn_signals`, `learn_weeks`) | HIGH (migration) | LL-0, SC-9 (2576) |
+| LL-2 | 2627 | Cause codes and the sorter | STANDARD | LL-1, LL-8 |
+| LL-3 | 2628 | The weekly review run | STANDARD | LL-2, LL-12 |
+| LL-4 | 2629 | The board health report (read-only) | STANDARD | none |
+| LL-5 | 2630 | The lessons register | STANDARD | LL-3 |
+| LL-6 | 2631 | Harness promotion to pull requests | HIGH | LL-5 |
+| LL-7 | 2632 | Effect measurement | STANDARD | LL-6, LL-1 |
+| LL-8 | 2634 | The run reflection field | STANDARD | LL-0, MCP-G28 (2541) |
+| LL-9 | 2635 | A My Day card and a chat answer | STANDARD | LL-3, LL-5 |
+| LL-10 | 2636 | Connected repositories | HIGH | LL-1, LL-6 |
+| LL-11 | 2637 | The offer to every organization | STANDARD | LL-9, LL-10 |
+| LL-12 | 2638 | Weekly review settings in Projects | STANDARD | none |
+| LL-13 | 2639 | The best-workflow guide | LOW | LL-0, LL-12 |
+
+Each slice ships dark behind `LEARNING_ORGS`. Each slice that adds a rule names its test in its task (R7).
 
 ---
 
