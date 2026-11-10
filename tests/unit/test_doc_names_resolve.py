@@ -55,7 +55,6 @@ EXAMPLE_NAMES: frozenset[str] = frozenset(
         "knowledge_shared.md",
         "crm_complete.md",
         "crm_connectors.md",
-        "blocks_inventory.md",
         "AGENTS.override.md",
         # Example file names inside a spec's worked examples and mockups.
         "notes.md",

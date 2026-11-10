@@ -8,7 +8,7 @@
 
 **Anchor.** `origin/main` at `4b6a8cf81`. **V** = verified on `main`, with a path. **P** = planned, with a task number.
 
-**Companion.** `blocks_inventory.md` of the same review holds the evidence for each row.
+**Companion.** `project-docs/research/2026-11-final-review/blocks_inventory.md` holds the evidence for each row.
 
 ---
 
