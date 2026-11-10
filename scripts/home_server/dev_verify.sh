@@ -5,6 +5,8 @@
 #
 # Until task 2623 (2026-11-10) this lived only on metorite-home, as
 # ~/.local/bin/metorite-dev-verify.
+# Each step's command sits in single quotes on purpose: its inner bash expands it.
+# shellcheck disable=SC2016
 set -uo pipefail
 exec > "$HOME/dev-verify.log" 2>&1
 cd "$HOME/Metorite" || exit 1
