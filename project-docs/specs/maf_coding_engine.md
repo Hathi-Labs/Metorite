@@ -23,6 +23,13 @@ WS-43t2 (the session store, migration 228) is built and dark
 (2026-10-08). D86 paused it and D92 restarted it. Every other slice is
 spec only.**
 
+**WS-43h (app-builder on the MAF harness, task 2280) is built and dark
+(2026-11-08).** With `app_builder:<org>` in `MAF_CODING_SCOPE`, the factory
+builds a MAF harness agent on the one factory of `code_task`. Every other
+org keeps the Copilot agent until WS-43j. The block of WS-43h records what is
+true. On 2026-11-08 the owner told the team in chat to finish the removal,
+because Metorite will not use the Copilot SDK.
+
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
@@ -60,7 +67,8 @@ toolkit adds `WS-43y1` to `WS-43y4`, and the Email track splits `WS-43x` into
 **Amended 2026-10-03 by D86 (§16): Projects first, then Email.** The active
 track is WS-43d, WS-43u, WS-43v and WS-43w. The slices that port the older
 agents are parked, and §16.2 lists them. D84 stays decided, and it is
-deferred.
+deferred. D92 restarted those slices on 2026-10-07 (§17). On 2026-11-08 the
+owner confirmed that the removal goes on to its end.
 
 ## 0. One paragraph
 
@@ -1005,6 +1013,10 @@ WS-43f.
 
 ### 7.8 app-builder on the MAF harness
 
+**Built 2026-11-08, dark (WS-43h).** The block of WS-43h in §11 lists where
+the build differs from this text. The main change: the registry label is now
+`"maf"`, so each executor site decides by the object.
+
 When `MAF_CODING_SCOPE` holds `app_builder` for the run's organization,
 `agent-app-builder/agents.py` builds a MAF harness agent in place of the
 `GitHubCopilotAgent`. The factory reads the scope and the run's tenant
@@ -1801,7 +1813,7 @@ until its PR merges.
 | WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
-| WS-43h | app-builder on the MAF harness | WS-43d, WS-43e | AGENT-SAFE. ⏸ Parked by D86 |
+| WS-43h | app-builder on the MAF harness. Built 2026-11-08, dark (task 2280) | WS-43d, WS-43e | AGENT-SAFE |
 | WS-43i | Parity eval through the broker | WS-43f, WS-43h | AGENT-SAFE on a local stack. The flips are owner acts |
 | WS-43j | Retire the Copilot `code_task` path | WS-43i, 14 days on production | **OWNER-GATE** to merge (WS43-G7). ⏸ Parked by D86 |
 | WS-43k | The no-Copilot ratchet fence | Nothing | AGENT-SAFE |
@@ -2574,7 +2586,7 @@ uv run pytest tests/unit/test_sandbox_egress_proxy.py \
 **Gate.** AGENT-SAFE. It ships dark. The flip, the production allowlist and
 the firewall install are WS43-G1 and WS43-G4.
 
-### WS-43h — app-builder on the MAF harness 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
+### WS-43h — app-builder on the MAF harness ✅ **Built 2026-11-08, dark (task 2280)** · ⏸ Parked by D86, 2026-10-03 · ▶ Restarted by D92, 2026-10-07 (§17)
 
 **Scope.**
 
@@ -2591,6 +2603,9 @@ the firewall install are WS43-G1 and WS43-G4.
    builds the `GitHubCopilotAgent`, unchanged.
 2. The run takes the MAF path while the registry label still reads
    `"github-copilot"`, because the executor decides by the object.
+   **Changed, with the owner's OK of 2026-11-09** (task 2280, "Accept: the
+   label becomes maf"): the build set the label to `"maf"` instead. The
+   block below gives the reason.
 3. WS43-E8 passes on the MAF path: `index.html` is valid, and
    `node build/build_t2.mjs` runs in the container with the vendor cache.
 4. The broker mounts a `build/` copy with no `.git`, and refuses any other
@@ -2611,6 +2626,142 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**Built 2026-11-08, dark, on branch `ws43-s1-app-builder-maf-mt-3d248be7`
+(task 2280).** These facts change or add to the text above.
+
+- **The owner's answers, 2026-11-08.** Build on MAF's own harness and adapt
+  it, with no CodeAct. The soak follows rule A. The production flip of
+  `app_builder` is an owner act (WS43-G10).
+- **The factory (done-when 1).** `agent-app-builder/agents.py` asks
+  `code_session.app_builder_engine_for_run()` on each run. With
+  `app_builder:<org>` for the run's org, it builds
+  `code_session.build_app_builder_agent`. Every other run, and a run with no
+  org, gets the `GitHubCopilotAgent`, unchanged.
+- **One factory (CA-14).** `code_session.coding_harness_agent` is the one call
+  of `create_harness_agent`. `build_code_task_agent` and
+  `build_app_builder_agent` both use it. app-builder takes the `code_task`
+  flags and `disable_tool_auto_approval=True`. MAF's
+  `ToolApprovalMiddleware` needs an `AgentSession` on each run, and the
+  executor passes one only with `MAF_NATIVE_SESSIONS` on. No tool of this
+  agent asks MAF for an approval.
+- **The instructions.** The text of `instructions.md` does not change. The
+  MAF engine puts the sandbox paths of the two scripts
+  (`/opt/app-builder/build/`) in place of the placeholders. It adds a short
+  section that names its tools.
+- **The tools.** MAF's eight file tools over `sandbox_tools.RunAppFileStore`,
+  and `run_command` (`sandbox_tools.app_builder_run_command`). Each call
+  reads the run binding and the scope, so a flip off ends the tools at once.
+  The store is `tenant_file_store.AppWorkspaceFileStore`. It maps the app
+  dir as it is, and it refuses each name that starts with a dot. It uses the
+  safe opener, the dir lock and the quota, and it writes nothing to the blob
+  store. The agent does not hold the host floor file tools or the host web
+  tools (`sandbox_tools.host_tool_guard`), as in a covered `projects` run.
+- **The registry label: a change of done-when 2. The owner accepted it on
+  2026-11-09 (task 2280).** The build set the label of app-builder in
+  `_AGENT_REGISTRY` to `"maf"`, and removed the WS43-F31 entry, which named
+  WS-43h. The reason: each executor site reads "the label
+  OR the object", so a `"github-copilot"` label sends even the MAF agent
+  down the Copilot path. That path needs `_default_options`, so the run
+  ends in RUN_ERROR and its model gets no request
+  (`test_a_github_copilot_label_sends_the_maf_agent_down_the_copilot_path`).
+  The other way keeps the label and changes every label site of the
+  executor to read the object only. That changes the routing of every
+  agent, so the build did not take it. With `"maf"`, the Copilot agent of
+  an org outside the target keeps the Copilot path through its
+  `_default_options`. `loader.COPILOT_SPECIALIST_ALLOWED` keeps app-builder
+  until WS-43j. The roster (`observability._effective_runtime`) and the
+  runtime lines of the executor name the runtime of the built object, not
+  the label (fix round, review P3).
+- **A tenant dir.** A delegated run of app-builder works in its tenant dir
+  `o:<org>`, not in an app dir. That dir holds the uploads of every thread
+  and member (H-227). So the file tools and `run_command` both refuse there
+  (fix round, review P2). The Copilot CLI's file tools could read that dir.
+  The MAF engine works only in an app's own dir under the Custom Apps root.
+- **The session.** The agent holds `native_session_store.SessionHistoryProvider`
+  as its one provider of history. With `MAF_NATIVE_SESSIONS` on, the store
+  loads and saves its session, so a confirm turn sees the tool output of the
+  turn before. `_native_session_skip` does not skip for that provider, and
+  `agent_for_run` adds no second one.
+- **The mounts (done-when 4).** The broker copies `build_t2.mjs`,
+  `install_t2_deps.mjs` and `artifactUi.tsx` (`@cc/ui`) into its state dir,
+  under a name from a digest of the content. It mounts the copy read-only at
+  `/opt/app-builder/build`. It mounts `t2_vendor_dir()` read-only at
+  `/opt/t2-vendor`. The container env sets
+  `CUSTOM_APPS_T2_VENDOR_DIR=/opt/t2-vendor` and
+  `CUSTOM_APPS_T2_UI_SOURCE=/opt/app-builder/build/artifactUi.tsx`.
+  `build_t2.mjs` reads that variable, and with it unset it uses the path in
+  the repo (fix round, review P1: with no repo around the copy, the build
+  refused `@cc/ui`). `mount_list` refuses a source that holds `.git`.
+- **The bundle marker.** `build_t2.mjs` put the bundle in the template with
+  a STRING replace, and `String.replace` reads `$$`, `$&`, `` $` `` and
+  `$'` in that string as patterns. Two effects followed. Every T2 bundle
+  held the marker text in the key escape of React (`"$&/"`), which is a
+  small effect. And app code that held one of those four sequences was
+  changed, or broke the bundle with a SyntaxError. The docker test found
+  it, and the build now replaces with a function.
+- **The `.git` cover (§7.5 rule A, review P2).** `.git` gets the empty
+  read-only cover only when it exists at the start. So before a container
+  starts, `sandbox_broker.ensure_app_git` has `durability.init_app_repo`
+  run `git init` in an app dir with no `.git`. The broker itself starts no
+  process but `docker` (WS43-F1). It refuses a `.git` that is a link or a
+  file, and it fails closed when the init fails.
+- **The checkpoints (§7.5 rule A).** `_git` of `apps/durability.py` runs
+  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_ATTR_NOSYSTEM=1`, `GIT_CEILING_DIRECTORIES` at the parent of the app
+  dir, `-c core.fsmonitor=false`, `-c core.hooksPath=/dev/null`,
+  `-c core.attributesFile=/dev/null`, `-c commit.gpgSign=false` and
+  `-c submodule.recurse=false`. `status` adds `--ignore-submodules=all`.
+  Before each command but `init`, `_git_repo_trusted` refuses the repo when:
+  - a key of `.git/config`, listed with `git config --no-includes --list`,
+    is not one that `git init` writes (review P2);
+  - `.git` holds `commondir`, `objects/info/alternates` or
+    `info/attributes`, which `git init` never writes (review round 2);
+  - the work tree holds a `.git` entry below its top, a dir, a file or a
+    link, at any depth (review round 2). A container can run
+    `git init sub` and put a filter in `sub/.git/config`. Then `add -A`
+    records `sub`, and `status` runs git in it on the host.
+  These checks cover what the reviews found. They are not a proof that no
+  other file of `.git` can steer git: the read-only cover of `.git` is
+  the first line, and these checks are the second. The sync, the
+  checkpoint list and the restore run under the broker's dir lock, so no
+  container command runs between the checks and git. `lifecycle._git_init`
+  uses the same `_git`.
+- **No host access through a link (§7.5 rule B, review P0).** Every reader
+  and writer of `gateway/routes/apps/` opens through `acb_skills.safe_open`:
+  the sync and the fork read, the rehydrate and the fork write, the file
+  routes, the manifest, the publish read and the delete. The safe opener
+  refuses a link at any depth, and the file list leaves each link out.
+  After each command, the broker removes each link and each nested `.git`
+  that the command made in the app dir (`safe_open.remove_links`,
+  `safe_open.remove_nested_git`). The sweep runs in a `finally`, so it runs
+  also after a command that raised, or a stop (review round 2).
+- **The host T2 build (review round 2, option b).** It refuses a dir that a
+  container mounts now, or ever mounted, for good, and a dir that holds a
+  link. The safer choice: esbuild follows a relative import out of the app
+  dir with no link at all (`import x from "../other-app/src/data.json"`),
+  and a container wrote the source. So after a flip off of `app_builder`,
+  an app that the MAF engine edited has no build path, and its error text
+  says that an admin must turn the builder back on.
+- **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
+  Copilot path. A dir that a container mounted is on the broker's list, so
+  the executor's host git skips it (WS43-F13).
+- **Done-when 3 (WS43-E8), scripted.** `evals/coding_engine/app_builder.py`
+  holds WS43-E8: change the heading of a seeded T2 app that imports
+  `@cc/ui`, then build it. Run it with
+  `python -m evals.coding_engine.run --agent app-builder --tasks WS43-E8`.
+  With `--scripted` it calls no model, and it passed 2 of 2 on 2026-11-09
+  on a real container. The model run is open: the owner runs it under the
+  cost cap.
+- **Open: installs.** `install_t2_deps.mjs` needs the network, and the
+  sandbox has none until WS-43g. So an app with its own packages
+  (`node_modules`) does not build on the MAF engine until WS-43g.
+
+Fences: WS43-F12, `tests/unit/test_app_builder_engine.py`, and the Custom
+Apps half of WS43-F13, `tests/unit/test_app_workspace_links.py`. WS43-E8:
+`tests/unit/test_coding_eval_app_builder.py`. The `sandbox_docker` tests
+passed on the real image on 2026-11-09: the token probe of done-when 5,
+a real T2 build that imports `@cc/ui`, and the scripted WS43-E8.
 
 ### WS-43i — Parity eval through the broker 🔲
 
@@ -4927,7 +5078,7 @@ assistants for now.
 | WS-43c | Kept. PR #591 |
 | D85 | Kept. PR #598 |
 | WS-8i | ⏸ Parked by D86. The task-manager move. ▶ Restarted by D92, 2026-10-07 (§17) |
-| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17) |
+| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17). Built 2026-11-08, dark |
 | WS-43j, WS-43l to WS-43s | ⏸ Parked by D86. The Copilot removal and the older agents. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43t2 | ⏸ Parked by D86, paused mid-build. Its branch `ws43t2-sessions` is kept. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43a, WS-43e, WS-43f, WS-43g, WS-43i | Not in the Projects track, and with no order yet. WS-43v takes the place of WS-43a here |
@@ -5503,7 +5654,7 @@ SDK agents, and that every agent runs on Microsoft Agent Framework.
 |---|---|---|
 | WS-43t2 | Parked, paused mid-build, branch `ws43t2-sessions` kept | ▶ Open. It comes first, because WS-8i and WS-43q wait on its soak (WS43-G13) |
 | WS-8i | Parked. The task-manager move | ▶ Open, after the soak of WS-43t2 |
-| WS-43h | Parked. app-builder | ▶ Open |
+| WS-43h | Parked. app-builder | ▶ Open. Built 2026-11-08, dark |
 | WS-43l, WS-43m, WS-43n, WS-43o | Parked. Self-mutation, the root agent, the repo agents, the model list | ▶ Open |
 | WS-43j, WS-43p, WS-43q, WS-43r, WS-43s | Parked. The removal | ▶ Open. Each merge stays an owner gate (WS43-G7, WS43-G9) |
 

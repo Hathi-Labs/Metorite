@@ -532,6 +532,32 @@ GMAIL_FETCH_HOLD_CYCLES = 3
 GMAIL_RESET_SWEEP_NAME = "all mail"
 
 
+def _json_or_empty(resp: httpx.Response) -> Any:
+    """The JSON body of a Gmail read, or ``{}`` for an empty body.
+
+    Google can answer 200 with an EMPTY body (production, 2026-11-08, task
+    2268). An empty or blank body, and a JSON ``null``, both give ``{}``.
+    A body that is not empty and not JSON still raises ``ValueError``
+    (``json.JSONDecodeError``), so a real fault reaches the log.
+
+    Four reads use it, and each one is safe on ``{}``: ``list_filters``
+    (a mailbox with no filter), ``_history_page`` (no record and no token,
+    so the cursor stays and the next cycle reads again),
+    ``_draft_id_for`` (no draft found) and ``fetch_label_assignments`` (one
+    label must not abort a restore).
+
+    Every other read keeps ``.json()``, so an empty body raises. That holds
+    for a read whose answer is never empty: the labels list always holds
+    the system labels, and the profile always holds ``historyId``. It also
+    holds where an empty list ends a job: the message lists of an import or
+    a sweep would end as complete with 0 messages. A JSON value that is not
+    an object passes through unchanged."""
+    if not resp.content.strip():
+        return {}
+    data = resp.json()
+    return {} if data is None else data
+
+
 class _StaleCursor(Exception):
     """``history.list`` answered 404. Gmail holds no history after the
     cursor, so the provider seeds again and sweeps (item 5)."""
@@ -1515,7 +1541,11 @@ class GmailProvider(BaseEmailProvider):
                     resp.raise_for_status()
                 except httpx.HTTPError:
                     break  # one bad label must not abort the whole restore
-                data = resp.json()
+                data = _json_or_empty(resp)
+                if not data:
+                    # An empty body skips this label, and the restore goes on.
+                    # The line makes the partial restore visible (task 2434).
+                    logger.warning("gmail.label_restore_empty_page label_id=%s", lid)
                 for ref in data.get("messages", []) or []:
                     mid = ref.get("id")
                     if mid:
@@ -1973,7 +2003,7 @@ class GmailProvider(BaseEmailProvider):
                 params["pageToken"] = token
             resp = await client.get("/users/me/drafts", params=params)
             resp.raise_for_status()
-            data = resp.json() or {}
+            data = _json_or_empty(resp)
             for draft in data.get("drafts") or []:
                 mid = (draft.get("message") or {}).get("id")
                 if mid and draft.get("id"):
@@ -2430,13 +2460,8 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 403:
             return []
         resp.raise_for_status()
-        # Google can also answer 200 with an EMPTY body for a mailbox with no
-        # filter (production, 2026-11-08, task 2268). That means no filter,
-        # the same as {}. A body that is not empty and not JSON still raises,
-        # so the rules screen logs a real fault.
-        if not resp.content.strip():
-            return []
-        filters = resp.json().get("filter") or []
+        # An EMPTY 200 body means no filter, the same as {} (task 2268).
+        filters = _json_or_empty(resp).get("filter") or []
         if any(self._filter_user_label_ids(f) for f in filters):
             # Fills ``_label_names_by_id`` with the names of the user labels.
             await self._label_name_id_map()
@@ -2691,7 +2716,7 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 404:
             raise _StaleCursor
         resp.raise_for_status()
-        return resp.json()
+        return _json_or_empty(resp)
 
     async def _apply_history_page(
         self, records: list[dict[str, Any]], marked: set[str],

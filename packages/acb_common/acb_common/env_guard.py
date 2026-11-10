@@ -184,6 +184,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
     # what Microsoft sends to the box, so only the operator writes it.
     "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
+    # WS-17 SG-2: the orgs whose mailboxes may use a layout signature. It
+    # changes the signature of each send, so only the operator writes it. The
+    # `EMAIL_` prefix covers it too, and the exact name keeps the fence if that
+    # prefix ever narrows.
+    "EMAIL_SIGNATURE_TEMPLATES_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does

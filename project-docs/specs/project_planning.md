@@ -264,6 +264,13 @@ Production's list names `projects-plan` and `projects`, so both following packs 
 - **Readers.** `my_work` orders the ready slices of the active cycle by it (SW-68). **Built (SW-68a, 2026-11-08):** `my_work` ranks each task that sits under an epic by this engine, over the epic's visible slices (`GET /projects/plan/order`). The active-cycle filter waits for SP-1. The epic page and the cycle board draw it (`project_management_app.md` §13). SW-90 draws the Timeline overlay. WM-3 adds the baseline. The MCP tool `get_plan` (SP-12, task 2295) returns it to an outside planner.
 - **Fence.** The module tests of §10 bind the maths. The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own.
 
+**PJP-6c, the program root (task 2508, replan 2026-11-09).** Proposed, owner review in this pull request. PJP-6c lets one plan span projects. It depends on PJP-6a (built) and WM-5. Risk is STANDARD for the read, and HIGH if it adds a column.
+1. **The root.** A root that spans projects is a Goal, or an explicit list of epic roots. The engine plans the union of their trees. A `blocks` link between two trees is an edge of the chain.
+2. **One engine.** PJP-6c adds no second copy of the maths (D195 Q8). It calls the same module.
+3. **The same visibility rule.** A slice that the caller cannot see is counted in `hidden.slices` and never named. Each link that touches it is counted too.
+4. **The queue.** `my_work` and `list_agent_queue` order slices across epics by this plan. They do so when the lane or the member has a program root. A lane still serves one app project (D183.1). The program root is a Goal.
+5. **Fence.** The module tests of PJP-6a bind the maths. A new R8 test, `tests/unit/test_plan_program_root_r8.py`, binds rule 3 with a hidden slice in the second tree. Until PJP-6c builds it, the rules are advisory (R7).
+
 **PJP-7 the critical chain.**
 1. `plan_chain(project_id)`, a read: start from PJP-6. When one person owns two tasks that overlap, serialize them in chain order and run the passes again. That gives the critical chain. The project buffer is 50% of the chain's length, Goldratt's simple rule. A feeding buffer is 50% of each path that joins the chain. The target date is the chain's end plus the project buffer.
 2. `set_chain(project_id)` is a write on ONE card. It creates the "Project buffer" task and the "Finish" milestone (D168.3). It links the chain's last task to the buffer, and the buffer to the finish. It moves the dates that the chain changed. The buffer task has the tag `Buffer`. The finish task has the tag `Milestone`, an estimate of 0 and the target date as its due date. The tool finds them again by tag.

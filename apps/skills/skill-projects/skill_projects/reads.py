@@ -718,13 +718,27 @@ def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
     return "  plan: " + (" · ".join(parts) or "blocked")
 
 
+async def _personal_home(home: list[str]) -> None:
+    """Add the member's personal project to the head lines of ``my_work``, or
+    say there is none yet."""
+    try:
+        mine = await get("/projects/my/project")
+    except GatewayRefusal:
+        home.append("No personal project yet. create_personal_task makes it.")
+        return
+    if mine and mine.get("id"):
+        home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_work(
     view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
 ) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
     across every project. view="inbox" lists the member's task inbox: only
-    what they captured, as the app's inbox shows it. untriaged=true reads the
+    what they captured, as the app's inbox shows it. view="archived" lists the
+    tasks they archived, across projects (ARC-1), as the Archive chip of My
+    tasks shows them. To bring one back, use unarchive_task. untriaged=true reads the
     work assigned to them that they have not planned, with who
     assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
     task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
@@ -756,13 +770,14 @@ async def my_work(
         # 404 until the member captures their first private task. That is
         # an empty state, not a failure: the trial showed the model telling
         # the member their inbox "failed to load".
-        try:
-            mine = await get("/projects/my/project")
-        except GatewayRefusal:
-            mine = None
-            home.append("No personal project yet. create_personal_task makes it.")
-        if mine and mine.get("id"):
-            home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+        await _personal_home(home)
+    elif which == "archived":
+        # ARC-1: the one list route over mine, filed tasks only. The app's
+        # Archive chip reads the same two words (`scope`, `archived_only`).
+        payload = await get(
+            "/projects/tasks", {**params, "scope": "mine", "archived_only": True},
+        )
+        title = "My archive"
     else:
         if include_done:
             params["include_done"] = True
@@ -774,7 +789,7 @@ async def my_work(
         return "\n".join([*home, f"{title}: nothing."])
     plans: dict[str, Any] = {}
     labels: dict[str, Any] = {}
-    if which != "inbox":
+    if which not in ("inbox", "archived"):
         rows, plans, labels = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}

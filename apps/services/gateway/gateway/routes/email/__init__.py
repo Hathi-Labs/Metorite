@@ -21,7 +21,10 @@ from gateway.routes.email import automation, core, digest, transport  # noqa: F4
 # public image). Its names stay in its own module.
 from gateway.routes.email import signature_images as _signature_images
 
-_ = _signature_images
+# WS-17 SG-2: imported for its route only (the preview of a layout signature).
+from gateway.routes.email import signature_preview as _signature_preview
+
+_ = (_signature_images, _signature_preview)
 
 # Flatten submodule namespaces into the package so the historical public surface
 # (incl. private ``_helpers`` the scheduler/tests import by name) is preserved.
