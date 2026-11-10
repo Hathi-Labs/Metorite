@@ -54,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--all", action="store_true", help="every organization")
     ap.add_argument("--dry-run", action="store_true", help="count, write nothing")
     args = ap.parse_args(argv)
+    if args.all and not args.dry_run:
+        print("--all needs --dry-run. Put the counts on the task, then run each org with --org.")
+        return 2
     orgs = _orgs(args.all, args.org)
     if not orgs:
         print("Pass --org <uuid> or --all.")

@@ -19,7 +19,7 @@ Run::
 
 * M1. ``G/epic_tag_move.py``: drop the ``parent_task_id`` skip.
   ``test_a_task_with_a_parent_is_skipped_and_listed``.
-* M2. ``G/epic_tag_move.py``: drop the ``db.rollback()`` of a dry run.
+* M2. ``G/epic_tag_move.py``: drop the ``if dry_run: continue`` before the UPDATE.
   ``test_a_dry_run_writes_nothing``.
 """
 

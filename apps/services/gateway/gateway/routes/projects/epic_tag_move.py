@@ -73,11 +73,21 @@ async def move_org(org: str, *, dry_run: bool = False) -> dict[str, Any]:
             out["moved_numbers"].append(r.task_number)
             if dry_run:
                 continue
-            await db.execute(
+            # Re-check what the SELECT read: a member may set a parent or a type
+            # between the read and this write. A zero rowcount means it changed.
+            done = await db.execute(
                 text("UPDATE pm_tasks SET type_id = CAST(:ty AS uuid), updated_at = now() "
-                     "WHERE id = CAST(:id AS uuid)"),
-                {"ty": str(r.epic_type_id), "id": str(r.id)},
+                     "WHERE id = CAST(:id AS uuid) AND parent_task_id IS NULL "
+                     "AND type_id IS NOT DISTINCT FROM CAST(:old AS uuid)"),
+                {"ty": str(r.epic_type_id), "id": str(r.id),
+                 "old": str(r.type_id) if r.type_id else None},
             )
+            if not done.rowcount:
+                out["moved"] -= 1
+                out["moved_numbers"].pop()
+                out["skipped"].append({"task_number": r.task_number, "title": r.title,
+                                       "reason": "changed during the run"})
+                continue
             await record_field_change(
                 db, created_by=ACTOR, task_id=str(r.id), automation=True,
                 changes=[{"field": "type_id",
