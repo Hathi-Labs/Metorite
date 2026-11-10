@@ -46,9 +46,12 @@ you buy a machine.
 2. **Claude account limits.** On 2026-11-07, twelve lanes used about 4% of
    one Max 5x account's weekly limit in one hour. The account Hub on the box
    switches between accounts (`docs/home_box.md` §5.1).
-3. **GitHub concurrency.** The organization is on GitHub Team, which runs
-   60 jobs at once. Pull request 2039 used 9 jobs on 2026-11-09. A run that
-   selects more test shards uses up to about 17.
+3. **GitHub concurrency.** GitHub Free runs 20 jobs at once for the whole
+   organization, and GitHub Team runs 60. Read the plan with
+   `gh api orgs/Hathi-Labs --jq .plan.name`. The organization moved to Team on
+   2026-11-07 (task 1907), but the API read `free` on 2026-11-10. Pull
+   request 2039 ran 9 jobs on 2026-11-09, and 3 more were skipped. A run that
+   selects more test shards runs up to about 17.
 4. **Machine memory.** Memory, not CPU, limited the home box (2026-11-08).
    §3 lists the cost of each part.
 5. **Disk.** Each worktree takes disk, and so do Docker images.
@@ -59,21 +62,21 @@ you buy a machine.
 
 | Unit | Memory | Disk | Source |
 |---|---|---|---|
-| Idle background session | about 0.35 GB | — | Box audit, 2026-11-07 |
+| Idle background session | about 0.35 GB | — | Box audit by the orchestrator, 2026-11-07 |
 | Lane that builds and runs unit tests | 2 GB (**estimate**) | 3.4 GB per worktree | Disk: `du` of a box worktree, 2026-11-10 |
 | Local dev stack (`scripts/dev_up.sh`) | 3 GB (**estimate**) | — | Measure with `docker stats` |
-| Browser suite run | up to 8.5 GB for one `next-server` | — | Box, 2026-11-07 |
+| Browser suite run | up to 8.5 GB for one `next-server` | — | Box, two browser runs at once, 2026-11-07 |
 | Local CI run, selected tests (1 shard) | reserves 8 GB | one worktree | `slots.sh`: `CI_FIXED_GB=5` plus `CI_SHARD_GB=3` per shard |
 | Local CI run, full suite (5 shards) | peaked at 17.7 GB, reserves 20 GB | one worktree | `slots.sh` header, measured 2026-11-04 |
-| Self-hosted runner | capped at 5 GB each | its work folder | Runner units, task 2304 |
+| Self-hosted runner | capped at 5 GiB each | its work folder | `MemoryMax` of the `gh-runner@N` units, read 2026-11-10 |
 | Kept free for the system | 6 GB | — | `slots.sh`: `CI_OTHER_GB=6` |
 
 `slots.sh` already sizes local CI to the memory of each machine. It reads
 `MemTotal`, and a run starts only when its reservation fits. So a larger
 machine takes more CI runs with no code change.
 
-The home box shows what too much looks like. On 2026-11-08 it ran 9 lanes and
-8 runners on 24 GB. It had 475 MB free and 8.2 GB of swap in use, and its
+The home box shows what too much looks like. The orchestrator measured it on
+2026-11-08, when it ran 9 lanes and 8 runners on 24 GB. It had 475 MB free and 8.2 GB of swap in use, and its
 unit shards ran 36 minutes instead of 14 on GitHub.
 
 ---
@@ -122,9 +125,10 @@ or an account changes.
   tests need four times the test memory. Count them in §4.2.
 - Give each sub-agent its own scratch folder and its own worktree when it
   writes files. Two agents in one folder overwrite each other.
-- **A workflow is opt-in.** Start one only when the owner asks for it, or
-  says "ultracode". The size guideline is set in `/config`
-  ("Dynamic workflow size"). Its default is under 10 agents.
+- **A workflow is opt-in.** The rules of Claude Code's Workflow tool say so.
+  Start one only when the owner asks for it, or says "ultracode". Its size
+  guideline is the "Dynamic workflow size" setting in `/config`. The default
+  guideline is fewer than 10 agents for each workflow.
 
 ---
 
@@ -156,8 +160,9 @@ The machine needs Ubuntu 24.04 LTS, the release that production runs.
   `scripts/home_server/` as user units. Copy `lane_keeper.py` to
   `~/.local/lib/metorite/`. Each machine has its own `~/lanes/keeper-lanes.txt`.
 - **Local CI:** `CI_HOME=ci@metorite-vps1 CI_HOME_PORT=22 bash scripts/ci_local.sh --home`.
-  To make it the default lane, export both variables in the shell profile of
-  the PC.
+  A plain Linux machine keeps sshd on port 22. Only a WSL box moves it to
+  2222. To make the machine the default lane, export both variables in the
+  shell profile of the PC.
 - **Self-hosted runners:** see §5.3.
 - **Release timer:** do not install it. Exactly one machine starts each
   release. Two timers dispatch the release twice.
