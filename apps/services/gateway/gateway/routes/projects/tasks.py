@@ -105,6 +105,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     triage_exclusion_clause,
     update_row,
     validate_choice,
@@ -2071,6 +2072,7 @@ async def task_subtree(
 
 
 @router.delete("/tasks/{task_id}")
+@transient_as_409
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
     delete_subtask_ids: list[str] = Query(default=[]),
