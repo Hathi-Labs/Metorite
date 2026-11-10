@@ -622,7 +622,12 @@ class TestTheReadsAgree:
         assert ids_mine == {armed.t["a_open"]}
         assert ids_mine <= listed
         assert ids_every & listed == ids_mine
-        assert armed.t["b_blocked"] in ids_every - ids_mine
+        # Task 2545: one row for each parked blocker. The blocker blocks A's
+        # task and B's task, so the list holds one row, and it names A's own
+        # task. B's blocked task counts in `blocked_count` and has no row.
+        assert armed.t["b_blocked"] not in ids_every
+        assert [r["blocked_count"] for r in every["rows"]
+                if r["task_id"] == armed.t["a_open"]] == [2]
 
 
 class TestTheOverview:
