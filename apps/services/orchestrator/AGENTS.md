@@ -34,6 +34,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Calls go in-process to `gateway.routes.workflows.service`, so the approval gates bind an agent run too.
    - The trio binds the run's org from `executor._current_run_org()`. No tool takes an org argument. With no org, a tool returns `NO_ORG` and reads nothing.
    - `run_workflow` refuses a workflow with a wait that can pause. Fence: `test_workflows_tool_rls_r8.py`.
+   - `run_workflow` refuses a workflow with a `pm_task` or `pm_lifecycle` node. A run writes those by primary key with no member check. Fence: `test_workflows_lifecycle_rls_r8.py`.
 9. Run correlation binds in **two** places in run_agent_stream, on purpose (spec `observability_e2.md` §7).
    - `bind_run_context(...)` runs at the run boundary, BEFORE `load_agent`, so a load failure is still correlated. `_bind_run_instance(instance, run_id)` tops up `instance` after the load.
    - Do not "simplify" this into one bind. The single `clear_run_context()` in the `finally` unbinds every key.
@@ -41,6 +42,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 9a. **The run's artifact context is a ContextVar, never a module dict** (spec `projects_ai_chat.md` §21.16).
    - `acb_skills.write_artifact.artifact_context()` is the one reader. `_run_sub_agent_streaming` derives its OWN copy, so the parent's value never changes.
    - Every Copilot path calls `copilot_agent.carry_run_context(agent)` before the agent opens a session. With no context, every reader fails closed. Fence: `test_h201_run_context.py`.
+   - The same carry takes the `no_person_present` mark onto the SDK thread (AUTO-7a). `resolve_user_input` refuses a marked run, so it answers no card of a live chat. Fence: `test_no_person_present.py`.
 10. `_tool_injection._collect_injectable_platform_tools()` holds the static tool collection. It is the read-only seam that the skills catalog builds on.
    - Register a newly injected tool in exactly one family, or `test_skills_registry.py` fails. A tool pack is never injected.
    - `_resolve_injected_scope(tool_scope, disabled_families=...)` intersects admin skill toggles with the declared scope. The core floor survives anything. Fence: `test_skill_toggle_enforcement.py`.
@@ -57,8 +59,12 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Call `run` on `_agent_for_run(agent, provider)`, never on the agent with the input alone. Never append a run's provider to the agent object itself. `agent_with_providers` is the one per-run copy.
    - `native_session_store.py` is the one module that reads or writes `maf_agent_session`, through `tenant_session(organization_id)`. A session loads and saves ONLY in the actor's own thread.
    - A failed load falls back to the text history and never fails the run. Fence: `test_native_session_persistence.py`.
+   - Each harness agent holds exactly one provider of history. Give it `native_session_store.SessionHistoryProvider`, the store's own, and the store then loads and saves its session. `agent_for_run` attaches no second provider with the same source id. Fence: `test_app_builder_engine.py`.
 14. **`sandbox_broker.py` is the one seam that runs `docker` for the coding sandbox** (D83, spec `maf_coding_engine.md` §7.1). A tool never calls `docker` itself.
    - It keys one container on the org, the agent and the thread, from the run binding, so `acquire()` takes no argument. It never falls back to the host.
+   - The `app_builder` target (WS-43h, §7.8) mounts two read-only sources from code, and no other: a copy of the build scripts and `artifactUi.tsx` at `/opt/app-builder/build`, and the T2 vendor cache at `/opt/t2-vendor`. Never mount the agent dir or a clone.
+   - Before an `app_builder` start, `ensure_app_git` makes the app's `.git` and refuses a `.git` that is a link or a file, so the cover always covers it. After each command, the sweep removes each link in the app dir.
+   - `code_session.coding_harness_agent` is the one call of `create_harness_agent` (CA-14). `code_task` and app-builder both build their agent there.
    - `copilot_sandbox.py` and `mutation.py` still run `docker`, on a legacy list that only shrinks.
    - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
 15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
@@ -75,6 +81,8 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Fences: `test_delegation_no_egress.py`, `evals/email_injection/`.
 18. **A covered agent's run takes its tier from the policy** (D90, spec `ai_tier_routing.md` §4.5). The policy lives in `acb_skills.tier_policy`, and the executor holds only the glue.
    - `_tier_policy_for_run` is the one entry. Fence: `test_tier_policy.py`.
+   - The parallel start (2026-10-30, §4.3) is dark behind `AI_TURN_KIND_PARALLEL`. Only the native Tier 1 stream of `run_agent_stream` uses it. The batch path, a sub-agent, a delegated run and a Copilot SDK agent still await the answer.
+   - The stream loop takes the answer only while a pull is in flight, so a cancel closes the request inside its stream. Each output of the loop calls `seal()` first. `_apply_parallel_tier` mirrors the tier site, so change both together. Fence: `test_turn_kind_parallel.py`.
 19. **A Mirror run gets no CRM record write** (spec `crm_platform.md` §20.10 item 4).
    - `_drop_mirror_record_writes` runs right after `_apply_own_tool_scope`, at all three sites. In Mirror mode it drops `MIRROR_RECORD_WRITES`, and `log_activity` stays. Fence: `test_crm_mirror_run_tools.py`.
 20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.
@@ -91,6 +99,10 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
    - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.
    - A delegated run cannot widen `_RUN_SOLO_ROOM`. Never read it from the payload. Fences: `test_executor_profile_block.py`, `test_executor_profile_block_r8.py` (R8), `test_assistant_profile_org_rollout.py`.
+   - A build that only measures the context runs inside `_interview_peek` (PZ-32). The token count of a native session and the fallback text are two such builds. So they leave `_INTERVIEW_SHOWN` as they found it.
+   - In `_compose_maf_run`, the context that the model reads is the first step after the peek, before any import. A failed import then still records the memo. Fences: `test_profile_pz32.py::test_native_session_keeps_interview_memo`, `test_the_model_reads_the_due_line_and_the_memo_records_it` and `test_an_import_fault_still_records_the_memo`.
+   - The persona gains the offer line of PZ-32 (`_PROFILE_CARD_SWAP`) only with `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org (`agents._profile_card_writes_enabled`). Fence: `test_profile_pz32.py::test_the_offer_line_follows_the_org`.
+   - PZ-20b: the "used your profile" mark leaves the stream only through `_ProfileMarkHold`. It goes right after the first event that alone makes the fold save a row (`_is_answer_event`). A turn with no output sends no mark, so the fold saves no row for it. Do not yield the mark anywhere else. Fence: `test_profile_used_event.py`.
 25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (spec `one_assistant_context.md` §4).
    - `_prime_chat_constraints` runs only for the agent `orchestrator`, with `CHAT_CONSTRAINTS` on, a solo room and a verified member. A delegated run inherits the list and never opens the tools.
    - Fences: `test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py`.
@@ -99,12 +111,15 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - The run check of each call keys on `tool_packs.PACK_RUN_KEY`, which the server mints for each run. It never keys on `run_id`, which a client can set.
    - `_pack_held` fails closed. ⚠️ A held pack drops each tool that `_is_egress` names, and that drop is the only held-set control of a pack run.
    - Do not copy the bodies of `_is_egress`, `_run_no_egress` or `_gate_injected_tool` into it. `_pack_owner_module` is the one loader of a pack owner. Fence: `test_pack_guards.py`.
+   - OA-8i: `_pack_call` asks `tool_packs.pack_write_refusal` before its first await. `_pack_delegation_refusal` asks with `starts=True`, because its one caller starts the hand-off.
+   - The `finally` of `_run_sub_agent_streaming` tells the calling run's record whether the hand-off finished (`_pack_handoff_ended`), before any await. Fence: `test_pack_no_double_write.py`.
+   - Task 1533: that call also passes the sub-run `run_id` and the calls that the sub-run reported. The record then refuses only a write of a kind that the hand-off did.
 27. **The packs of a turn load only in the member's own web chat with the orchestrator** (WS-67 OA-7c, `one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
    - `_start_pack_turn` is the one caller of `tool_packs.packs_on`. It starts the read of the sticky packs as the first statement of the main try. The `finally` of that try cancels a read that the run did not await.
    - No read starts for a shared room, a batch run (WhatsApp, D115) or a delegated run. No read starts with no card channel or no verified member. With the flag off, no pack state is read or written.
    - `_apply_tool_packs` runs after `_apply_agent_md_overrides` and BEFORE `_inject_agent_tools`. It drops the specialist tool of each owner that a pack replaces. It swaps the owner's persona text for the rules, and adds the pack tools after the core tools. Each run builds its packs again. A run with no bound tenant loads no pack.
    - The apply runs before `_apply_own_tool_scope`, so an `own_tool_scope` on the orchestrator would strip the pack tools. `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
-   - `PACK_RUN_KEY` and `PACKS_KEY` go into the run binding after `bind_artifact_context`. `_run_sub_agent_streaming` drops both from a child's context.
+   - `PACK_RUN_KEY` and `PACKS_KEY` go into the run binding after `bind_artifact_context`. `_run_sub_agent_streaming` drops both from a child's context. A spawn child (the worker) gets the key of its own pack tools instead (OA-9c, `_job_pack_keys`), and the batch run binds it again. Fence: `test_spawn_subagents.py`.
    - `tool_packs.delegation_refusal` is the ONE refusal rule. `_run_sub_agent_streaming`, `agent_tools.call_agent` and `call_agents_parallel` ask it. Do not add a refusal with a rule of its own. The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
    - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. Change both together. Pack names stay out of `run_tools`.
    - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes through `_emit_to_run_or_relay`.
@@ -115,7 +130,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - These runs start no read: a shared room, a batch run (the WhatsApp path, D115) and a delegated run. A run with no card channel or no verified member starts none too. With the flag off it reads and writes no pack state.
    - `_tool_injection._apply_tool_packs` applies the choice after `_apply_agent_md_overrides` and BEFORE `_inject_agent_tools`. It drops the specialist tool of each owner that a pack replaces. It swaps the owner's persona text for the rules, and it adds the pack tools after the core tools. Each run builds its packs again. A run with no bound tenant loads no pack.
    - The apply runs before `_apply_own_tool_scope`, so an `own_tool_scope` on the orchestrator would strip the pack tools. The pin `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
-   - The run key (`tool_packs.PACK_RUN_KEY`) and the record (`tool_packs.PACKS_KEY`) go into the run binding after `bind_artifact_context`, which replaces the context. `_run_sub_agent_streaming` drops both from the context of a child.
+   - The run key (`tool_packs.PACK_RUN_KEY`) and the record (`tool_packs.PACKS_KEY`) go into the run binding after `bind_artifact_context`, which replaces the context. `_run_sub_agent_streaming` drops both from the context of a child. OA-9c: a spawn child gets the key that the spawn minted for its pack tools (`_job_pack_keys`), never the parent's key or the record.
    - `_run_sub_agent_streaming` refuses a hand-off to an owner when the calling run holds every pack of that owner (`tool_packs.delegation_refusal`). With some packs only, the hand-off stays open for the rest. `agent_tools.call_agent` and `call_agents_parallel` ask the same rule first. Do not add a refusal with a rule of its own.
    - The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
    - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. With no app grant the two counts agree, and a fence says so. Change both together.
@@ -124,14 +139,24 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Fences: `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_tool_packs_off.py`.
 
 28. **`load_skill_tools` loads a pack in the middle of a turn** (WS-67 OA-7e, layer (b), `project-docs/specs/one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
+   - OA-7i: `_plan_pack_loader` asks `tool_packs.plan_loader` once for each run. `_offer_pack_loader` and the removal of a specialist read that one plan. `_mcp_may_attach` looks ahead at the registry and fails closed. Do not compute reachability anywhere else.
    - `_offer_pack_loader` puts `tool_packs.LoadSkillToolsProvider` on a view of the run (`agent_with_providers`). Only `_apply_tool_packs` with `offer_loader` calls it, and only `executor._apply_pack_turn` passes that. Do not offer the loader on another path.
    - The load builds through `_pack_tools` (`_build_pack_for_load`), with the run context of the call and the names of the live tool list. Do not build a pack a second way.
    - A turn that loads no pack still returns a `PackApply` with no build. The executor then binds the run key and the record that a load needs.
    - The load tool rides in each request of the run, so the cap of layer (a) counts it (`base += 1`).
    - A load never takes a tool or a persona text away. `PackRun.replaced` and the "Delegatable agents" block keep the state of the run start.
    - MCP rule: a load of a pack of the email assistant refuses when the live list holds an MCP tool. The catalog line says so. Precedence differs by layer. In layer (a) the email pack wins and `_inject_mcp_servers` attaches none. In layer (b) the MCP tool wins and the pack stays out.
-   - A load makes no pack sticky. A pack becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
+   - A load by the model makes its pack sticky (task 1747). A pack of layer (a) becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
+   - Task 1747: `_pack_left_block` puts `tool_packs.left_line` last in `_context_preamble_parts`, after the cache break. It names the sticky packs that left at the start of the turn. It reads the record of the packs from the run binding, so a delegated run gets no line. Fence: `test_pack_turn_keeps_used_packs.py`.
    - Fence: `tests/unit/test_load_skill_tools.py`.
+
+29. **The orchestrator's per-turn context carries the briefing of the member's other chats** (WS-63 PZ-34, `project-docs/specs/personalization.md` §15.4). It ships dark behind `ASSISTANT_BRIEFING_ORGS`.
+   - `_prime_member_briefing` runs in `run_agent_stream` only, after `bind_artifact_context` and `_prime_chat_constraints`. The run awaits it once. Fence: `test_executor_briefing_block.py::test_1_the_stream_run_awaits_the_prime_once_after_the_binding`. It needs the agent `orchestrator`, `assistant_profile.briefing_for(org)`, a verified member and a solo room. The run must also show cards, and it must not be a batch run or a delegated run. So a WhatsApp run gets no block.
+   - The block goes into the run binding as `(run_id, org, member, text)`. `_member_briefing_block` checks each gate and the run id again, so a delegated run never gets the block of its parent. It reads no database and no Redis.
+   - The store is `tenant_redis.key("chat-briefing", session, member hash)`, 24 hours, and the empty marker counts. A stored block wins in its chat, also after a Forget, a Delete or a change of access (D-PZ-38).
+   - ⚠️ The build runs in its own task, within `_BRIEFING_TIMEOUT_S`. `acb_auth.deps.member_context` binds the member's org, and the task keeps that binding away from the run. A fault costs the block, never the turn. A failed identity or role read (`identity_read_failed()`, `role_read_failed()`) stops the build, so the store keeps nothing.
+   - The block sits right after the profile block. Each block above it keeps its bytes. Fences: `test_executor_briefing_block.py`, `test_executor_briefing_block_r8.py` (R8), `test_setup_laps.py`.
+30. **The per-turn context carries one celebration line** (WS-63 PZ-43, `personalization.md` §16.6). It ships dark behind `CELEBRATIONS_ORGS`. `_prime_celebrations` has the same gates as the briefing prime and reads ONE row (`celebrations.READ_SQL`). `_celebration_line` reads the run binding and asks the pure `celebrations.celebration_line`. The line comes in the first reply of the member's local day only, and it follows a profile block whose greeting is not `none`. Fence: `tests/unit/test_celebrations.py`.
 
 ## Work Guidance
 

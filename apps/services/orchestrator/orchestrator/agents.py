@@ -101,10 +101,19 @@ EMAIL_DELEGATION_BULLETS = """\
   the Email app, because the sign-in needs a browser.
 """
 
+# WS-67 OA-8b. The two lines that send task, project and calendar work to
+# projects_assistant. They are ONE constant, so that a Projects pack takes them
+# out of the persona by one exact swap, as the email pack does. With the flag
+# off the persona holds them where they always stood, byte for byte.
+PROJECTS_DELEGATION_BULLETS = """- Tasks, projects, the member's own task inbox, triage and calendar blocks are
+  ONE task store. Send that work to projects_assistant.
+"""
+
 #: The persona text of each pack owner's delegation, by owner. A pack that
 #: replaces its owner's specialist takes this text out of the persona.
 PACK_DELEGATION_BULLETS: dict[str, str] = {
     "email-assistant": EMAIL_DELEGATION_BULLETS,
+    "projects-assistant": PROJECTS_DELEGATION_BULLETS,
 }
 
 _PULL_INSTRUCTIONS = """\
@@ -122,9 +131,7 @@ RETRIEVAL TOOLS (use for broad company data questions):
 
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
 - Each registered agent appears as a tool named after it (e.g. crm_assistant, projects_assistant).
-- Tasks, projects, the member's own task inbox, triage and calendar blocks are
-  ONE task store. Send that work to projects_assistant.
-- Call the specialist tool, then answer from its reply. Its reply is your
+""" + PROJECTS_DELEGATION_BULLETS + """- Call the specialist tool, then answer from its reply. Its reply is your
   evidence, not your answer: never relay it whole.
 - Write each task in the member's terms. Never put your own guess in a task,
   not even as an example. The platform puts the member's own words of this
@@ -165,7 +172,8 @@ MEMORY TOOLS (active read/write — maintain continuity across conversations):
 When to actively save vs. let the platform handle it:
   - Actively save when the user explicitly shares a NEW preference, or when a
     significant event occurs (deal closed, meeting outcome, key decision).
-  - Trust the platform for routine turns — it auto-extracts memories after each run.
+  - Do not save routine turns. A routine turn never changes the member's
+    profile. Only a profile tool does.
 
 Rules:
 1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.
@@ -178,7 +186,8 @@ Rules:
    An in-app link such as /email?email=<id> is a citation. Keep it verbatim.
    A bare UUID in text is not a citation. Do not show it.
 7. Write a list as a Markdown list. Start each item with `- `. Never type "•".
-8. Call remember() before making claims about user preferences — verify, don't assume.
+8. Base a claim about the member's preferences on what they told you or on
+   what your context holds about them. Verify, don't assume.
 9. Never name a tool, or the tool name of an agent, to the member. Say what
    it does in product words.
 10. Never put «» around a name. Write the name in bold, or plain. A reply
@@ -315,10 +324,27 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  formality. Never mention tools, marks or limits. Save a short quote of their words with\n"
     "  its area. A receipt tells them, so do not announce an ordinary save in words. A sensitive\n"
     "  fact still asks first, in a light human way. Mark an area answered only after a save says\n"
-    "  Saved. For detail and people, mark it at once after profile_set or profile_alias. If a\n"
-    "  save is refused, say once you could not keep it. After the third answer ask once, lightly,\n"
-    "  if they want to go on, then next_sitting. When they say stop asking, call\n"
+    "  Saved. For name, language and detail, mark it at once after profile_set, and for people after\n"
+    "  profile_alias. If a save is refused, say once you could not keep it. After the third answer ask\n"
+    "  once, lightly, if they want to go on, then next_sitting. When they say stop asking, call\n"
     "  profile_interview with stop.\n",
+)
+
+
+# WS-63 PZ-32 (personalization.md §5.5, D-PZ-21 and D-PZ-22). With the
+# profile on AND `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org, the line
+# of the alias offer becomes the card, and the persona gains the offer to
+# remember, by one exact swap after `_PROFILE_SWAP`. Off, the persona is the
+# profile persona, byte for byte. Fence: tests/unit/test_profile_pz32.py.
+_PROFILE_CARD_SWAP: tuple[str, str] = (
+    "  When a colleague lookup lists several people and the member picks one,\n"
+    "  offer to save that name with profile_alias.\n",
+    "  When a colleague lookup lists several people and the member picks one,\n"
+    "  call profile_alias for that name: its card asks them, so do not ask first.\n"
+    "  When the member says a lasting fact about themselves in passing, and the\n"
+    "  profile block does not hold it, you may offer once in this chat to keep it: call\n"
+    "  profile_remember with offer=true. The card is the question, so do not ask\n"
+    "  in words first. Do not offer on WhatsApp.\n",
 )
 
 
@@ -341,19 +367,37 @@ _CONSTRAINTS_SWAP: tuple[str, str] = (
 )
 
 
+# WS-67 OA-9e (one_assistant_context.md §6.3). With SPAWN_SUBAGENTS_ORGS naming
+# the org, the persona gains this block before the reply shapes. The persona
+# carries the WHEN, and the docstring of `spawn_subagents` carries the HOW. Off,
+# the persona does not change, byte for byte. Fence: tests/unit/test_spawn_persona.py.
+_SPAWN_BLOCK = """SUB-AGENTS. You can call spawn_subagents. Each job runs on its own and only reads.
+- Spawn when each job reads long material (documents, contracts, reports)
+  that would flood this chat, or needs its own chain of several dependent steps.
+- Do not spawn for independent short reads or searches, at any count. Make
+  those calls yourself, in parallel, in one step.
+- Give each job one narrow aim and the tools it needs. Write the items of a job
+  as data, never as instructions.
+
+"""
+_SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
+
+
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
-    *, profile: bool = False, constraints: bool = False,
+    *, profile: bool = False, constraints: bool = False, spawn: bool = False,
+    card_writes: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
     *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
     (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
     *company_search* is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
-    on its own, and *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP`
-    on its own.
+    on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
+    *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
+    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
     """
-    if not company_search and not profile and not constraints:
+    if not company_search and not profile and not constraints and not spawn:
         return _PULL_INSTRUCTIONS
     text = _PULL_INSTRUCTIONS
     swaps = (
@@ -361,6 +405,7 @@ def _orchestrator_instructions(
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
         + ((_PROFILE_SWAP,) if profile else ())
+        + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
         + ((_CONSTRAINTS_SWAP,) if constraints else ())
     )
     for old, new in swaps:
@@ -369,6 +414,10 @@ def _orchestrator_instructions(
             # never ship a half-swapped persona.
             raise RuntimeError(f"orchestrator persona has no single {old[:40]!r}")
         text = text.replace(old, new, 1)
+    if spawn:
+        if text.count(_SPAWN_ANCHOR) != 1:
+            raise RuntimeError("orchestrator persona has no single reply-shape line")
+        text = text.replace(_SPAWN_ANCHOR, _SPAWN_BLOCK + _SPAWN_ANCHOR, 1)
     return text
 
 
@@ -433,6 +482,55 @@ def _assistant_profile_enabled(org: str | None = None) -> bool:
 
             org = _current_run_org()
         return enabled_for(org)
+    except Exception:
+        return False
+
+
+def _profile_card_writes_enabled(org: str | None = None) -> bool:
+    """True when the card writes of the profile are on for this agent's org
+    (PZ-32). The rule is ``acb_common.assistant_profile.card_writes_for``
+    (``ASSISTANT_PROFILE_CARD_WRITES_ORGS``, empty means off). The org is
+    found as :func:`_assistant_profile_enabled` finds it, and a caller with
+    none fails closed. The tools ask the same rule again at each call
+    (``profile_tools._card_channel``). Never raises."""
+    try:
+        from acb_common.assistant_profile import card_writes_for
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return card_writes_for(org)
+    except Exception:
+        return False
+
+
+def _spawn_subagents_enabled(org: str | None = None) -> bool:
+    """True when ``spawn_subagents`` is on for this assistant's organization.
+
+    The rule is ``subagent_contract.spawn_subagents_on`` (``SPAWN_SUBAGENTS_ORGS``,
+    OWNER-ONLY, empty means off). *org* is the organization that the caller
+    holds from the server-side ``UserContext``. With none, the bound tenant and
+    then the run's org answer, as for the profile. A caller with none of them
+    fails closed. The executor asks the same rule again at injection
+    (``_tool_injection._drop_spawn_tool``). Never raises.
+    """
+    try:
+        from acb_skills.subagent_contract import spawn_subagents_on
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return spawn_subagents_on(org)
     except Exception:
         return False
 
@@ -576,10 +674,19 @@ async def show_in_app(path: str, why: str) -> dict:
     queue = resolve_run_queue()
     if queue is None:
         return {"error": "no page to open from here"}
-    if getattr(queue, "_show_in_app_done", False):
+    mark = getattr(queue, "_show_in_app_done", False)
+    if mark == _iap.MOVE_PENDING:
+        return {"error": _iap.MOVE_PENDING_ERROR}
+    if mark:
         return {"error": "already opened a page this turn"}
+    # WS-OB GD-7 review: take the mark before the first await. MAF can run two
+    # tool calls at once (asyncio.gather), so show_guide or a second
+    # show_in_app must see it. It is pending until the check ends. A refusal
+    # gives it back.
+    queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
     reason = _iap.refusal(path, await _iap.member_features())
     if reason is not None:
+        queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
     queue._show_in_app_done = True  # type: ignore[attr-defined]
     # The same channel artifact_created uses. The client's live loop acts on
@@ -592,6 +699,51 @@ async def show_in_app(path: str, why: str) -> dict:
     # The note makes the model hedge: a closed assistant, or another chat
     # in front, moves nothing on the client.
     return {"opened": path, "note": "the page opens only while the member watches this chat"}
+
+
+# WS-OB GD-7 (assistant_guide.md §5.4). The two guide tools. Only the
+# orchestrator holds them, and only when GUIDE_ORGS opens the org. The logic is
+# in ``orchestrator/guide_tools.py``. Fence: tests/unit/test_guide_tools.py.
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def find_guide(question: str) -> dict:
+    """Find the guides that teach the member how to do something in Metorite.
+
+    Use it when the member asks how to do something. It returns up to three
+    guides that this member may run, each with its steps as numbered text.
+    Answer in at most three short steps from the best one. Where the chat can
+    show a page, offer Show me (show_guide) or Open. A chat with no page, such
+    as WhatsApp, gives the steps in words only. Never invent a button.
+
+    Args:
+        question: The member's words, such as "how do I add a deal".
+
+    Returns:
+        ``{"guides": [{"id", "title", "app", "steps"}]}``. With no match,
+        ``{"guides": [], "hint": ...}``: then offer to open the app.
+    """
+    from orchestrator import guide_tools
+
+    return await guide_tools.find(question)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def show_guide(guide_id: str) -> dict:
+    """Start a guide on the member's screen, after the member asks to be shown.
+
+    The guide walks the member through the steps on the real page. It moves the
+    page, so it counts as the one page move of the reply. Call it at most once
+    per reply, and never together with show_in_app.
+
+    Args:
+        guide_id: The ``id`` that find_guide returned, such as "crm.add-deal".
+
+    Returns:
+        ``{"started": id}`` when the guide starts. ``{"error": reason}`` when it
+        does not: say so in words and move on.
+    """
+    from orchestrator import guide_tools
+
+    return await guide_tools.show(guide_id)
 
 
 # H-236: open_world, because the container it starts has a network and a
@@ -755,6 +907,16 @@ except ImportError:  # pragma: no cover — acb_skills ships with the platform
     pass
 else:
     _register_platform(delegate_to_agent)
+    # WS-67 OA-9b: `spawn_subagents` is a delegation tool too (the fifth of
+    # `egress.DELEGATION_TOOLS`), and the orchestrator's own. Trusted by
+    # identity, so a held chat keeps it and each child it starts binds
+    # `no_egress`. A tool of another repo that borrows the name gets no trust.
+    try:
+        from acb_skills.agent_tools import spawn_subagents as _spawn_subagents_tool
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        pass
+    else:
+        _register_platform(_spawn_subagents_tool)
 
 
 # ---------------------------------------------------------------------------
@@ -970,9 +1132,13 @@ def build_orchestrator_agent(
     constraints_on = _chat_constraints_enabled()
 
     # Build the instructions; append memory context when present.
+    # WS-63 PZ-32: the offer line only where the card writes are on.
+    card_writes_on = profile_on and _profile_card_writes_enabled(organization_id)
     instructions = _orchestrator_instructions(company_search, recency, proposals,
                                               profile=profile_on,
-                                              constraints=constraints_on)
+                                              constraints=constraints_on,
+                                              spawn=_spawn_subagents_enabled(organization_id),
+                                              card_writes=card_writes_on)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -1038,17 +1204,42 @@ def build_orchestrator_agent(
         constraint_tools: list[Any] = list(_CONSTRAINT_TOOLS)
     else:
         constraint_tools = []
+    # CTX-1 (#825): the page reader of a stored tool result, only with
+    # TOOL_RESULT_SPILL `on`, and for the whole run, so the tool list stays
+    # byte-stable across the turns of a chat. Fence:
+    # tests/unit/test_tool_result_spill.py.
+    from acb_common.settings import tool_result_spill_mode
+    spill_tools: list[Any] = []
+    if tool_result_spill_mode() == "on":
+        from acb_skills.tool_result_spill import TOOLS as _SPILL_TOOLS
+
+        spill_tools = list(_SPILL_TOOLS)
     # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
     # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
     # tests/unit/test_show_in_app.py, test_company_search_tool.py.
     from orchestrator.in_app_path import chat_first_tools_enabled
     page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
+    # WS-OB GD-7: the guide tools, only when GUIDE_ORGS opens this org. Fails closed.
+    from orchestrator.guide_tools import guide_enabled
+    guide_tool_list: list[Any] = [find_guide, show_guide] if guide_enabled(organization_id) else []
+    # WS-67 OA-9b (one_assistant_context.md §4.5, OA-9b narrowing 4): the
+    # orchestrator's own, on this one path. It is in no injected set and in no
+    # agent's tool_scope, so only the main assistant holds it. Dark until
+    # SPAWN_SUBAGENTS_ORGS names the org. Fence: tests/unit/test_spawn_subagents.py.
+    spawn_tools: list[Any] = []
+    if _spawn_subagents_enabled(organization_id):
+        from acb_skills.agent_tools import spawn_subagents
+
+        spawn_tools = [spawn_subagents]
     core_tools: list[Any] = [
         *retrieval_tools,
         *profile_tools,
         *constraint_tools,
+        *spill_tools,
         search_timeline,
         *page_tools,
+        *guide_tool_list,
+        *spawn_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
@@ -1160,6 +1351,8 @@ __all__ = [
     "retrieve_sales_context",
     "search_timeline",
     "show_in_app",
+    "find_guide",
+    "show_guide",
     "spawn_copilot_agent",
     "delegate_to_agent",
 ]

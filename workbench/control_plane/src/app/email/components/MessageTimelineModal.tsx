@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import type { MessageTimeline, MessageTimelineEvent } from "../lib/types";
 import { getMessageTimeline } from "../lib/api";
 import { fullDateLabel } from "../lib/utils";
+import { GONE_MAIL_LABEL, isGoneMailSkip, showActionErrors } from "./automation/ai-settings/actionFormat";
 
 export function MessageTimelineModal({
   messageId,
@@ -145,7 +146,7 @@ function TimelineRow({
             ))}
           </div>
         )}
-        {ev.action_errors && ev.action_errors.length > 0 && (
+        {showActionErrors(isGoneMailSkip(ev), ev.action_errors?.length ?? 0) && ev.action_errors && (
           <div className="mt-1 space-y-0.5">
             {ev.action_errors.map((e, i) => (
               <div key={i} className="text-[10px] text-destructive">
@@ -175,10 +176,11 @@ function rowIcon(ev: MessageTimelineEvent): {
   return { icon: themedIcon("CheckCircle2"), tint: "text-emerald-500" };
 }
 
-function rowTitle(ev: MessageTimelineEvent): string {
+export function rowTitle(ev: MessageTimelineEvent): string {
   if (ev.kind === "received")
     return ev.from ? `Received from ${ev.from}` : "Received";
-  if (ev.kind === "skipped") return "Checked — no rule matched";
+  if (ev.kind === "skipped")
+    return isGoneMailSkip(ev) ? GONE_MAIL_LABEL : "Checked — no rule matched";
   const name = ev.rule_name || "A rule";
   if (ev.status === "FAILED") return `${name} failed to apply`;
   if (ev.status === "UNDONE") return `${name} was undone`;

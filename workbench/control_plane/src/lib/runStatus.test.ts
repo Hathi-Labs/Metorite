@@ -633,3 +633,41 @@ describe("a new run starts with no backoff of the old one (review of #1171, P2)"
   });
 });
 
+
+describe("Stopped says what the run did (UXD-4b)", () => {
+  const start = (id: string, name = "update_task"): RunEvent => ({ type: "toolStart", at: T0 + 600, id, name });
+  const done = (id: string, name = "update_task", ok = true): RunEvent => ({ type: "toolDone", at: T0 + 700, id, name, ok });
+  const stoppedText = (s: RunStatus) => runViewText(runView(reduceRun(s, { type: "stop", at: T0 + 9_000 }), T0 + 9_001)!);
+
+  it("a run stopped after 2 of 5 writes reads 'made 2 of 5 changes'", () => {
+    let s = working();
+    for (const id of ["w1", "w2", "w3", "w4", "w5"]) s = run(s, start(id));
+    s = run(s, done("w1"), done("w2"));
+    expect(stoppedText(s)).toBe("Stopped \u00b7 made 2 of 5 changes");
+  });
+
+  it("a run that made no write reads 'Stopped'", () => {
+    expect(stoppedText(working())).toBe("Stopped");
+    expect(stoppedText(run(working(), start("w1")))).toBe("Stopped");
+  });
+
+  it("an unknown total reads 'made 2 changes'", () => {
+    expect(stoppedText(run(working(), done("w1"), done("w2")))).toBe("Stopped \u00b7 made 2 changes");
+    expect(stoppedText(run(working(), start("w1"), done("w1")))).toBe("Stopped \u00b7 made 1 change");
+  });
+
+  it("counts a replayed id once, and ignores reads and failed writes", () => {
+    const s = run(
+      working(), start("w1"), start("w1"), done("w1"), done("w1"),
+      start("r1", "search_tasks"), done("r1", "search_tasks"),
+      start("w2"), done("w2", "update_task", false),
+    );
+    expect(s.writesAsked).toEqual(["w1", "w2"]);
+    expect(s.writesDone).toEqual(["w1"]);
+  });
+
+  it("a new send clears the count", () => {
+    const s = run(working(), start("w1"), done("w1"), send(T0 + 5_000));
+    expect(s.writesDone).toEqual([]);
+  });
+});

@@ -126,7 +126,6 @@ const SEAM_EXCEPTIONS: Partial<Record<Seam, string[]>> = {
  */
 const SEAM_DEBT: Record<Seam, Record<string, number>> = {
   cmdk: {
-    "app/email/": 1, // page.tsx, its own listener
     "app/projects/": 3, // lib/search.ts (the predicate, 2) and page.tsx (1)
     "app/tasks/": 1, // page.tsx
   },
@@ -141,7 +140,6 @@ const SEAM_DEBT: Record<Seam, Record<string, number>> = {
     "app/tasks/": 2, // components/AssistantRail.tsx and page.tsx
   },
   palette: {
-    "app/email/": 1,
     "app/projects/": 1,
     "app/tasks/": 1,
   },

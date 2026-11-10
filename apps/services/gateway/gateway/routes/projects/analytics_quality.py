@@ -352,7 +352,7 @@ def failing_prs_sql(open_where: str, *, runs_on: bool = True) -> str:
         # The newest run names the agent and its member, as `waiting` reads it.
         "  LEFT JOIN LATERAL ("
         "    SELECT x.client_via, x.member_email FROM pm_agent_runs x"
-        "     WHERE x.task_id = t.id"
+        "     WHERE x.task_id = t.id AND x.task_id IS NOT NULL"
         "     ORDER BY x.created_at DESC, x.id DESC LIMIT 1"
         "  ) nr ON TRUE"
         if runs_on
@@ -539,6 +539,7 @@ def retried_sql(past_where: str) -> str:
         f"                      AND r2.created_at > r.ended_at) AS retried"
         f"  ) x"
         f" WHERE ({past_where})"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND r.status = 'failed'"
         f"   AND r.ended_at IS NOT NULL"
         f"   AND r.ended_at >= {_BEFORE_FROM}"
@@ -558,7 +559,8 @@ def quality_seen_sql(past_where: str) -> str:
         f"            WHERE ({past_where}) AND a.type = 'status_change'"
         f"              AND a.deleted_at IS NULL AND {REOPEN_MOVE_SQL})"
         f" OR EXISTS (SELECT 1 FROM pm_agent_runs r JOIN pm_tasks t ON t.id = r.task_id"
-        f"            WHERE ({past_where}) AND r.status = 'failed')"
+        f"            WHERE ({past_where}) AND r.task_id IS NOT NULL"
+        f"              AND r.status = 'failed')"
         f") AS seen"
     )
 

@@ -219,7 +219,7 @@ async def test_a_delegated_share_copies_the_file_into_the_chat(runs) -> None:
             await _settle()
     copy = f"outputs/{slug}/reports/summary (1).md"
     assert [a["path"] for a in first["artifacts"]] == [copy], first
-    assert first["download_url"] == f"/api/agent/workspace/{t}/file?path={copy}"
+    assert first["download_url"] == f"/api/agent/workspace/{t}/file?path={copy.replace(' (1)', '%20%281%29')}"
     assert theirs.read_text(encoding="utf-8") == "THE CHAT'S OWN"
     assert (ws / copy).read_text(encoding="utf-8") == BRIEF
     # The same bytes again: the same copy, never a third file.
@@ -415,10 +415,19 @@ from tests.unit.test_delegation_no_egress import (  # noqa: E402
 @pytest.fixture
 def no_db(monkeypatch):
     """The registry block and the skill toggles read the database. Stub both,
-    as the H-236 suite does, so the executor tests open no connection."""
+    as the H-236 suite does, so the executor tests open no connection.
+
+    ⚠️ The run still reads the member's access (``executor.
+    _integration_authorizer``) on whatever database DATABASE_URL names. A
+    database with no access tables there sets acb_auth's process-wide
+    ``_tables_missing`` latch, and a later suite then resolves every member
+    as inactive (task 1332). ``monkeypatch`` restores the latch after the test.
+    """
+    import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
     from orchestrator import _tool_injection as ti
 
+    monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
     monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
     ti._build_registry_block.cache_clear()

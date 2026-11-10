@@ -46,6 +46,7 @@ import FieldsPanel from "./FieldsPanel";
 import FilterBar from "./FilterBar";
 import QuickCreateModal from "./QuickCreateModal";
 import RecordList from "./RecordList";
+import { classicMarkup } from "@/lib/theme/classicMarkup";
 
 const flags = vi.hoisted(() => ({ openFalse: false }));
 
@@ -191,8 +192,10 @@ if (OUT) {
       it(`draws ${surface} as the golden file`, () => {
         const golden = readFileSync(join(GOLDEN, `${surface}.html`), "utf8");
         expect(golden.length).toBeGreaterThan(200);
-        expect(draw(surface, OFF)).toBe(golden);
-        expect(draw(surface, null)).toBe(golden);
+        // Compared without glass-look classes (D143): they apply only under
+        // <html data-look="glass">, so the classic markup must equal the golden.
+        expect(classicMarkup(draw(surface, OFF), { collapseSpaces: true })).toBe(classicMarkup(golden, { collapseSpaces: true }));
+        expect(classicMarkup(draw(surface, null), { collapseSpaces: true })).toBe(classicMarkup(golden, { collapseSpaces: true }));
       });
     }
 

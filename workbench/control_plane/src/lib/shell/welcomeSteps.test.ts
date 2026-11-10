@@ -8,7 +8,14 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 
-import { __resetWelcomeForTests, layoutQuestionOpen, setWelcomeOpen, skipsAppsStep, welcomeOpen } from "./welcomeSteps";
+import {
+  __resetWelcomeForTests,
+  layoutQuestionOpen,
+  setWelcomeOpen,
+  skipsAppsStep,
+  welcomeOpen,
+  withoutWelcome,
+} from "./welcomeSteps";
 
 const BASE = { navOn: true, asking: true, reopened: false, step: "ask" as const, accessLoading: false };
 
@@ -42,6 +49,14 @@ describe("step 2 on a phone (WS-62 CF-2, chat_first_surface.md §4.7)", () => {
     expect(skipsAppsStep({ chatFirst: true, phone: false })).toBe(false);
     expect(skipsAppsStep({ chatFirst: false, phone: true })).toBe(false);
     expect(skipsAppsStep({ chatFirst: false, phone: false })).toBe(false);
+  });
+});
+
+describe("the founder's mark leaves the address (OB-0)", () => {
+  it("drops only the welcome mark, and keeps the path, the other marks and the hash", () => {
+    expect(withoutWelcome("https://app.metorite.com/?welcome=new-org")).toBe("/");
+    expect(withoutWelcome("https://app.metorite.com/projects?welcome=new-org&task=7#c1")).toBe("/projects?task=7#c1");
+    expect(withoutWelcome("https://app.metorite.com/settings")).toBe("/settings");
   });
 });
 

@@ -170,6 +170,105 @@ async def test_authorizer_filters_an_active_member(monkeypatch) -> None:
     assert not predicate("zoho-crm")
 
 
+# ── MCP-C1: the member comes from the session ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_authorizer_filters_the_session_member_with_no_body_claim(
+    monkeypatch,
+) -> None:
+    """🔴 MCP-C1. The stream route removes the body's ``user_email`` (H-337).
+    Before the fix, the check read the body only, found nobody, and returned
+    ``None``: no filter in any web chat. The session's member must be found."""
+    import orchestrator.executor as executor
+    import acb_auth
+
+    asked: list[str] = []
+
+    async def _active(email, **kwargs):
+        asked.append(email)
+        return build_access(
+            ["integrations:use:*"], [("integrations:use:zoho-crm", "deny")]
+        )
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _active)
+    predicate = await executor._integration_authorizer(
+        {"message": "hi"}, session_user="priya@fracktal.in",
+    )
+    assert predicate is not None, "a web chat member got no integration filter"
+    assert asked == ["priya@fracktal.in"]
+    assert predicate("clickup")
+    assert not predicate("zoho-crm")
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_session_member_gets_no_credential(monkeypatch) -> None:
+    """Review of MCP-C1 (P3). A session names a person, so a member who does
+    not resolve active (a degraded read, a suspension) gets nothing. Only a
+    run with no session keeps the old ``None``, which means every credential."""
+    import orchestrator.executor as executor
+    import acb_auth
+
+    async def _inactive(email, **kwargs):
+        return build_access(["integrations:use:*"], is_active=False)
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _inactive)
+    predicate = await executor._integration_authorizer(
+        {"message": "hi"}, session_user="ghost@fracktal.in",
+    )
+    assert predicate is not None, "an inactive session member got every credential"
+    assert not predicate("clickup")
+    # The same address as a body claim with no session: the platform's run.
+    assert await executor._integration_authorizer(
+        {"user_email": "ghost@fracktal.in"}
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_the_session_member_wins_over_a_body_claim(monkeypatch) -> None:
+    """A body that names another member never picks whose access applies."""
+    import orchestrator.executor as executor
+    import acb_auth
+
+    asked: list[str] = []
+
+    async def _active(email, **kwargs):
+        asked.append(email)
+        return build_access(["integrations:use:*"])
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _active)
+    await executor._integration_authorizer(
+        {"user_email": "mallory@fracktal.in"}, session_user="priya@fracktal.in",
+    )
+    assert asked == ["priya@fracktal.in"]
+
+
+def test_each_run_path_hands_the_session_member_to_the_check() -> None:
+    """MCP-C1 source fence: each call of the check in the executor passes
+    ``session_user``. A call without it reads the body alone, and the stream
+    route has removed the body's claim (H-337). The route's own half, that it
+    passes ``session_user=_session_member(user)``, is fenced in
+    ``tests/unit/test_usage_attribution.py``."""
+    import ast
+    from pathlib import Path
+
+    import orchestrator.executor as executor
+
+    tree = ast.parse(Path(executor.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_integration_authorizer"
+    ]
+    assert len(calls) >= 2, "the two run paths no longer call the check"
+    for call in calls:
+        passed = {kw.arg: kw.value for kw in call.keywords}
+        value = passed.get("session_user")
+        assert isinstance(value, ast.Name) and value.id == "session_user", (
+            f"line {call.lineno}: the check gets no session member")
+
+
 # ── Org memory gate ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

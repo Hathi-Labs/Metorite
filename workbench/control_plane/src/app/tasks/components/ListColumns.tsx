@@ -3,7 +3,7 @@
 import Icon from "@/components/Icon";
 import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
-import { durationLabel, isOverdue, relativeTime } from "../lib/utils";
+import { dueLabel, durationLabel, isOverdue } from "../lib/utils";
 import { PriorityBadge } from "./PriorityControls";
 import { ACTION_MODE_META, actionMode, type ActionMode } from "../lib/priority";
 import { MODE_ICON } from "../lib/priorityIcons";
@@ -17,7 +17,7 @@ import { taskMeta } from "@/lib/taskCard";
 // column instead of wrapping under the title. Mobile never uses these (it keeps
 // the stacked TaskCard row); see TaskListGrouped's sm: breakpoint.
 
-// Due/overdue here read the REAL clock (isOverdue and relativeTime both default
+// Due/overdue here read the REAL clock (isOverdue and dueLabel both default
 // nowMs to Date.now()). They used to be passed a frozen `MOCK_NOW` demo
 // constant, which made every due column progressively wrong.
 
@@ -203,7 +203,7 @@ function CellBody({
           ) : (
             <Icon name="Clock" className="h-3 w-3" />
           )}
-          {relativeTime(item.dueAt)}
+          {dueLabel(item.dueAt)}
         </span>
       ) : null;
     case "attachments":

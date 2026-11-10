@@ -38,6 +38,11 @@ export const STORAGE_KEYS = {
    * the built-in default.
    */
   orgDensity: "cc-density-org",
+  /**
+   * The member's Design choice (D143): `classic`, or absent for glass. Read
+   * only when the build carries the glass gate (`look.ts`).
+   */
+  look: "cc-look",
 } as const;
 
 // ⚠️ `cc-theme`, `cc-theme-org` and the `data-theme` attribute were removed

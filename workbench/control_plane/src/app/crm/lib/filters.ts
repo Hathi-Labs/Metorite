@@ -9,7 +9,10 @@
 // because a shared list component is what would send it. So the chips a list
 // offers are derived from the entity, and the query is built from the chips.
 
+import { orderStageList } from "./board";
 import { pickable } from "./emptyStages";
+import type { CrmMode } from "./connect";
+import type { CardSort } from "./nextActivity";
 import { RANGE_KEYS, type CrmView } from "./urlState";
 import type { EntitySlug, Status } from "./types";
 
@@ -51,10 +54,34 @@ export type ListQuery = {
   close_from?: string;
   close_to?: string;
   /** CRM-X3, the board only: the order of the cards in a deal lane. */
-  card_sort?: "stage_age" | "next_activity";
+  card_sort?: CardSort;
+  /** The board only: read ONE lane from `lane_offset` ("Show more"). */
+  lane_status_id?: string;
+  lane_offset?: number;
   /** CRM-Q8: `custom.<key>.in` = the chosen options, joined by commas. */
   [custom: `custom.${string}`]: string | undefined;
 };
+
+/**
+ * The search of a board (CRM-X1). The deals board takes the `?q=` of the list,
+ * and the gateway applies the one search predicate to every lane.
+ */
+export function boardSearchQuery(view: CrmView): ListQuery {
+  const q = view.q.trim();
+  return q ? { q } : {};
+}
+
+/**
+ * The lane ids and the new rows of a "Show more" answer: the rows on screen,
+ * then the next page's rows that are not on screen. The totals are the lane's
+ * own and never change with a page.
+ */
+export function appendLaneRows<L extends { rows: { id?: unknown }[] }>(
+  lane: L,
+  next: readonly { id?: unknown }[],
+): L {
+  return { ...lane, rows: appendPage(lane.rows, next) };
+}
 
 /** The filters that are the same on a list and on a board (CRM-Q8). */
 export function extraQuery(entity: EntitySlug, view: CrmView): ListQuery {
@@ -185,12 +212,15 @@ export type Chip = { id: string; label: string; count?: number };
 export function chipsFor(
   entity: EntitySlug,
   statuses: Status[],
-  view: CrmView
+  view: CrmView,
+  mode: CrmMode = null,
+  places?: ReadonlyMap<string, number>
 ): Chip[] {
   if (!hasPipeline(entity)) return [];
   const chips: Chip[] = [{ id: "all", label: "All" }];
   // CRM-C3: a hidden stage has no chip, unless the view is filtered to it.
-  const sorted = [...statuses].sort((a, b) => a.position - b.position);
+  // Task #838: the board's order (`orderStageList`), not the raw `position`.
+  const sorted = orderStageList(entity, statuses, mode, places);
   for (const status of pickable(sorted, view.statusId)) {
     chips.push({ id: status.id, label: status.name });
   }

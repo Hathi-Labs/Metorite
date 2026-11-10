@@ -110,6 +110,20 @@ def test_the_refresh_drops_only_the_public_schema_entry() -> None:
     assert kept == toc[1:]
 
 
+def test_the_refresh_restore_gives_an_index_build_256mb() -> None:
+    """LD-8c: the restore builds a vector index that needs more than the 64 MB
+    default of maintenance_work_mem (incident 2026-10-31). `env` must set
+    PGOPTIONS INSIDE the container, so the restore reads it. Mutation: drop
+    the `env "PGOPTIONS=..."` part, and this fails."""
+    joined = _code(_REFRESH).replace("\\\n", " ")
+    restores = [ln for ln in joined.splitlines()
+                if re.search(r"\bpg_restore\b", ln) and " -d postgres" in ln]
+    assert len(restores) == 1, restores
+    assert re.search(
+        r'docker exec "\$ctr" env "PGOPTIONS=-c maintenance_work_mem=256MB"\s+pg_restore ',
+        restores[0]), restores[0]
+
+
 def test_the_staging_env_names_the_gateway_port() -> None:
     """The deploy's health probe reads GATEWAY_PORT (default 8000), and the unit
     listens on 8080. Without the name, the first live apply failed its probe
@@ -291,6 +305,16 @@ def test_the_refresh_holds_the_deploy_lock_while_the_database_is_away() -> None:
     take = body.index("flock -w 1800 9")
     assert take < body.index("systemctl stop") < body.index("DROP DATABASE")
     assert body.index("pg_restore") < body.index("flock -u 9") < body.index("vps_pull.sh")
+
+
+def test_the_refresh_deletes_every_copied_push_subscription_before_the_deploy() -> None:
+    """WS-66 RE-9b: staging and production hold one VAPID key pair. A copied
+    subscription would let a reminder that fires on staging push to a real
+    member's phone. The delete runs after the restore and before the deploy
+    starts the gateway again, so a later subscription on staging stays."""
+    body = _code(_REFRESH)
+    delete = body.index('dpsql -d postgres -c "DELETE FROM public.push_subscriptions"')
+    assert body.rindex("pg_restore") < delete < body.index("vps_pull.sh")
 
 
 def test_the_refresh_proves_the_serving_commit() -> None:

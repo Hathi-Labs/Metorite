@@ -45,6 +45,9 @@ vi.mock("@/components/AccessProvider", () => ({
   }),
 }));
 
+// "Take the tour" goes to `/?guide=home.tour` with the router (WS-OB GD-5a).
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
 vi.mock("next-auth/react", () => ({
   useSession: () => ({ data: { user: { name: "Asha Rao", email: "asha@example.com" } } }),
   signOut: vi.fn(async () => undefined),
@@ -141,9 +144,12 @@ describe("the foot is the account row", () => {
   });
 
   it("folded: the avatar alone, in the geometry of a folded nav row", () => {
-    expect(text(folded)).toBe("A");
+    // The avatar shows. The name waits, hidden from sight and from assistive
+    // tech, for the rail to peek (hover to expand, owner 2026-11-01).
+    expect(text(folded).startsWith("A")).toBe(true);
+    expect(folded).toMatch(/<span data-rail-label="" aria-hidden="true"/);
     expect(folded).toMatch(/data-account-foot="" class="[^"]*\bp-2\b/);
-    expect(folded).toMatch(/<button[^>]*class="[^"]*justify-center p-1\.5/);
+    expect(folded).toMatch(/<button[^>]*class="[^"]*w-full justify-center p-1\.5/);
   });
 });
 
@@ -210,8 +216,9 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
 
   it("draws its rows from accountMenu alone", () => {
     const foot = footSource();
-    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages, assistant \}\)/);
-    expect(foot).not.toMatch(/accountLinks|MY_ACCESS|"\/people\/me"|"\/settings\/appearance"|Change my layout/);
+    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages, assistant, tour \}\)/);
+    // GD-5a: "Take the tour" is a row of the list (`TAKE_TOUR_ITEM`), never one drawn here.
+    expect(foot).not.toMatch(/accountLinks|MY_ACCESS|"\/people\/me"|"\/settings\/appearance"|Change my layout|Take the tour/);
   });
 
   // ⚠️ Fails CLOSED (review of 2026-10-12, P1). Moved, not rewritten.

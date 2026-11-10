@@ -13,6 +13,7 @@ import RailRow from "@/components/ui/RailRow";
 import { boundaryKey } from "../lib/boundary";
 import type { CrmMode } from "../lib/connect";
 import { FIELD_MAP_TITLE } from "../lib/fieldMap";
+import { CONVERT_MAPPING_TITLE } from "./ConvertMappingCard";
 import { pushView } from "../lib/history";
 import { draftOf } from "../lib/settings";
 import {
@@ -38,7 +39,7 @@ import {
   viewHref,
 } from "../lib/urlState";
 import CrmRail, { SettingsSectionRows } from "./CrmRail";
-import PipelineSettings from "./PipelineSettings";
+import PipelineSettings, { MirrorStageForm, NativeStageForm } from "./PipelineSettings";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const ids = (list: { id: string }[]) => list.map((s) => s.id);
@@ -81,7 +82,6 @@ function settings(
       saving: false,
       onSaveStatus: async () => true,
       onRemoveStatus: async () => true,
-      onReorderStatuses: async () => undefined,
       onSaveLostReason: async () => true,
       onRemoveLostReason: async () => true,
       onReorderLostReasons: async () => undefined,
@@ -106,6 +106,8 @@ describe("the sections a caller sees", () => {
       "field-mapping",
       "suggestions",
       "sync-health",
+      // CRM-M1: the Change history, last, for an admin in each mode.
+      "change-history",
     ]);
     // Native with no studio: the Field mapping section is hidden (CRM-C6a).
     for (const mode of ["native", null] as CrmMode[]) {
@@ -117,6 +119,7 @@ describe("the sections a caller sees", () => {
           "lead-statuses",
           "lost-reasons",
           "fields",
+          "change-history",
         ]);
       }
     }
@@ -132,6 +135,7 @@ describe("the sections a caller sees", () => {
         "lost-reasons",
         "fields",
         "field-mapping",
+        "change-history",
       ]);
       // A member never opens it, whatever the flag says.
       expect(ids(visibleSections({ isAdmin: false, mode, studioAdmin: true }))).not.toContain(
@@ -146,7 +150,8 @@ describe("the sections a caller sees", () => {
 
   it("draws the conversion mapping in Native mode and the Field map in Mirror mode", () => {
     const native = settings(true, "native", "field-mapping", {}, true);
-    expect(native).toContain(">Field mapping</h2>");
+    expect(native).toContain(`>${CONVERT_MAPPING_TITLE}</h2>`);
+    expect(native).not.toContain(">Field mapping</h2>");
     expect(inner(settings(true, "native", "field-mapping"))).toBe("");
     // The Q7a Field map card stays Mirror only (PipelineSettings.tsx:301).
     expect(read("./PipelineSettings.tsx")).toContain(
@@ -172,6 +177,10 @@ describe("the sections a caller sees", () => {
     for (const isAdmin of [true, false]) {
       for (const mode of MODES) {
         for (const section of visibleSections({ isAdmin, mode })) {
+          // CRM-M1: the page draws the Change history card itself
+          // (`ChangeHistory.tsx`), so PipelineSettings draws none for it.
+          // `crmM1.test.ts` holds that card and the branch of the page.
+          if (section.id === "change-history") continue;
           const html = settings(isAdmin, mode, section.id as SettingsSectionId);
           expect(html, `${section.id} ${isAdmin} ${mode}`).toMatch(/<section/);
         }
@@ -355,7 +364,8 @@ describe("PipelineSettings with no section", () => {
 
   it("still draws the cards that the earlier slices fence", () => {
     const admin = settings(true, "mirror");
-    for (const text of ["Setup hub", "Access card", "Reset order to Zoho", "Lost reasons", "Sync health"]) {
+    // CRM-U11: "Reset order to Zoho" became the "Same as Zoho" choice.
+    for (const text of ["Setup hub", "Access card", "Same as Zoho", "Lost reasons", "Sync health"]) {
       expect(admin).toContain(text);
     }
   });
@@ -475,23 +485,43 @@ describe("a draft across a section change", () => {
     return settings(...args);
   };
 
+  /**
+   * The Edit dialog of a stage (CRM-U11). `Modal` portals, so the server
+   * render of the page holds no dialog, and the test renders the form. The
+   * row inputs moved there, and their drafts with them.
+   */
+  const dialogNow = (mode: CrmMode, deal: Status) => {
+    initial.settingsDrafts = useCrmStore.getState().settingsDrafts;
+    const props = { kind: "deal" as const, status: deal, saving: false, onSave: async () => true, onCancel: () => undefined };
+    return renderToStaticMarkup(
+      mode === "mirror"
+        ? createElement(MirrorStageForm, props)
+        : createElement(NativeStageForm, { ...props, onAdd: async () => true, onRemove: async () => true }),
+    );
+  };
+
   it("comes back with the member, until a re-read replaces the row", () => {
     const store = useCrmStore.getState();
-    const cases = [
-      { key: `status:deal:${STATUS.id}`, base: STATUS, value: { ...STATUS, name: "Qualified draft" }, text: "Qualified draft", admin: false, mode: "native" as CrmMode, section: "stages" as const },
-      { key: `overlay:deal:${STATUS.id}`, base: STATUS, value: { ...STATUS, ui_probability: 42 }, text: "42", admin: true, mode: "mirror" as CrmMode, section: "stages" as const },
-      { key: `reason:${REASON.id}`, base: REASON.label, value: "Price draft", text: "Price draft", admin: false, mode: "native" as CrmMode, section: "lost-reasons" as const },
+    const stages = [
+      { key: `status:deal:${STATUS.id}`, base: STATUS, value: { ...STATUS, name: "Qualified draft" }, text: "Qualified draft", mode: "native" as CrmMode },
+      { key: `overlay:deal:${STATUS.id}`, base: STATUS, value: { ...STATUS, ui_probability: 42 }, text: "42", mode: "mirror" as CrmMode },
     ];
+    const reason = { key: `reason:${REASON.id}`, base: REASON.label, value: "Price draft", text: "Price draft" };
     try {
-      for (const c of cases) {
+      for (const c of stages) {
         store.setSettingsDraft(c.key, { base: c.base, value: c.value });
-        expect(typed(settingsNow(c.admin, c.mode, c.section), c.text), c.key).toBe(true);
-        // Another section unmounts the row. The store keeps the draft.
-        expect(typed(settingsNow(c.admin, c.mode, "lead-statuses"), c.text), c.key).toBe(false);
-        expect(typed(settingsNow(c.admin, c.mode, c.section), c.text), c.key).toBe(true);
+        // The dialog shows the draft each time it opens on the same stage.
+        expect(typed(dialogNow(c.mode, STATUS), c.text), c.key).toBe(true);
+        expect(typed(dialogNow(c.mode, STATUS), c.text), c.key).toBe(true);
       }
+      store.setSettingsDraft(reason.key, { base: reason.base, value: reason.value });
+      expect(typed(settingsNow(false, "native", "lost-reasons"), reason.text)).toBe(true);
+      // Another section unmounts the row. The store keeps the draft.
+      expect(typed(settingsNow(false, "native", "lead-statuses"), reason.text)).toBe(false);
+      expect(typed(settingsNow(false, "native", "lost-reasons"), reason.text)).toBe(true);
       // A re-read brings new rows, and the drafts no longer apply.
-      expect(typed(settingsNow(false, "native", "stages", { deal: { ...STATUS } }), "Qualified draft")).toBe(false);
+      expect(typed(dialogNow("native", { ...STATUS }), "Qualified draft")).toBe(false);
+      expect(typed(dialogNow("mirror", { ...STATUS }), "42")).toBe(false);
       expect(typed(settingsNow(false, "native", "lost-reasons", { reason: { ...REASON } }), "Price draft")).toBe(true);
       expect(draftOf({ base: STATUS, value: "x" }, { ...STATUS })).toEqual({ ...STATUS });
     } finally {
@@ -517,8 +547,14 @@ describe("the card headings", () => {
       for (const mode of MODES) {
         for (const section of visibleSections({ isAdmin, mode, studioAdmin: true })) {
           if (section.id === "setup" || section.id === "access") continue;
+          // CRM-M1: the page draws the Change history card. `crmM1.test.ts`
+          // holds its heading.
+          if (section.id === "change-history") continue;
           const html = settings(isAdmin, mode, section.id as SettingsSectionId, {}, true);
-          expect(html, `${section.id} ${isAdmin} ${mode}`).toContain(`>${section.label}</h2>`);
+          // The Native conversion card says what it does, not "Field mapping" (CRM-U12).
+          const heading =
+            section.id === "field-mapping" && mode !== "mirror" ? CONVERT_MAPPING_TITLE : section.label;
+          expect(html, `${section.id} ${isAdmin} ${mode}`).toContain(`>${heading}</h2>`);
         }
       }
     }

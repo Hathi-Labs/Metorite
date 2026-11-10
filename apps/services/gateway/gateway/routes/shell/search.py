@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common.app_manifests.shell_manifest import load_gates
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.retrieval.sources import REGISTRY
 
@@ -94,14 +95,7 @@ PROVIDERS: dict[str, tuple[str, str, Callable[[UserContext, str], Awaitable[list
 }
 
 #: The pane each scope token names (`?scope=` from the bar's "in Email").
-SCOPE_APPS: dict[str, str] = {
-    "/email": "email",
-    "/projects": "tasks",
-    "/tasks": "tasks",
-    "/people": "people",
-    "/crm": "crm",
-    "/knowledge": "knowledge",
-}
+SCOPE_APPS: dict[str, str] = dict(load_gates().scope)
 
 
 def _order(scope: str | None) -> list[str]:

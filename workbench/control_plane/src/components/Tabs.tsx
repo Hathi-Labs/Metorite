@@ -49,6 +49,13 @@ export interface TabDef {
    * state change, and calling both would fire a redundant re-render.
    */
   href?: string;
+  /**
+   * The CRM record sheet names its Timeline tab as a guide anchor
+   * (`crm.timeline-tab`, WS-OB GD-10b). Only that call site sets it, and only
+   * the underline button reads it. Every other tab draws the same DOM as
+   * before. The attribute is a literal because fence F1 refuses an expression.
+   */
+  guideAnchor?: boolean;
 }
 
 export interface TabsProps {
@@ -130,6 +137,18 @@ export default function Tabs({
             >
               {inner}
             </Link>
+          ) : t.guideAnchor ? (
+            <button
+              key={t.id}
+              data-guide="crm.timeline-tab"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onTabChange(t.id)}
+              title={t.note}
+              className={cls}
+            >
+              {inner}
+            </button>
           ) : (
             <button
               key={t.id}
@@ -155,7 +174,9 @@ export default function Tabs({
       } ${CONTAINER} ${className}`}
     >
       <div
-        className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary/50"
+        // Glass (D143, GL-2): Aroh's TabBar, a capsule track holding capsule segments.
+        // GL-6: the track is 28 px, the toolbar size. Each segment is 24 px.
+        className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary/50 glass:rounded-full glass:bg-secondary glass:p-0.5"
         role="tablist"
       >
         {tabs.map((t) => {
@@ -167,9 +188,9 @@ export default function Tabs({
               aria-selected={active}
               onClick={() => onTabChange(t.id)}
               title={t.note}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium tech-transition whitespace-nowrap ${
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium tech-transition whitespace-nowrap glass:h-6 glass:rounded-full glass:px-3 glass:py-0 glass:text-footnote glass:pointer-coarse:h-9 ${
                 active
-                  ? "bg-card text-foreground shadow-sm"
+                  ? "bg-card text-foreground shadow-sm glass:bg-segment glass:shadow-md"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >

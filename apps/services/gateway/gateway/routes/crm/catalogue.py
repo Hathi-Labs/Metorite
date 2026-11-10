@@ -288,7 +288,7 @@ async def _load(
     from gateway.routes.crm.core import is_mirror_mode
     from gateway.routes.crm.fill_rank import labels_of
     from gateway.routes.crm.mapping_plans import approved_others, roles_of
-    from gateway.routes.crm.modules import mirrored_of
+    from gateway.routes.crm.modules import mirrored_modules, mirrored_of
 
     mirror = await is_mirror_mode(db, org)
     latest = await profiles.latest(db, org) if mirror else None
@@ -297,7 +297,13 @@ async def _load(
         row = (await db.execute(text(_CORE_COUNTS_SQL), {"org": org})).first()
         counts = {slug: int(getattr(row, slug, 0) or 0) for slug in CORE_ORDER} if row else {}
     if not mirror:
-        return "native", _core_sources(counts, None), {}, []
+        # CRM-Z10d: a Native org keeps the modules that hold records, and the
+        # AI catalogue lists them. No role and no stored item applies here.
+        sources = _core_sources(counts, None)
+        sources += await _module_sources(
+            db, org, await mirrored_modules(db), only, count=count,
+        )
+        return "native", sources, {}, []
     profile = latest.profile if latest is not None else {}
     labels = labels_of(profile.get("modules"))
     mirrored = mirrored_of(profile)

@@ -54,10 +54,16 @@ def legend() -> str:
     called a task due yesterday "not overdue", and listed overdue work as
     "due in the next seven days". Every read opens with this line, so every
     answer that compares dates has today beside it. UTC, because the member's
-    timezone would cost one more call per tool.
+    timezone would cost one more call per tool. Task 1649: the line says "UTC
+    date" and points at the "Now:" line of the turn context, which holds the
+    member's own day and time. The UTC day is one day behind that member for
+    hours each evening in India, and the old "Today is" wording hid it.
     """
     now = datetime.now(UTC)
-    return f"{DATA_LEGEND} Today is {now:%A} {now:%Y-%m-%d} (UTC)."
+    return (
+        f"{DATA_LEGEND} UTC date: {now:%A} {now:%Y-%m-%d}. "
+        "The member's own day and time are in the Now line of the context. They win."
+    )
 
 #: The largest page a list tool asks for. ``/projects/search`` caps at 50
 #: (``search.MAX_HITS``). The list routes cap at 100 (``core.MAX_PAGE_SIZE``),
@@ -273,6 +279,17 @@ async def project_summary(project_id: str = "") -> str:
         out.append("  " + " · ".join(facts))
         if node.get("description"):
             out.append(f"  description: {data(str(node['description'])[:600])}")
+    # WS-39 LP-1a: the newest update, the line the Overview draws. The key is
+    # there only while project updates are on for the organization.
+    latest = payload.get("latest_update")
+    if isinstance(latest, dict):
+        from skill_projects.inbox import UPDATE_HEALTHS  # inbox imports this module
+
+        health = UPDATE_HEALTHS.get(str(latest.get("health")), str(latest.get("health")))
+        out.append(
+            f"  latest update: {health} · by {data(latest.get('author') or '?')}"
+            f" · {latest.get('posted_at')} · {data(str(latest.get('body') or '')[:300])}"
+        )
     out.append(
         f"  tasks {payload.get('tasks', 0)} · overdue {payload.get('overdue', 0)}"
         f" · projects {payload.get('projects', 0)}"
@@ -640,15 +657,91 @@ async def _clock_line() -> str:
     return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
 
 
+#: The seconds that the plan read may take (SW-68a). The edge has the same limit.
+PLAN_ORDER_BUDGET_S = 2.0
+
+
+async def _plan_ordered(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """SW-68a: *rows* in the order of the plan engine, and the plan of each
+    task that sits under an epic. The gateway route does the ranking, so the
+    MCP ``my_work`` and this list use one rule (``plan_order.py``). A task
+    outside every epic keeps its place. ANY failure of the read (a timeout, a
+    connect or protocol error, a refusal, a body of the wrong shape) keeps
+    today's order. The plan is an aid and never hides the work."""
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows, {}, {}
+    try:
+        # The same 2 second limit as the edge: a slow read keeps today's order.
+        async with asyncio.timeout(PLAN_ORDER_BUDGET_S):
+            answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
+        if not isinstance(answer, dict):
+            return rows, {}, {}
+        order, plans = answer.get("order"), answer.get("plan")
+        labels = answer.get("labels")
+        if not isinstance(order, list) or not isinstance(plans, dict):
+            return rows, {}, {}
+        by_id = {str(r["id"]): r for r in rows if r.get("id")}
+        ranked = [by_id[i] for i in order if i in by_id]
+        if len(ranked) != len(by_id) or len(set(order)) != len(order):
+            return rows, {}, {}
+        return ([*ranked, *(r for r in rows if not r.get("id"))], plans,
+                labels if isinstance(labels, dict) else {})
+    except Exception:  # the plan is an aid, see the docstring
+        return rows, {}, {}
+
+
+def _blocker_text(task_id: str, label: Any) -> str:
+    """``#7 Fix the extruder`` for a visible blocker. The title is fenced as
+    member text. With no label the short id is all there is."""
+    if isinstance(label, dict) and label.get("title"):
+        number = f"#{label['number']} " if label.get("number") else ""
+        return f"{number}{data(label['title'])}"
+    return task_id.split("-", 1)[0]
+
+
+def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
+    """One line for a task that sits under an epic: ready or blocked, the
+    slack, and what blocks it. A blocker is named by its number and title. A
+    blocker the member cannot see has no name."""
+    if not isinstance(plan, dict):
+        return ""
+    if plan.get("ready"):
+        slack = plan.get("slack_mins")
+        return "  plan: ready" + (f" · slack {slack} mins" if isinstance(slack, int) else "")
+    named = [_blocker_text(str(i), (labels or {}).get(str(i))) for i in plan.get("blocked_by") or []]
+    parts = [f"blocked by {', '.join(named)}"] if named else []
+    if plan.get("blocked_by_hidden"):
+        parts.append("blocked by a task hidden from you")
+    return "  plan: " + (" · ".join(parts) or "blocked")
+
+
+async def _personal_home(home: list[str]) -> None:
+    """Add the member's personal project to the head lines of ``my_work``, or
+    say there is none yet."""
+    try:
+        mine = await get("/projects/my/project")
+    except GatewayRefusal:
+        home.append("No personal project yet. create_personal_task makes it.")
+        return
+    if mine and mine.get("id"):
+        home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_work(
     view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
 ) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
-    across every project. view="inbox" lists their personal lens with the
-    per-member overlay (disposition, context, defer). untriaged=true reads
-    the inbox rows the member has never triaged, with who assigned each one:
-    "what landed on my plate". The first line is the member's own date and
+    across every project. view="inbox" lists the member's task inbox: only
+    what they captured, as the app's inbox shows it. view="archived" lists the
+    tasks they archived, across projects (ARC-1), as the Archive chip of My
+    tasks shows them. To bring one back, use unarchive_task. untriaged=true reads the
+    work assigned to them that they have not planned, with who
+    assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
+    task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
     zone. Use this for "what is mine?" and for triage. Never for another
     person's work — use list_tasks with assignee for that."""
     which = "inbox" if untriaged else (view or "assigned").strip().lower()
@@ -664,20 +757,27 @@ async def my_work(
             # WS-46 P7 (G18): the route narrows to rows with no overlay of
             # mine, and adds `assigned_by` (personal.py `my_inbox`).
             params["untriaged"] = True
+            # Deferred New work counts in the New chip, so the list shows it.
+            params["include_deferred"] = True
+        else:
+            # D170 (INB-1, 2026-11-03): the inbox is the captures, the rows
+            # of INBOX disposition. The app's list reads the same filter.
+            params["disposition"] = "INBOX"
         payload = await get("/projects/my/inbox", params)
-        title = "Landed on my plate, not triaged yet" if untriaged else "My task inbox"
+        title = "New in My tasks: assigned to me, not planned yet. A ready agent task (D170 amendment) is not here. It shows under Next or Someday." if untriaged else "My task inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is
         # an empty state, not a failure: the trial showed the model telling
         # the member their inbox "failed to load".
-        try:
-            mine = await get("/projects/my/project")
-        except GatewayRefusal:
-            mine = None
-            home.append("No personal project yet. create_personal_task makes it.")
-        if mine and mine.get("id"):
-            home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+        await _personal_home(home)
+    elif which == "archived":
+        # ARC-1: the one list route over mine, filed tasks only. The app's
+        # Archive chip reads the same two words (`scope`, `archived_only`).
+        payload = await get(
+            "/projects/tasks", {**params, "scope": "mine", "archived_only": True},
+        )
+        title = "My archive"
     else:
         if include_done:
             params["include_done"] = True
@@ -687,6 +787,10 @@ async def my_work(
     total = int((payload or {}).get("total") or 0)
     if not rows:
         return "\n".join([*home, f"{title}: nothing."])
+    plans: dict[str, Any] = {}
+    labels: dict[str, Any] = {}
+    if which not in ("inbox", "archived"):
+        rows, plans, labels = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
@@ -701,6 +805,9 @@ async def my_work(
             head += " · " + " · ".join(overlay)
         out.append(head)
         out.append(ident)
+        note = _plan_note(plans.get(str(row.get("id"))), labels)
+        if note:
+            out.append(note)
     return "\n".join(out)
 
 
@@ -893,6 +1000,19 @@ async def vocabulary(project_id: str) -> str:
             else " · the server says you may not edit it" if may is False
             else ""
         )
+        # PST-4: with the guard on, a project that uses a shared set says so,
+        # and the read stops saying "you may edit it" for a set the tools
+        # refuse to change. `guard_on` is the route's answer (§9.4).
+        if (
+            status_set.get("guard_on") is True
+            and status_set.get("owns") is False
+            and may is not False
+        ):
+            n = int(status_set.get("reach") or status_set.get("used_by") or 1)
+            verdict = (
+                f" · shared by {n} project{'' if n == 1 else 's'}. This project needs "
+                "its own set (set_status_set mode=own) before a change"
+            )
         out.append(f"Status set owned by {owner}{verdict}")
         if may is False and status_set.get("edit_refusal"):
             out.append(f"  Gateway said: {data(status_set.get('edit_refusal'))}")
@@ -1458,6 +1578,108 @@ async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
     return "\n".join(out)
 
 
+# ── The plan of a goal, epic or project — SP-12 ──────────────────────────────
+
+#: The most slices of one list that ``get_plan`` prints. The route caps its
+#: labels, and this is the tool's own guard on the model's context.
+PLAN_LIST_MAX = 12
+
+
+def _plan_name(labels: dict[str, Any], tid: Any) -> str:
+    """One slice for a sentence: its number and fenced title, or its id."""
+    row = labels.get(tid) if isinstance(labels, dict) else None
+    if isinstance(row, dict):
+        title = row.get("title")
+        n = _number({"task_number": row.get("number")})
+        return f"{n} {data(title)}" if title else n
+    return f"task {tid}"
+
+
+def _plan_rows(labels: dict[str, Any], ids: list[Any], slack: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for shown, tid in enumerate(ids):
+        if shown >= PLAN_LIST_MAX:
+            break
+        extra = f" · slack {slack[tid]} min" if tid in slack else ""
+        out.append(f"- {_plan_name(labels, tid)}{extra}")
+        out.append(f"  full_id: {tid}")
+    if len(ids) > PLAN_LIST_MAX:
+        out.append(f"  (and {len(ids) - PLAN_LIST_MAX} more: ids only in the server answer)")
+    return out
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def get_plan(root_task_id: str) -> str:
+    """The order of work under one goal, epic or project task, computed by the
+    server from its open slices (tasks with no subtasks) and their blocks
+    links. Use it for "What is the plan for X?", "What can start now?", "What
+    is the next task?" and "What is on the critical path?". It gives the
+    ready set, the waves, the critical path with slack, one finish date, the
+    next slice, the slices held by a blocker outside the tree and the number
+    of slices this member cannot see. Relay it. Never work out an order, a
+    date or a path yourself, and never call the date a forecast. The task id
+    is a full_id from an earlier tool result."""
+    root = uuid_of(root_task_id, "root_task_id")
+    plan = await get("/projects/plan/analysis", {"root_task_id": root}) or {}
+    labels = plan.get("labels") or {}
+    slack = plan.get("slack") or {}
+    hidden = plan.get("hidden") or {}
+    out = [
+        legend(),
+        f"Plan under task {root}: {plan.get('slices', 0)} open slices",
+    ]
+    cycle = plan.get("cycle")
+    if cycle:
+        out.append(
+            "A loop of blocks links stops the plan: no waves, path or finish are given."
+            " The tasks in the loop (full_id):"
+        )
+        out.extend(f"  {tid}" for tid in cycle.get("task_ids") or [])
+    if plan.get("not_enough"):
+        out.append(f"No critical path: {plan['not_enough']}.")
+    ready = plan.get("ready") or []
+    out.append(f"Ready now ({len(ready)}):")
+    out.extend(_plan_rows(labels, ready, {}))
+    if plan.get("next_slice"):
+        out.append(f"Next slice: {_plan_name(labels, plan['next_slice'])}")
+        out.append(f"  full_id: {plan['next_slice']}")
+    path = plan.get("critical_path") or []
+    if path:
+        out.append(f"Critical path ({len(path)} slices, in order):")
+        out.extend(_plan_rows(labels, path, slack))
+    finish = plan.get("finish")
+    if finish:
+        out.append(
+            f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
+            f" {finish.get('mins')} minutes of work and review wait). One date from the"
+            " length of the path. It is not a forecast with a range."
+        )
+    waves = plan.get("waves") or []
+    if waves:
+        out.append(
+            "Waves: " + "; ".join(f"wave {i} has {len(w)}" for i, w in enumerate(waves, 1))
+        )
+    held = plan.get("held") or []
+    if held:
+        out.append(f"Held by an open blocker outside this tree ({len(held)}):")
+        out.extend(_plan_rows(labels, held, {}))
+        for row in plan.get("outside_blockers") or []:
+            if isinstance(row, dict):
+                out.append(
+                    f"  {_plan_name(labels, row.get('task_id'))} waits on"
+                    f" {', '.join(str(b) for b in row.get('blocked_by') or [])}"
+                )
+    for sentence in (plan.get("missing") or {}).get("words") or []:
+        out.append(f"Gap: {sentence} (counted as 0 minutes of work, so the date may be early).")
+    if hidden.get("slices") or hidden.get("outside_blockers"):
+        out.append(
+            f"Hidden from this member: {hidden.get('slices', 0)} slices and"
+            f" {hidden.get('outside_blockers', 0)} outside blockers. They are counted"
+            " and left out of the plan. Say so, and do not guess what they are."
+        )
+    return "\n".join(out)
+
+
 # ── On-the-fly analysis — S7e, the dataset ───────────────────────────────────
 
 #: The columns the tool asks for when the model names none. Short on purpose:
@@ -1820,12 +2042,12 @@ AGENT_RUNS_OFF = (
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def waiting_agent_requests() -> str:
     """The questions and requests that agents have put to the member and that
-    still wait for an answer, newest first. Each row shows the task, the agent,
+    still wait for an answer, oldest first. Each row shows the task, the agent,
     the request in plain words, its age and the link to the task card. Only
     the member answers, on that card. No chat tool approves, declines or
     answers one, so send the member to the link."""
     try:
-        page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
+        page = (await get("/projects/agent-runs", {"status": "awaiting", "order": "oldest", "limit": MAX_PAGE})) or {}
     except GatewayRefusal as exc:
         # `require_agent_runs` answers 404 while agent runs are switched off.
         if exc.status == 404:
@@ -2631,9 +2853,12 @@ NO_ZONE = (
     "of your browser. Or give the time with its offset, for example "
     "2026-10-31T09:00:00+05:30."
 )
-#: The fallback that both gates name: a private task with a block on the
-#: member's calendar is the nearest act that works today.
-FALLBACK = "Make a private task with a block instead (create_personal_task)."
+#: What both gates tell the model. A task is a different object, so a refused
+#: reminder never turns into one by itself. The member chooses (owner, 2026-11-01).
+FALLBACK = (
+    "Say that plainly. Do not make a task in its place. "
+    "Make a task only when the member asks for one."
+)
 #: The flag ``CALENDAR_REMINDERS`` is off: every reminder route answers 404.
 REMINDERS_OFF = "Reminders are not on for this organization yet."
 #: A run with no card channel (WhatsApp) cannot ask the member, and a
@@ -2751,7 +2976,7 @@ def no_card_channel(tool: str) -> str:
     A WhatsApp run, or any run inside ``ask_tools.refuse_cards``, has nobody
     who can see a card. There a card is denied, or parked when the tool is in
     ``whatsapp_acts.ALLOWED_ACTS``. No reminder act is there until RM-9, so
-    the tool refuses before its card and names the fallback. When RM-9 adds
+    the tool refuses before its card and says so. When RM-9 adds
     the act, this check lets it through with no change here.
     """
     try:

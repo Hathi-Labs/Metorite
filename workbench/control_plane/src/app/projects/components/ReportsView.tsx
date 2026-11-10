@@ -39,6 +39,7 @@
  * rendered header, folds the coming-soon templates, splits the rail into
  * yours and shared, and offers Delete in edit mode.
  */
+import { displayRowProject } from "../lib/personalTree";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -1120,7 +1121,7 @@ export function RenderedBody({
                           >
                             <span className="text-foreground">{f.title}</span> ·{" "}
                             {focusWhy(f)}
-                            {f.project_name ? ` · ${f.project_name}` : ""}
+                            {f.project_name ? ` · ${displayRowProject(f)}` : ""}
                           </li>
                         ))}
                       </ul>
@@ -1180,7 +1181,7 @@ export function RenderedBody({
                             title={r.title}
                           >
                             <span className="text-foreground">{r.title}</span> ·{" "}
-                            {r.project_name}
+                            {displayRowProject(r)}
                             {kind === "stale_in_progress" && r.updated_at
                               ? ` · last change ${shortDate(r.updated_at)}`
                               : ""}

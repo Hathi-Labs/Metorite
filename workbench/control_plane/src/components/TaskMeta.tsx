@@ -88,16 +88,16 @@ function chipClass(chip: MetaChip): string {
     // `max-w-[12ch]` is a SIZE, not a colour — rule 3 forbids arbitrary
     // colour classes, and a tag named after a customer would otherwise push
     // the whole row off a 288px card.
-    return `inline-flex max-w-[12ch] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] ${
+    return `inline-flex max-w-[12ch] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] glass:rounded-full glass:px-2 glass:text-caption ${
       accentForHue(chip.hue).chip
     }`;
   }
   if (chip.rank) {
-    return `inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] ${
+    return `inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] glass:border-transparent glass:px-2 glass:text-caption ${
       RANKED[chip.tone][chip.rank]
     }`;
   }
-  return `inline-flex items-center gap-1 text-[10px] ${TONE[chip.tone]}`;
+  return `inline-flex items-center gap-1 text-[10px] glass:text-caption ${TONE[chip.tone]}`;
 }
 
 /**

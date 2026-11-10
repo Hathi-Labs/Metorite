@@ -45,6 +45,8 @@ import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
@@ -139,10 +141,16 @@ const PURGE_LABELS: Record<string, string> = {
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
+  // WS-CRM CRM-M1: a Change history row that only the member reads.
+  crm_private_changes: "private CRM change record",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
   // WS-66 RM-1: the member's private reminders, with their ledger.
   reminders: "private reminder",
+  // WS-BRIEF BR-4: a brief or close-out of the member, with its claims.
+  brief_runs: "daily brief",
+  // WS-STU F1: the member's own AI Studio skills, with their versions.
+  studio_skills: "AI Studio skill",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.
   member_settings: "personal settings record",
   // WS-66 PN-1: a browser or Home Screen app that gets the member's pushes.
@@ -158,6 +166,8 @@ const PURGE_LABELS: Record<string, string> = {
   knowledge_proposals: "proposed Knowledge edit",
   // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
   agent_run_strands: "stranded agent run record",
+  // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
+  cycle_capacity: "cycle capacity record",
 };
 
 function purgeLabel(key: string, n: number): string {
@@ -236,6 +246,30 @@ export default function OrganizationAdmin() {
   const [tab, setTab] = useState("members");
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
+  // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
+  // the other tabs in its strip, and the top Invite tool leaves. Invite hides
+  // where the page hides it: above the branding, seats and email forms.
+  const { isMobile } = useViewMode();
+  const rosterTab = !(tab === "branding" || tab === "seats" || tab === "email");
+  // A member who is not an admin sees the admin-only card, so no tab shows.
+  const notAdmin = !access.is_admin && !loading;
+  usePhoneBar({
+    active: tab === "members" ? "org-members" : tab === "requests" ? "org-requests" : null,
+    hide: notAdmin
+      ? ["org-members", "org-requests", "org-invite"]
+      : rosterTab ? [] : ["org-invite"],
+    counts: { "org-requests": queueError ? 0 : requests.length },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t === "org-members") setTab("members");
+      else if (t === "org-requests") setTab("requests");
+      else if (t === "org-invite") setInviting(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
   /**
    * The person an off-boarding is being confirmed for. Removal drops every
    * role assignment and is not a toggle — Activate does not undo it — so it
@@ -491,7 +525,7 @@ export default function OrganizationAdmin() {
              no sense above the branding form, and an Invite button that is
              always there is one an admin eventually clicks on the wrong
              screen. */
-          tab === "branding" || tab === "seats" || tab === "email" ? null : (
+          !rosterTab ? null : (
             <>
               <Button
                 variant="ghost"
@@ -513,9 +547,11 @@ export default function OrganizationAdmin() {
               >
                 Roles
               </Link>
-              <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
-                Invite
-              </Button>
+              {!isMobile && (
+                <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
+                  Invite
+                </Button>
+              )}
             </>
           )
         }
@@ -561,7 +597,7 @@ export default function OrganizationAdmin() {
             icon: "Mail",
             note: "Approve Microsoft 365 for all members, and see how many connected a mailbox",
           },
-        ]}
+        ].filter((t) => !(isMobile && (t.id === "members" || t.id === "requests")))}
       />
 
       {tab === "members" && (
@@ -780,13 +816,13 @@ function MemberRow({
       <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/settings/members/${encodeURIComponent(member.email)}`}
-          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground glass:rounded-full glass:px-3"
         >
           Manage access
         </Link>
         {actions.isSelf && (
           <span
-            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
+            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground glass:rounded-full glass:px-3"
             title="You cannot suspend or remove your own access. Another owner or admin can."
           >
             This is you
@@ -805,7 +841,7 @@ function MemberRow({
         {actions.canRemove && (
           <button
             onClick={() => onRemove(member)}
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10 glass:rounded-full glass:px-3"
           >
             <Icon name="UserMinus" size={12} />
             {actions.removeLabel}
@@ -818,7 +854,7 @@ function MemberRow({
           <button
             onClick={() => onPurge(member)}
             title="Delete this person and every credential and access grant they hold. Their work and the audit trail are kept."
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90 glass:rounded-full glass:bg-destructive/15 glass:px-3 glass:text-destructive glass:hover:bg-destructive/25 glass:hover:opacity-100"
           >
             <Icon name="Trash2" size={12} />
             Delete permanently

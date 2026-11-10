@@ -1113,16 +1113,79 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: ``session_key``. ``agent_signing.py`` gains the edge's session id helpers.
 #: The tripwire and the scan allow the one new header. The pins before it
 #: were 3.12 ``781888b3…5dbbb29`` and 3.13 ``17748943…ad2a1c44``.
+#:
+#: MCP-P1a (2026-10-30, external_agent_access.md §19, D136) adds the app door.
+#: A pair that a door op of the manifests reaches passes the method and route
+#: steps (AD-3). After the stamp, `_door_gate` checks the door flag, refuses a
+#: class B or C write that is not a proposal with 403 `approval_required`
+#: (AD-18), checks the app scope (AD-4) and counts the read or write cap
+#: (AD-13). `_claim_write` takes the scope as an argument. Each door call
+#: writes one audit row (AD-14). It reads nothing new from the request: the
+#: scan and the tripwire are as before. The pins before it were 3.12
+#: ``9b8e2e6d…9b85d7b88`` and 3.13 ``92e125e9…7b2b2a70``.
+#:
+#: MCP-P1a fix round 1 (2026-10-30, §19.7, AD-14): a refused door call writes
+#: its audit row at step 5 (the stamp) too. A door write meets the writes
+#: flag in `_door_gate`, after the connection and the stamp, so that refusal
+#: has a connection for its row. Step 3b keeps the writes of
+#: ``MCP_WRITE_ROUTES``. Nothing new is read from the request. The pins
+#: before it were 3.12 ``8b11f0fe…0a5d6d71`` and 3.13 ``78ffade4…d0d8cdf7``.
+#:
+#: EA-17a (2026-11-04, external_agent_access.md §10.8, D-EA-12): step 7
+#: copies ``connection.left_out_projects`` into ``AgentScope``. The value
+#: comes from the connection row, as the pins do. Nothing new is read from
+#: the request: the scan and the tripwire are as before. The pins before it
+#: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
+#:
+#: EA-19b (2026-11-06, external_agent_access.md §10.9 question 1, D-EA-5):
+#: step 5 passes ``credential``, ``connection_id`` and ``client_name`` of the
+#: connection row to ``actor_via_for``. So a box connection expects the stamp
+#: ``mcp:box:<slug>-<8 hex>``, and an OAuth connection expects the same stamp
+#: as before. The three values come from the row, never from the request.
+#: The scan and the tripwire are as before. The box flag is read in
+#: ``agent_tokens.read_live_connection``, which this digest does not cover.
+#: The pins before it were 3.12 ``c737e1f1…0ae25127`` and 3.13
+#: ``034c2925…9155f094``.
+#:
+#: BR-7b-1 (2026-11-07, core_brief.md §8.2): the audit row of a door call
+#: (`_audit_door`) also holds ``policy``, the app scope that the door
+#: checks (``door.scope``). The value comes from the manifest, never from
+#: the request, and no step of branch 0 changes. The pins before it were
+#: 3.12 ``ec7a40eb…a945b693`` and 3.13 ``792f53b4…a1c4ea5e`` (WS-24b). The
+#: pins of the BR-7b build before the merge with WS-24b were 3.12
+#: ``7c955afa…6a81b34b`` and 3.13 ``b16fc2b1…7fabf2``.
+#:
+#: MCP-G20 (2026-11-08, external_agent_access.md §9.2, EA3-30, task 2212):
+#: `_claim_write` reads the cap and the window through
+#: ``agent_oauth.write_cap`` and ``write_window_s`` (the settings
+#: ``AGENT_WRITE_CAP`` and ``AGENT_WRITE_WINDOW_S``), in place of the two
+#: constants. The defaults are the same, and the count, the nonce, the scope
+#: and the 503 and 429 answers do not change. Nothing new is read from the
+#: request: the scan and the tripwire are as before. The pins before it were
+#: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
+#: the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "9b8e2e6de448013b71fab5c06df9aaf1d016009d33c3722d7bcff609b85d7b88",
-    (3, 13): "92e125e9532a2863b1371757fcad284df8aeccd579de19485eb4532e7b2b2a70",
+    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
+    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
+    # This pin needs the diff-reviewer review and the independent verification.
+    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
+    # change of `_audit_door`: it adds the `policy` key of the audit payload
+    # (door.scope). No step of branch 0 changed. Both digests were computed
+    # with this test's own function under 3.12 and 3.13. This pin needs the
+    # diff-reviewer review and the independent verification.
+    (3, 12): "f5c27b8ed2dbeeff26b2cb89fcfe822c0204dbe52c116e8601af34a62cdf515c",
+    (3, 13): "bbc929711b1e309708d5b1fb0b5d01e352dbd17456b4da4046b2afa13815e8cb",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
 #: the request, so the scan does not read them. The connection read and the
 #: write guard (nonce and cap) are part of the boundary all the same, so the
 #: digest covers them, and an edit to either one fails the digest test.
-_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write")
+#: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
+#: gate (the door flag, AD-18, the app scope and the caps), the door read cap
+#: and the audit row. None of them sees the request.
+_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
+                        "_claim_door_read", "_audit_door")
 
 
 def _branch_zero_digest() -> str:
@@ -1726,3 +1789,33 @@ async def test_a_non_http_scope_is_passed_through_untouched(identity):
     assert called == ["lifespan"]
     # a lifespan passthrough neither opens nor closes a scope
     assert current_tenant() == ORG
+
+
+#: MCP-P1b-1. Names that would let a request body or a query steer the
+#: tenant, the member or the connection of an app request (R5, R11).
+_TENANT_LIKE = ("organization", "org", "tenant", "member", "email", "connection", "user",
+                "via", "binding", "cls", "class")
+
+
+def test_the_app_request_routes_take_no_tenant_from_input():
+    """MCP-P1b-1 (§19.8). The four routes of an app request take the org from
+    the bound session and the member from ``user.email``. Each body model
+    forbids extra keys and holds no field that names an org, a member, a
+    connection or a class. No route takes such a parameter. Mutation M13
+    (read ``organization_id`` from the body) turns this red."""
+    import inspect
+
+    from fastapi.routing import APIRoute
+    from gateway.routes import agent_requests
+
+    for model in (agent_requests.AppRequestIn, agent_requests.DecisionIn):
+        assert model.model_config.get("extra") == "forbid", model.__name__
+        for name in model.model_fields:
+            assert not any(word in name.lower() for word in _TENANT_LIKE), (model.__name__, name)
+    routes = [r for r in agent_requests.router.routes if isinstance(r, APIRoute)]
+    assert len(routes) == 4
+    for route in routes:
+        for name in inspect.signature(route.endpoint).parameters:
+            if name in ("user", "payload", "response"):
+                continue
+            assert not any(word in name.lower() for word in _TENANT_LIKE), (route.path, name)

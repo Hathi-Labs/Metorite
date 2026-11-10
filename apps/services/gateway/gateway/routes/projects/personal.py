@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -75,10 +75,18 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     row_to_dict,
+    status_order_sql,
     status_owner_id,
     task_visibility_clause,
     touch_task,
     update_row,
+)
+from gateway.routes.projects.due_day import (
+    date_only,
+    day_start,
+    local_date,
+    noon_of,
+    zone_name,
 )
 from gateway.routes.projects.filters import (
     attach_agent_state,
@@ -89,6 +97,7 @@ from gateway.routes.projects.filters import (
 # `notifications` imports only `core` and `watchers`, so this direction adds no
 # cycle — the same note `notifications` itself carries about `watchers`, and the
 # same import `tasks`, `bulk` and `activities` already take.
+from gateway.routes.projects.mine import READY_AGENT_SQL
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import (
     _TRACKED_TASK_FIELDS,
@@ -98,6 +107,7 @@ from gateway.routes.projects.tasks import (
     move_task_in,
 )
 from gateway.routes.projects.text_links import Saved, link_from_text
+from gateway.routes.tasks.entries import events_enabled, read_my_entries
 from gateway.routes.tasks.priority import important_from_importance
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -389,7 +399,12 @@ async def reopen_if_closed(
     try:
         lane = await load_default_status(db, owner, "todo")
     except HTTPException:
-        lane = await load_default_status(db, owner)
+        try:
+            lane = await load_default_status(db, owner)
+        except HTTPException:
+            # No open lane in the set (task 1792). The task stays closed and
+            # the overlay write still succeeds, as it did before.
+            return None
     if getattr(lane, "category", None) in CLOSING_CATEGORIES:
         return None
     moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
@@ -647,6 +662,7 @@ async def capture(
 async def create_personal_task(
     db: Any, email: str, project_id: str, root_id: str, status_id: str,
     values: dict[str, Any], overlay: dict[str, Any] | None = None,
+    *, announce: bool = True,
 ) -> Any:
     """One `pm_tasks` row in the member's own tree, assigned to them.
 
@@ -671,6 +687,15 @@ async def create_personal_task(
     inbox item until clarified. A SUBTASK (`parent_task_id` set) is a step,
     not a capture, and gets no default: `POST /projects/tasks` writes none
     either, and the two ways of adding a step must agree.
+
+    **`announce=False` sends no `pm.task.created` event** (WS-AUTO AUTO-7b).
+    Only the parked gate of a workflow run passes it
+    (`routes/workflows/park.py`). Its task holds a question for the owner, and
+    an event could start a workflow that parks and makes the next task, with
+    no end. Every other caller keeps the default, and a source scan holds
+    that. With no event, the `shell.cache.on_event` sink moves no My Day
+    version, so the park calls `shell.cache.bump_member_safe` for the owner
+    after its commit. Fence: `tests/unit/test_auto_park.py`.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).
@@ -683,6 +708,8 @@ async def create_personal_task(
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"
     overlay = stated or None
+    if values.get("due_at"):
+        values = {**values, "due_at": await stored_due(db, email, values["due_at"])}
     task = await insert_row(db, "pm_tasks", {
         "project_id": project_id,
         "root_project_id": root_id,
@@ -706,6 +733,8 @@ async def create_personal_task(
         db, activity_type="system", created_by=email, task_id=task_id,
         body="Captured",
     )
+    if not announce:
+        return task
     await emit("pm.task.created", {
         "task_id": task_id, "project_id": project_id,
         "title": str(values.get("title") or ""),
@@ -1478,8 +1507,12 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
 #: have seen who put the task there. A capture in my own tree is not "from
 #: Projects" either. One spelling, shared by the route and the live check
 #: (`tests/live/live_ws39_s6e.py`), so the two cannot drift.
+#:
+#: A READY agent task is never untriaged (D170 amendment, PJP-14): the one
+#: rule is `mine.READY_AGENT_SQL`, twin of `mine.is_ready_agent_task`.
 UNTRIAGED_CLAUSE = (
     "(p.task_id IS NULL OR p.disposition IS NULL) AND proj.personal_owner IS NULL"
+    " AND NOT COALESCE(" + READY_AGENT_SQL + ", false)"
 )
 
 #: "Not yet" — hidden from my inbox until the LATER of my own defer date and
@@ -1499,24 +1532,6 @@ DEFERRED_CLAUSE = (
 )
 
 
-def zone_name(tz_name: Any) -> str:
-    """``tz_name`` when it is an IANA zone, else ``"UTC"``, the default
-    `user_settings.timezone` carries. One rule for the date and for the name,
-    so a route never reports a zone that its date was not computed in."""
-    try:
-        ZoneInfo(str(tz_name or "UTC"))
-    except (ZoneInfoNotFoundError, ValueError, OSError):
-        # OSError: "America" is a directory of the zone database, not a zone.
-        return "UTC"
-    return str(tz_name or "UTC")
-
-
-def local_date(tz_name: Any, at: datetime) -> date:
-    """``at`` as a calendar date in the IANA zone ``tz_name``. An unknown or
-    empty zone reads as UTC, the default `user_settings.timezone` carries."""
-    return at.astimezone(ZoneInfo(zone_name(tz_name))).date()
-
-
 async def stored_zone(db: Any, email: str) -> str | None:
     """`user_settings.timezone` for the member as stored, or ``None`` when the
     member has no settings row. The one read of the member's zone, which
@@ -1527,12 +1542,16 @@ async def stored_zone(db: Any, email: str) -> str | None:
     holds the gateway role ``acb_app`` in production (measured 2026-10-16),
     and the predicate is defence in depth: it names the session's tenant, as
     ``tasks.settings._load`` does. Each caller reads
-    inside a tenant session, and an unbound session reads no row (UTC)."""
-    from gateway.routes.tasks.settings import _BOUND_ORG
+    inside a tenant session, and an unbound session reads no row (UTC).
+
+    ⚠️ The address matches in any case (RX-5). A row keys on the session's
+    spelling, and a caller here holds the lower case. An exact match read a
+    mixed-case row as no row, so a member's own zone read as UTC."""
+    from gateway.routes.tasks.settings import _BOUND_ORG, ANY_CASE_MATCH
 
     row = (await db.execute(
         text(f"SELECT timezone FROM user_settings WHERE organization_id = {_BOUND_ORG}"
-             " AND user_id = :uid"),
+             + ANY_CASE_MATCH),
         {"uid": email},
     )).fetchone()
     return None if row is None else getattr(row, "timezone", None)
@@ -1543,6 +1562,28 @@ async def member_today(db: Any, email: str, at: datetime | None = None) -> date:
     client stores for itself (`taskStore.hydrate`, `CalendarView`). A member
     with no row reads as UTC."""
     return local_date(await stored_zone(db, email), at or datetime.now(UTC))
+
+
+async def member_day_start(db: Any, email: str, at: datetime | None = None) -> datetime:
+    """The instant that the member's own today started. Bind it as
+    ``:day_start`` for ``due_day.overdue_sql``, so a statement holds the one
+    rule of late work, in the zone of the member who reads it (RX-5)."""
+    return day_start(await stored_zone(db, email), at or datetime.now(UTC))
+
+
+async def stored_due(db: Any, email: str, value: Any) -> Any:
+    """What ``pm_tasks.due_at`` stores for *value*, the due value of a write.
+
+    The ONE seam of a date-only due (RX-5). A chat tool sends ``2026-11-02``,
+    and a bare parse gives midnight UTC, which is the day before in a zone
+    west of UTC. So a date with no time becomes noon of that date in *email*'s
+    zone, the instant that the client sends for the same pick. Any other value
+    stays as it came: a date and a time keep their offset, and a malformed
+    value still reaches the 422 of ``coerce_write_values``. Only a date-only
+    value costs the read of the zone.
+    """
+    day = date_only(value)
+    return value if day is None else noon_of(day, await stored_zone(db, email))
 
 
 @router.get("/my/today")
@@ -1764,6 +1805,43 @@ DUE_BY_TODAY_CLAUSE = (
 _DUE_ORDER = " ORDER BY t.due_at ASC, t.id LIMIT :limit"
 
 
+async def my_due_rows(db: Any, email: str, *, limit: int,
+                      at: datetime | None = None) -> dict[str, Any]:
+    """My work that is due today or overdue, read on *db*, a session of the
+    bound tenant: one bounded read of the lens, and the body of
+    :func:`my_due_tasks`.
+
+    The morning summary push reads here too (``reach/due_push.py``), so the
+    push and My Day count the same rows. *email* is the member in lower case,
+    from the session or from the loop's own member list, never from input.
+    *at* is the time of the read. ``today`` and ``timezone`` are the values of
+    ``GET /projects/my/today``.
+    """
+    size = max(1, int(limit))
+    sql = (
+        _MY_TASKS_SQL
+        + f" AND {DEFERRED_CLAUSE} AND {DUE_BY_TODAY_CLAUSE} AND {ACTIONABLE_CLAUSE}"
+        + _DUE_ORDER
+    )
+    items: list[dict[str, Any]] = []
+    stored = await stored_zone(db, email)
+    zone = zone_name(stored)
+    today = local_date(zone, at or datetime.now(UTC))
+    tomorrow = datetime.combine(
+        today + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo(zone),
+    )
+    params = await my_tasks_binds(
+        db, email, archived=False, today=today, due_before=tomorrow,
+        limit=size,
+    )
+    for row in (await db.execute(text(sql), params)).fetchall():
+        task, effective = _project_task(row)
+        if effective in NOT_DUE_WORK:
+            continue
+        items.append(task)
+    return {"rows": items, "today": today.isoformat(), "timezone": zone}
+
+
 async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
     """My work that is due today or overdue: one bounded read of the lens.
 
@@ -1785,31 +1863,8 @@ async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
     The rows carry no assignees and no parent: the feed shows neither.
     ``today`` and ``timezone`` are the values of ``GET /projects/my/today``.
     """
-    email = actor(user).lower()
-    size = max(1, int(limit))
-    sql = (
-        _MY_TASKS_SQL
-        + f" AND {DEFERRED_CLAUSE} AND {DUE_BY_TODAY_CLAUSE} AND {ACTIONABLE_CLAUSE}"
-        + _DUE_ORDER
-    )
-    items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
-        stored = await stored_zone(db, email)
-        zone = zone_name(stored)
-        today = local_date(zone, datetime.now(UTC))
-        tomorrow = datetime.combine(
-            today + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo(zone),
-        )
-        params = await my_tasks_binds(
-            db, email, archived=False, today=today, due_before=tomorrow,
-            limit=size,
-        )
-        for row in (await db.execute(text(sql), params)).fetchall():
-            task, effective = _project_task(row)
-            if effective in NOT_DUE_WORK:
-                continue
-            items.append(task)
-    return {"rows": items, "today": today.isoformat(), "timezone": zone}
+        return await my_due_rows(db, actor(user).lower(), limit=limit)
 
 
 #: Who closed the task: ``created_by`` of its newest ``status_change`` row
@@ -2355,7 +2410,7 @@ async def my_task(
 MY_TASK_LANES_SQL = (
     "SELECT id, name, category, position, color, is_default "
     "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-    " ORDER BY position, name"
+    " ORDER BY " + status_order_sql()
 )
 
 
@@ -2426,13 +2481,49 @@ def calendar_key(task: dict[str, Any]) -> tuple[str, str]:
     return (str(task.get("scheduled_start") or ""), str(task.get("id") or ""))
 
 
-@router.get("/my/calendar")
+class CalendarRead(ListResponse):
+    """The body of ``/my/calendar``: the task rows, and the calendar entries.
+
+    WS-CAL CE-4 (``calendar_events_reminders.md`` §3.4). ``entries`` is set
+    only when the entry query ran: ``CALENDAR_EVENTS`` on and the caller
+    holds ``feature:tasks``. The route answers with
+    ``response_model_exclude_unset``, so in every other case the body is the
+    body of today, ``rows`` and ``total`` alone. A subclass and not a plain
+    dict, because ``routes/shell/feed.py`` reads ``.rows`` off the answer,
+    and a dict would give it no rows with no error.
+    """
+
+    entries: list[dict] | None = None
+
+
+def _may_read_entries(user: Any) -> bool:
+    """The Calendar pane's gate (D138 Q10, ``feature:tasks``). It fails closed
+    for anything that is not a resolved ``UserContext``."""
+    check = getattr(user, "has_permission", None)
+    return bool(check and check("feature:tasks"))
+
+
+def _http_read_wants_entries() -> bool:
+    """An HTTP read of ``/my/calendar`` asks for the entries (§3.4).
+
+    A dependency and not a query parameter, so no request can turn it off.
+    Only an in-process caller passes ``with_entries=False``: the My Day feed
+    (``routes/shell/feed.py``), which reads blocks and never entries, because
+    no lens other than the Calendar reads ``calendar_entries`` (repair round
+    1)."""
+    return True
+
+
+@router.get(
+    "/my/calendar", response_model=CalendarRead, response_model_exclude_unset=True,
+)
 async def my_calendar(
     start: str,
     end: str,
     include_done: bool = False,
     user: UserContext = Depends(get_current_user),
-) -> ListResponse:
+    with_entries: bool = Depends(_http_read_wants_entries),
+) -> CalendarRead:
     """My scheduled blocks in a window — the Calendar app's one read.
 
     Spec: ``calendar_focus_os.md`` §10 · **D54** · ticket WS-39 S3a.
@@ -2465,6 +2556,13 @@ async def my_calendar(
     disposition is EFFECTIVE (stated where triaged, derived otherwise), so a
     task closed on the team's board leaves the calendar without anyone having
     triaged it personally.
+
+    **Calendar entries (WS-CAL CE-4, §3.4).** With ``CALENDAR_EVENTS`` on and
+    ``feature:tasks``, one more query runs in the same session: the events in
+    the window that I own or attend (``tasks/entries.read_my_entries``). They
+    go under ``entries``, never into ``rows``, because the client maps each
+    row to a task and the chat pages ``rows`` by :func:`calendar_key`. The
+    flag off runs no entry query, and the body has no ``entries`` key.
     """
     # ⚠️ Parsed explicitly, NOT through `coerce_write_values`. That helper keys
     # off an allow-list of COLUMN names, and these two are bind parameters — so
@@ -2496,6 +2594,7 @@ async def my_calendar(
         " AND p.scheduled_start >= :start AND p.scheduled_start < :end"
     )
     items: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] | None = None
     async with _tenant_session() as db:
         # A week never shows archived work. There is no `include_archived`
         # here on purpose: "show me the archive" is a list question, and a
@@ -2510,11 +2609,17 @@ async def my_calendar(
             items.append(task)
         await attach_assignees(db, items)
         await attach_my_parents(db, params, items)
+        # CE-4: the entries, in the same session. The flag is read first, so
+        # with it off nothing else here runs.
+        if with_entries and events_enabled() and _may_read_entries(user):
+            entries = await read_my_entries(db, email, window["start"], window["end"])
 
     items.sort(key=calendar_key)
     # Deliberately unpaged: a window is already the bound, and a paged calendar
     # week would be a page of Tuesday.
-    return ListResponse(rows=items, total=len(items))
+    if entries is None:
+        return CalendarRead(rows=items, total=len(items))
+    return CalendarRead(rows=items, total=len(items), entries=entries)
 
 
 @router.get("/my/contexts")
@@ -2856,7 +2961,7 @@ async def _organize(
     if (payload.due_at or "").strip() and not (
         delegated and getattr(task, "due_at", None) is not None
     ):
-        shared["due_at"] = payload.due_at
+        shared["due_at"] = await stored_due(db, email, payload.due_at)
     if payload.time_estimate_mins is not None:
         # D77: the one estimate. The clarify card's Estimate is the same
         # field People capacity and analytics read.

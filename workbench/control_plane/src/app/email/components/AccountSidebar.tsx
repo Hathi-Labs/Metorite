@@ -6,6 +6,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import OverflowTip from "@/components/ui/OverflowTip";
 import RailRow from "@/components/ui/RailRow";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
@@ -120,6 +121,16 @@ const AUTOMATION_ITEMS: {
   { key: "analytics", label: "Analytics", icon: themedIcon("BarChart3") },
 ];
 
+/**
+ * The automation rows to draw. With the one assistant on (D99), the top bar
+ * is the only chat door, and `page.tsx` sends a click on "Chat" there anyway,
+ * so the row goes. With the flag off, "Chat keeps its sidebar door"
+ * (`lib/shell/chatFlag.ts`). Fence: `lib/sidebarChatRow.test.ts`.
+ */
+export function automationItems(chatOn: boolean = shellChatOn()) {
+  return chatOn ? AUTOMATION_ITEMS.filter((item) => item.key !== "chat") : AUTOMATION_ITEMS;
+}
+
 export function AccountSidebar({
   accounts,
   selectedAccountId,
@@ -162,7 +173,7 @@ export function AccountSidebar({
       <>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-sidebar-border flex-shrink-0">
-        <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+        <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold glass:normal-case glass:tracking-normal glass:text-footnote">
           Accounts
         </span>
         <button
@@ -334,12 +345,12 @@ export function AccountSidebar({
       {/* Email Automation — sits between accounts and folders */}
       {showAutomation && (
         <div className="flex-shrink-0 px-2 py-2.5">
-          <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] tracking-widest uppercase text-muted-foreground font-semibold">
+          <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] tracking-widest uppercase text-muted-foreground font-semibold glass:normal-case glass:tracking-normal glass:text-caption">
             <AppIcon name="Zap" size={11} className="text-primary" />
             <span>Email Automation</span>
           </div>
           <div className="mt-1 space-y-0.5">
-            {AUTOMATION_ITEMS.map(({ key, label, icon: Icon }) => (
+            {automationItems().map(({ key, label, icon: Icon }) => (
               <RailRow
                 key={key}
                 label={label}

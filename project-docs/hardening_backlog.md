@@ -38,6 +38,18 @@ Add a section per feature as you build it. Example:
 | E-1 | Two-org test for email_threads | ... | ... |
 ```
 
+### Package host (WS-PKG)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| PK-1 | Make `test_no_hand_kept_vocabulary_remains` scan `me.py` with `ast` | It checks three literal strings only. A hand-kept set of other hrefs, such as `/workflows` and `/people`, passes it (PKG-2 verify, 2026-11-01) | The test fails on any `frozenset` or `set` literal of strings that start with `/` in `me.py` |
+| PK-2 | Decide the `MAX_JOBS = 16` cap on the shell order body | `me.py` caps `newOrder` at 16, and the product has 23 jobs. A member's own "New" order is a short subset today, so nothing fails yet (PKG-2 verify, 2026-11-01) | The cap is the job count, or a test states why 16 is the limit |
+| PK-3 | Add the install keys of the member purge to `PURGE_LABELS` | `PURGE_LABELS` in `workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx` has no label for `private_app_installs`, `shared_app_installs` or `shared_private_app_installs`. `purgeLabel` then shows "shared app installss". No row exists until PKG-5 writes one (PKG-4 review, 2026-11-01) | Each of the three keys has a label before PKG-5 merges |
+| PK-4 | Count a contribution payload as jsonb text in the PKG-5 writer | The CHECK of 324 counts `octet_length(payload::text)`, and jsonb writes its text with added spaces. A writer that counts the JSON that it sends can pass a payload that the CHECK refuses. The member then gets a 500. The store of 320 counts the jsonb text for this reason (PKG-4 review, 2026-11-01) | The PKG-5 writer refuses a payload over 65536 bytes of jsonb text with a 422, and an R8 test holds the edge |
+| PK-5 | Make the test of the generated set read the phases 01 to 03 too | `test_tenant_coverage.py:470` checks only the table set of `generated/04_policies.sql`. A wrong hand edit to `01_add_columns.sql`, `02_backfill.sql` or `03_constraints.sql` passes it. This gap is older than PKG-4 (PKG-4 review, 2026-11-01) | The test fails when a phase file from 01 to 03 differs from the output of the generator |
+| PK-6 | Set a Node heap size on the `tsc --noEmit` step of the CI Frontend job | The step in `pr-check.yml` (about line 717) sets no heap size. It ran out of memory once on PR 1567, and a rerun passed. Metorite task 1304 holds this item | The step sets `NODE_OPTIONS=--max-old-space-size`, and 20 runs in a row pass with no rerun |
+| PK-7 | Make the share writer of PKG-11 set `granted_by` to the sharer on a conflict | `upsert_app_grant` in `routes/apps/grants.py` keeps the first `granted_by` on `ON CONFLICT (app_id, subject)`. A share by the owner that lands on an existing row then fails the third test of `package_host/sharing.py`. That row can be a consent row or the grant of another editor. Do not change `grants.py` for this, because it serves App Workshop apps (PKG-5b part 1 verify, 2026-11-01) | The writer of PKG-11 sets `granted_by` to the sharer on a conflict, or the share rule changes in the same slice. An R8 test shares onto an existing consent row, and the share counts |
+
 ### Knowledge (WS-61)
 
 | # | Item | Why | Done when |
@@ -72,3 +84,46 @@ Add a section per feature as you build it. Example:
 | K-46 | Tell the caller when `MAX_BACKLINKS` cuts the "Linked from" list | The route lists at most 200 sources and sets no `truncated` flag (K-1 review, 2026-10-26) | The answer carries `truncated`, and a test with 201 sources shows it true |
 | K-47 | `diff-reviewer` on the rest of wave 2: KB-2b, KB-2e, KB-2k and KB-2m | K-1 reviewed KB-2h only. The other four rows have no adversarial review (K-1 review, 2026-10-26) | The reviewer reports no P0 on each of the four |
 
+
+### Reminders (WS-66)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| RM-H1 | Keep the aside of a chat card head on one line | At 390 px the aside "Tomorrow 09:30" of a `reminderCard` wraps to two lines, and the title cuts early. `TemplateHead` (`genUITemplates.tsx`) has no no-wrap rule, so every card with an aside does the same (RM-4 visual review, 2026-10-29) | A capture at 390 px shows the aside on one line and the title cut after it |
+| RM-H2 | Write one `opened` ledger row when a chat post fails and the member taps again | `open_reminder` commits the ledger row before `_post_row`. A 503 from the post and a retry write a second `opened` row. Two parallel taps do the same. The chat row stays unique (RM-4 verify, 2026-10-29) | An R8 test shows a failed post and a retry leave one `opened` row |
+| RM-H3 | Stop the model from emitting a `reminderCard` | The catalog lists it, because the lockstep fence needs every template. Its summary tells the model not to emit it, and nothing enforces that. A chip acts only on a tap, and only on the member's own reminder (RM-4 verify, 2026-10-29) | The run path drops a model-emitted `reminderCard`, with a test |
+| RM-H4 | Show the new time in the card head after Not yet | The head reads `data.when` only. After Not yet it keeps the old time, and after a remount the "Moved to" line is gone too. A second Not yet then moves the reminder again (RM-4 UI review, 2026-10-29) | The head reads the `fire_at` of the store row, with a test |
+| RM-H5 | Name the chat's Undo inside a card, or move it to the shared toast | The `reminderCard` Undo is a pill, and `ProfileToolCards` uses a text button. DESIGN_SYSTEM.md §12 beat 4 names one undo stack (`lib/undo.ts`). Neither form has Ctrl+Z or a time window (RM-4 UI review, 2026-10-29) | §12 names the in-card Undo and its control, or the chip uses `useToast().show({ action })` |
+| RM-H6 | Stop a replayed tool receipt from overwriting a newer chip state | A receipt counts as fresh for 60 s (`FRESH_RECEIPT_MS`). The model reschedules, the member taps Done, and a remount inside 60 s writes "open" back. The five chips return, and the next tap's 409 hides them again (RM-4 repair verify, 2026-10-29) | The store keeps the newer of a chip state and a receipt, with a test |
+| RM-H7 | Keep a due reminder in the bell when the feed is full | Reminders sit last in `KIND_ORDER` (RM-2b decision 4), so `_fit` in `needs.py` cuts them first. With 15 task rows and 15 notification rows, a due reminder shows nowhere in the bell (RM-2b repair, 2026-10-30) | A due reminder always keeps a bell row, or the owner accepts the cut, with a test |
+| RM-H8 | Compute `SNOOZE_TO` inside the test, not at module level | `tests/unit/test_reminders_r8.py:84` sets `SNOOZE_TO = datetime.now(UTC)…` at import (from RM-1, #1335). `test_no_new_clock_flakes.py`, a process fence, fails on it, so a `harden` PR would block | The value comes from the test or a fixture, and the clock fence passes |
+| RM-H9 | Drop "Your calendar is clear." when the reminders or calendar source failed | `summaryLine` (`myDay.ts` about :94-95) gives that line with no needs and no events today, even while the caveat says "Calendar did not answer, so its reminders may be missing." The line is true about events, but a reader can take it to cover reminders (RM-2b repair verify, 2026-10-30) | With a failed `reminders` or `calendar` source, My Day shows no "calendar is clear" line, with a test |
+| RM-H10 | Drop the green check from the empty Needs row when a source failed | `NeedsYouCard.tsx` (about :205-215) draws the green check beside "Nothing else needs you right now." and the caveat. The check can still read as "all clear". The shared list did this before RM-2b (RM-2b visual review, 2026-10-30) | A failed source draws the empty row with no check, with a capture and a test |
+| RM-H11 | Queue a second reminder drag while the first write runs | `useReminders.run` holds a `busy` ref. A second drag during the first write shows "Wait for the last change to finish." and the second move is lost (RM-5 visual review, 2026-10-30) | Two quick drags both land, or the second pin stays put with a clear cue, with a test |
+| RM-H12 | Add a render test for "a reminder takes no capacity" | The RM-5 acceptance has a unit fence only (call arguments in source and a pure rule). Vitest runs in node only, so no test renders the grid and counts lanes or capacity with a reminder present (RM-5 verify, 2026-10-30) | A render test shows the capacity meter and the lanes do not change when a reminder is added |
+| RM-H13 | Draw two reminders at the same minute apart | `remindersOnDay` gives each its own pin at the same `top`, so one pin draws on top of the other. Only the top pin takes a click, a drag or a key, and the lower one has no handle on the grid. The panel still lists both (RM-5 repair 2, 2026-10-30) | Pins at one minute stack or merge into one handle with a count, and each reminder can open, with a test |
+| RM-H14 | Find a clean place for the compact bell in Week | Over a block, the compact bell sits on the left edge of the column (`-left-2`, 16 px). In Week the edge is between two day columns, so the bell covers the left edge of a block, and can cover the right edge of a block in the column before it. The line now stops at a block's edge (`pinSegments`), but that gives the bell no free place in a one-lane column (RM-5 visual review VP2-E, 2026-10-30) | The compact bell covers no block in Day or Week at 1440, with a capture |
+
+### Web research (WS-WEB)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| WEBH-1 | Move `_PinnedTransport` to `acb_common`, and put the gateway's two pinned copies on it | `web_tools.py` holds the third copy of the pin, beside `outbound_guard.send` and `outbound_guard._PinnedTransport`. A package cannot import the gateway, so WEB-1 copied the pattern. Three copies can drift (WEB-1 review, 2026-11-01) | One pinned transport lives in `acb_common`. `web_tools.py` and `outbound_guard.py` use it, and no other copy of the pin is left |
+| WEBH-2 | Read a page once when Jina is on | The walk reads the page, and then Jina reads it again from its own network. So the site sees two reads for one call (WEB-1 review, 2026-11-01) | WEB-2's local reader reads the body of the walk. A test shows that one call reads the page once |
+
+### MCP board reads (MCP-G19a, task 1957)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| BR-1 | A compact `list_tasks` read selects only its columns | A compact page of 500 rows still selects `t.*`, descriptions included, and the edge trims the rows. A narrow SELECT through `row_to_model` gave HTTP 500, because `TaskModel.source` refused None (G19a re-verify, 2026-11-08) | The compact path has its own row model and a narrow SELECT. A test fails when the compact read selects `t.*` |
+| BR-2 | `board_stats` takes every `list_tasks` filter | The edge leaves out `include_descendants`, and the `/tasks/stats` route leaves out `assignees`, `unassigned`, `overdue`, `importance_gte`, `tags_all`, `top_level` and `watching`. The edge sends none of them, so no count disagrees today | A test sends each `list_tasks` filter to both reads and gets the same total |
+| BR-3 | Drop the stale named exception for `GET /projects/tasks/stats` | `test_mcp_edge_coverage.py` names the route as having no manifest row. The manifest now holds one (class A), so the comment is false | The exception is gone, and the coverage fence passes |
+| BR-4 | Split `build_task_filters` | ruff C901 on it went from 20 to 29 with the nine audit filters | Its complexity is at most what it was on 2026-11-07, or ruff names an accepted reason |
+
+### Agent link tools (SW-16a, task 347)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| LK-1 | Review the loop refusal of `assert_no_block_cycle` under a pin | ACCEPTED, do not change it before the review. The walk in `relations.py` reads `pm_task_links` with no visibility check, so "would make a loop" can tell an agent that a hidden chain exists. The refusal shows no id and no title, and a correct loop check must see the whole graph (SW-16a verify, 2026-11-08) | The harden pass keeps the acceptance, or a test shows a narrower refusal that still stops every loop |
+| LK-2 | Take `created` of `add_task_link` from the gateway | The edge reads the links before the POST, so two adds at one time can both answer `created: true`, or both false. The row count and the timeline stay right. Only the flag can be wrong (SW-16a review, 2026-11-08) | The route returns `inserted` from `insert_task_link`, the edge sends it as `created`, and a concurrent R8 test shows one true and one false |
+| LK-3 | Measure how long a large merge holds the link lock | `merge.py` takes the per-organization lock of `assert_no_block_cycle` for the whole merge, and `MAX_BULK` is 500. Each waiting `blocks` add holds a pooled connection, and `db.py` sets only an idle-in-transaction timeout (SW-16a final check, 2026-11-08). The duration is not measured | A test or a measurement gives the hold time of a 500-task merge. Either the time is acceptable and the entry says so, or the merge takes the lock later |

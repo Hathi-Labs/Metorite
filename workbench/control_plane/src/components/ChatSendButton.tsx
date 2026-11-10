@@ -55,9 +55,9 @@ export default function ChatSendButton({
       disabled={disabled}
       loading={loading}
       aria-label={name}
-      title={title ?? (stop ? "Stop the reply (Esc)" : "Send (Ctrl+Enter)")}
+      title={title ?? (stop ? "Stop the reply (Esc)" : "Send (Enter). Shift+Enter starts a new line.")}
       data-chat-primary={action}
-      className={`shrink-0 rounded-full ${large ? "h-11 w-11" : "h-8 w-8"}`}
+      className={`shrink-0 rounded-full glass:glass-press ${large ? "h-11 w-11" : "h-8 w-8"}`}
     >
       {loading ? null : stop ? (
         <Icon name="Square" size={12} strokeWidth={2.5} fill="currentColor" />

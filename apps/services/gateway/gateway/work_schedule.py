@@ -586,6 +586,35 @@ def person_schedule(policy: dict[str, Any], row: Any) -> dict[str, Any]:
     return effective_schedule(policy, override)
 
 
+#: The ``people`` rows of some addresses in the bound tenant. Since migration
+#: 209 one address may hold a row in two orgs, and the owner role reads past
+#: RLS. An unbound GUC matches no row, so it fails closed. The seed of
+#: ``tasks.settings.work_schedule_seeds`` reads this statement too.
+PEOPLE_HOURS_SQL = (
+    "SELECT lower(email) AS member, working_hours FROM people "
+    "WHERE lower(email) = ANY(CAST(:emails AS text[])) "
+    "  AND organization_id = CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+)
+
+
+async def person_schedules(db: Any, emails: list[str],
+                           policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The effective schedule of each address in *emails*, in lower case, in one
+    read of ``people``. An address with no directory row has no key. It raises
+    on a failed read, so a caller may stay quiet."""
+    rows = (await db.execute(_text(PEOPLE_HOURS_SQL), {"emails": list(emails)})).fetchall()
+    return {str(r.member): person_schedule(policy, r) for r in rows}
+
+
+def works_on(policy: dict[str, Any], schedule: dict[str, Any] | None, day: Any) -> bool:
+    """True when *day* is a working day: a weekday of *schedule*, and no company
+    holiday. A person with no directory row has the org's own week. Leave is
+    the other half, and :func:`absent_on` answers it."""
+    effective = schedule if schedule is not None else effective_schedule(policy, None)
+    days = {int(d) for d in effective.get("days") or DEFAULT_POLICY["working_days"]}
+    return day.isoweekday() in days and day.isoformat() not in (policy.get("holidays") or ())
+
+
 def _text(sql: str) -> Any:
     """``sqlalchemy.text``, imported lazily so the pure half needs no SQLAlchemy."""
     from sqlalchemy import text

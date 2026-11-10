@@ -23,6 +23,11 @@ migration 271). `tell_me()`, `reach_requests`, the email rule action
 `POST /reach/tell-me` is built. The assistant tool that calls it is RE-5b,
 because it lives in the orchestrator's tool manifests (§11.4).
 
+**D177, 2026-11-05 (owner).** The chat becomes a Reach channel. A waiting
+message marks the sidebar's Chat row. The panel may open itself under strict
+rules, and a member can pause Reach. §19 holds it, with the slices BUD-2 to
+BUD-9.
+
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
 attention budget, the delivery ledger, the channel adapters, the reply loop
@@ -112,6 +117,8 @@ and the scale plan for all of them.
 - **No message to anyone but the member.** Reach never writes to a customer,
   a colleague or a group. An outward message to another person stays an
   Action Broker act with its own approval.
+  A post to a team channel is CH-TEAM's (`whatsapp_assistant_channel.md`
+  §19), and this spec adds nothing for it.
 - **No marketing template.** Every template is in the utility category.
 - **No SMS and no email channel in v1.** The member already has their own
   email digest (`email/digest.py`).
@@ -136,7 +143,7 @@ and the scale plan for all of them.
 | Opt-in | `whatsapp_member_links.opted_in_at` exists. No code reads or writes it | `infra/postgres/235_whatsapp_member_links.sql` |
 | Notify seam | None. The bell, the feed, the activity stream and the email digest are separate | — |
 | Quiet hours | None. `day_start_hour`, `day_end_hour` and `work_schedule` can serve | `gateway/work_schedule.py` |
-| Web push | None. Spec only | `chat_run_continuity.md` §S7 |
+| Web push | Built (PN-1, 2026-10-25, dark): migration 306, `gateway/push/`, `public/sw.js`. Its first sender is RE-9b | `chat_run_continuity.md` §S7, `calendar_events_reminders.md` §5.6 |
 | Email rule actions | Ten types. No notify action | `routes/email/automation/actions.py:448` |
 
 ---
@@ -335,7 +342,7 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 | `organization_id` | The tenant. The RLS key |
 | `member_email` | The recipient. Always the member, never a third person |
 | `channel` | `whatsapp` or `web_push` |
-| `kind` | `brief`, `interrupt`, `day_end` or `system` (opt-in, STOP reply) |
+| `kind` | `brief`, `interrupt`, `day_end` or `system` (opt-in, STOP reply). RE-9b adds `reminder_due`, `reminder_check` and `reminder_unconfirmed` |
 | `signal_ids` | The cards this message carries, as text[] |
 | `dedupe_key` | Unique. A hash of the member, the channel, the kind, and the sorted pairs of signal and fingerprint |
 | `not_before` | The earliest send time. The batch window and quiet hours set it |
@@ -348,9 +355,26 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 | `created_at`, `sent_at`, `outcome_at` | Times |
 | `feedback` | `useful`, `not_here`, `muted` or null (§10) |
 
+**Amended 2026-11-06 (BR-5 slice 2b-1, owner).** `reach_outbox.feedback` rates a whole message. The rating of one card for one exception rule lives on `reach_signal_log` (`rule_id`, `feedback`, `feedback_at`, migration 350). `core_brief.md` §6 owns it. RE-6 reads it and adds no second table.
+
 **Indexes.** `(state, not_before)` for the workers. `(organization_id,
 member_email, created_at)` for the budget and the report. A unique index on
 `dedupe_key`.
+
+**The channel and the budget (RE-9b, 2026-10-30).** Migration 266 allows
+only the channel `whatsapp` and the kinds `brief` and `interrupt`
+(`reach_outbox_channel_known`, `reach_outbox_kind_known`). RE-9b adds one
+expand-only migration. It took 318 on 2026-10-31
+(`318_reach_outbox_web_push.sql`). It adds `web_push` and the three reminder
+kinds. **RE-9b is BUILT 2026-10-31** (`calendar_events_reminders.md` §5.6).
+
+As built, the WhatsApp budget reads `_SENT_SINCE_SQL` and `_URGENT_SINCE_SQL`
+(`reach/outbox.py`) count `channel = 'whatsapp'` only. `outbox.plan` still
+writes WhatsApp rows only, and `outbox.plan_push` writes a push row. A push
+row never counts in the WhatsApp cap. `reminder_due`
+has its own counter, with a limit of 10 each day for each member. Each cap
+counts `sent` rows on `web_push` for one member and one local date.
+`reminder_check` counts its own `web_push` rows against `REACH_DAILY_CAP`.
 
 **Retention.** A sweep deletes rows older than 30 days. A monthly summary row
 keeps the counts for the cost report.
@@ -482,15 +506,31 @@ for that reason. So Reach holds a message instead of dropping it.
 ### 8.2 Web push
 
 Web push is the second channel. It reuses the subscription table and the
-VAPID key of `chat_run_continuity.md` §S7. A push payload holds no content,
-only a count and a link, as §S7 decides. It costs nothing per message. RE-9
-builds it after S7 lands.
+VAPID key of `chat_run_continuity.md` §S7. PN-1 built that transport, and
+RE-9b sends the first push on it. It costs nothing per message.
+
+A push of any other card kind holds no content, only a count and a link, as
+§S7 decides. A reminder push is the one exception (D114.4). It carries the
+title and the time of the reminder. The member can turn on "Hide details on
+the lock screen". Then the title reads "Metorite: a reminder". The payload
+holds no title or time text.
 
 > ⚠️ **2026-10-25, D114.** WS-66 builds S7's transport as PN-1. Three card
 > kinds join §4: `reminder_due` (`urgent`, outside the daily cap, at most 10
 > each day), `reminder_check` (`interrupt`, inside the cap) and
-> `reminder_unconfirmed` (`brief`). A reminder push holds its title and time
-> (D114.4). The owning text is `calendar_events_reminders.md` §5.6.
+> `reminder_unconfirmed` (`brief`). The owning text is
+> `calendar_events_reminders.md` §5.6.
+
+**Settled 2026-10-30 (RE-9).** The push channel runs when
+`WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on. It does not need
+`REACH_ENABLED`, `REACH_ORGS` or `REACH_MEMBERS`. Those flags gate WhatsApp
+only.
+
+Each step of the reminder loop plans one `web_push` outbox row, on its own
+session. A send step in `gateway/reach/` sends it. The reminder loop calls
+that step after the commit. `reach/loop.py` never runs it. WS-51 S7 reuses
+that step later.
+`calendar_events_reminders.md` §5.6 holds the six decisions.
 
 ### 8.3 The order of channels
 
@@ -804,7 +844,8 @@ summary. It is the number that tells us whether the balance of §1 holds.
   taken at build time (R1).
 - **`user_settings.reach_prefs`**, a new nullable jsonb column: the main
   channel, the cap, the brief on or off, the day-end note on or off. A null
-  reads as the defaults of §6.1. Expand only (R6).
+  reads as the defaults of §6.1. Expand only (R6). D177 adds two keys:
+  `paused_until` (the pause, §19.4) and `pop` (on or off, §19.3).
 - **`whatsapp_member_links`**: the inbound path starts to write
   `last_inbound_at`. The link flow starts to write `opted_in_at`. A new
   nullable column `stopped_at`. Expand only.
@@ -822,7 +863,8 @@ summary. It is the number that tells us whether the balance of §1 holds.
 |---|---|---|
 | `REACH_ENABLED` | off | The kill switch. Off: no plan and no send |
 | `REACH_ORGS` | empty | The orgs that may plan. No `*` until the owner says so |
-| `REACH_CHANNELS` | empty | `whatsapp`, `web_push` |
+| `REACH_CHANNELS` | empty | `whatsapp`, `web_push`, and `chat` from BUD-2 |
+| `REACH_CHAT_ORGS` | empty | The orgs whose members get the chat channel, the Chat row mark and the pop (§19) |
 | `my_day.nudge` mode | `off` | `shadow` records the judgment and sends nothing. `on` lets it plan |
 
 **Shadow first.** RE-4 runs `my_day.nudge` in `shadow` for a week on the
@@ -847,8 +889,9 @@ is an owner gate (MD-10, CLAUDE.md §3a rule 3).
 | **RE-6** | The reply loop: buttons, card acts from WhatsApp, the feedback and the corrections | RE-2 | AGENT-SAFE |
 | **RE-7** | Settings → Notifications, and the "Sent to WhatsApp" mark on a feed card | RE-1 | AGENT-SAFE |
 | **RE-8** | Scale out: the `acb-reach` unit, the spread morning, the lease shards, the bus on Redis, the tier alert, and a load test of 5,000 members | RE-4 | AGENT-SAFE to build. 🔴 A new unit on the box is a deploy act |
-| **RE-9** | Web push as a second channel | RE-1, WS-51 S7 | AGENT-SAFE |
+| **RE-9** | Web push as a second channel. Split on 2026-10-30 into **RE-9a** (the push message and the hide setting, STANDARD) and **RE-9b** (the migration, the classes, the plan and send steps, HIGH). The rows are in `calendar_events_reminders.md` §10.1 | RE-1, PN-1 (built) | AGENT-SAFE |
 | **RE-10** | The producer guide: one page for a new app, and the fences of §4.1 in CI | RE-1 | AGENT-SAFE |
+| **BUD-2 to BUD-9** | The chat channel, the Chat row mark, the pop, the pause and four new kinds (D177). The rows are in §19.6 | RE-1 | AGENT-SAFE |
 
 **The first useful slice for the owner** is RE-1, RE-2 and RE-3 on the
 owner's org: a daily brief on WhatsApp. RE-4 and RE-5 then add the important
@@ -910,3 +953,100 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 A run that reports skipped tests fails the check. A reach test must not skip
 for a missing database.
+
+---
+
+## 19. The buddy: the chat channel, the mark, the pop and the pause (D177)
+
+**Owner, 2026-11-05.** The chat must not only wait for the member. It speaks
+first when something needs the member, it marks a waiting message on the
+sidebar, and it can open itself. The member can pause it. D177 records the
+directive. The first-visit hello is `onboarding.md` §13.
+
+Reach stays the one mouth (D103). Each part below is a channel or a control
+of Reach. No part adds a second budget, a second ledger or a second store.
+
+### 19.1 The chat channel (BUD-2)
+
+- A migration widens the outbox `channel` CHECK with `chat`, as 318 and 330
+  did. It only expands (R6).
+- The chat sender posts ONE sealed assistant turn per batch, through
+  `chat_brief._post_row`. The turn goes to the member's "Needs you" chat,
+  choice (a) of the AP epic (Metorite 1615).
+- Code builds the turn: a count, then one line per item, each with a link to
+  its source. No model writes it.
+- The budget, quiet hours, the 15-minute batch and the duplicate ledger apply
+  as on every channel (§5 and §6).
+- The session carries a server mark, `unseen_since`. Opening the chat clears
+  it on every device. BUD-3 reads it.
+- The order of channels (§8.3) puts the chat first. Web push or WhatsApp
+  follows, by the member's setting.
+- The switches are `REACH_ORGS` and `REACH_CHAT_ORGS`. Both are empty.
+
+### 19.2 The Chat row mark (BUD-3)
+
+The sidebar's Chat row (`Sidebar.tsx`, `ChatRow`) shows a mark while
+`unseen_since` is set. The mark uses the `runBadge` tones, with no new colour.
+A click opens the "Needs you" chat. My Day stays the full list of what waits
+(D171.1). The mark says only that the chat holds a message.
+
+### 19.3 The pop (BUD-4)
+
+For an interrupt batch, the dock may open on the "Needs you" chat by itself.
+It opens only when every condition holds:
+
+- The member uses a computer.
+- The page is visible. The member has been idle for 20 seconds, with no
+  focused field, no dialog and no task card open.
+- No pause runs (§19.4). It is not quiet hours, and no busy calendar event
+  runs now.
+- The member had fewer than 2 pops today. A pop spends from the interrupt
+  budget and never adds to it.
+
+When a condition fails, only the mark shows. A phone never pops. It gets the
+web push. Three closes of a pop with no reply in 7 days turn the pop off, and
+the chat says so in one line, with Undo. The key `reach_prefs.pop` holds the
+choice, and Settings → Notifications (RE-7) shows it.
+
+### 19.4 The pause (BUD-5)
+
+- The key `reach_prefs.paused_until` holds the pause (§14). The server caps
+  it at 24 hours.
+- The lengths are 30 minutes, 1 hour, 2 hours, and until 09:00 tomorrow in
+  the member's time zone. No pause lasts forever. The pop switch of §19.3
+  stops the pop for good.
+- During a pause, the planner holds every kind on every channel, the pop too.
+  When the pause ends, the held items go as ONE batch.
+- The member's own reminders and `notify_me` rules still come, because the
+  member asked for them.
+- The member pauses from the chat header, from the Chat row's menu, or in the
+  chat itself through a chat tool (chat parity).
+- The chat header shows "Paused until 15:30 · Resume" while the pause runs.
+
+### 19.5 The new kinds (BUD-6 to BUD-9)
+
+| Kind | Class | Source | Slice |
+|---|---|---|---|
+| `email_urgent` | interrupt | The `needs_reply` ranking: high importance, from a person, and no reply after 30 minutes | BUD-6 |
+| `waiting_on_you` | interrupt | AP-1's seam, with agent run questions and chat `agent_asks` | BUD-7 (= AP-5) |
+| `project_off_track` | brief. Interrupt when a due date that the member owns passes within 48 hours | LP-1's project health (Metorite 988) | BUD-8 |
+| `connection_broken` | interrupt | The member's mailbox, calendar or WhatsApp link stopped: an expired grant, 3 failed syncs, or a revoked token | BUD-9 |
+
+The CRM kinds are interrupts already (`reach/classes.py`), so they need no
+new slice. Each kind ships with its class in the same PR (§4.1).
+
+### 19.6 The slices
+
+| Slice | What | Depends on | Tier | Task |
+|---|---|---|---|---|
+| **BUD-2** | The chat channel: the CHECK migration, the chat sender, `unseen_since`, and `REACH_CHAT_ORGS` | RE-1 | HIGH | Metorite 1696 |
+| **BUD-3** | The Chat row mark | BUD-2 | STANDARD | Metorite 1697 |
+| **BUD-4** | The pop and its rules | BUD-2, BUD-3 | STANDARD | Metorite 1698 |
+| **BUD-5** | The pause, its three ways in, and the batch after it | RE-1 | STANDARD | Metorite 1699 |
+| **BUD-6** | `email_urgent` | BUD-2 | STANDARD | Metorite 1700 |
+| **BUD-7** | `waiting_on_you` (this is AP-5) | AP-1, AP-4, BUD-2 | HIGH | Metorite 1624 |
+| **BUD-8** | `project_off_track` | BUD-2, LP-1 | STANDARD | Metorite 1701 |
+| **BUD-9** | `connection_broken` | BUD-2 | STANDARD | Metorite 1702 |
+
+Each slice ships dark. A flip of `REACH_CHAT_ORGS` for a member is an owner
+act (§16).

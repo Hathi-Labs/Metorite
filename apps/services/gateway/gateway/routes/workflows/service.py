@@ -33,25 +33,22 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): every session in
-# this module belongs to the UNATTENDED run lifecycle — engine node loads
-# (`_get_module_code`), run rows written by supervised background tasks that
-# outlive the request that may have started them (`start_run`, `_finish_run`,
-# `_hold_at_gate`), the startup sweep (`reconcile_orphaned_runs`), the health
-# policy (`evaluate_automation_health`), and the programmatic/agent entry
-# points (F13). Several are DUAL-USE — reached from a member's manual Run AND
-# from the scheduler/webhook/event paths (`start_run`, `resume_run`) — and the
-# H2 rule for that is LEAVE: a run must not behave differently depending on
-# who happened to trigger it, and inheriting the ambient request tenant is
-# exactly what H4 forbids. They stay on the unbound `get_db()` until H4
-# threads an explicit tenant (`tenant_session(org_id)` from the workflow row)
-# through the run lifecycle. `_pm_task_updater` is the Projects automation
-# seam and is likewise H4 — do not change its session acquisition here.
+# this module belongs to the UNATTENDED run lifecycle — run rows written by
+# supervised background tasks that outlive the request that may have started
+# them (`start_run`, `_finish_run`, `_hold_at_gate`), the startup sweep
+# (`reconcile_orphaned_runs`), the health policy
+# (`evaluate_automation_health`), and the programmatic/agent entry points
+# (F13). Several are DUAL-USE — reached from a member's manual Run AND from
+# the scheduler/webhook/event paths (`start_run`, `resume_run`) — and the H2
+# rule for that is LEAVE: a run must not behave differently depending on who
+# happened to trigger it, and inheriting the ambient request tenant is exactly
+# what H4 forbids. They stay on the unbound `get_db()` until H4 threads an
+# explicit tenant (`tenant_session(org_id)` from the workflow row) through the
+# run lifecycle.
 #
 # ⚠️ ONE EXCEPTION, and it is done: `_pm_lifecycle_sweeper` (WS-27aa). It
-# resolves the workflow owner's organization on an unbound session and then
 # opens `_tenant_session(org)` for the sweep — an EXPLICIT tenant from a stored
-# fact, which is what H4 asks for, not the ambient inheritance it forbids. It
-# is the shape the rest of this module's sites will take.
+# fact, which is what H4 asks for, not the ambient inheritance it forbids.
 #
 # ⚠️ A SECOND EXCEPTION (2026-10-15): the F13 agent entry points. The agent
 # tools pass the run's organization, which the orchestrator takes from the run
@@ -60,10 +57,38 @@ from typing import Any
 # A run they start carries that org, so `start_run`, `_finish_run` and
 # `_hold_at_gate` write it through `_run_session(org)`. An approval resumes
 # through `resume_run(org)`, with the approver's org. A long wait refuses at
-# the start, because the wait scan is unbound. A run with no org (manual,
-# schedule, webhook, event, the wait scan) keeps the unbound path above.
+# the start, because the wait scan resumes a run only for a listed org (part
+# (b) below). A run with no org (manual, webhook, event) keeps the unbound path
+# above.
 # Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
-from acb_common.db import TenantUnbound
+#
+# ⚠️ A THIRD EXCEPTION (H-328 part (a), 2026-11-02): the node services. A run
+# that carries an organization binds it for the module read, the `pm_task`
+# write, the lifecycle sweep and the `notify.whatsapp` owner read
+# (`build_node_services`). The org is the run's own stored fact, never the
+# ambient tenant and never input. ONE EXCEPTION: the approval door opens its
+# read with the approver's `current_tenant()` (`resume_run`). RLS makes that
+# org equal the stored org, and the resumed nodes take the org from the run
+# row. A run with no org keeps the old path until H4 slice 6c. That path is
+# `_run_session(None)` for the module read and the task write, and the unbound
+# owner resolver for the other two.
+#
+# ⚠️ A task write has no member check (`_member_blind_write_nodes`). So
+# `run_published_workflow`, the schedule scan (`scheduler._scan_org`) and
+# `resume_run` refuse a `pm_task` or `pm_lifecycle` node, and each stays
+# refused until a run checks a verified member.
+# Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
+#
+# A FOURTH EXCEPTION (H-328 part (b)): the sweeps. `record_skipped_run`,
+# `reconcile_orphaned_runs` and `evaluate_automation_health` take the org of a
+# run or a workflow from its row and bind it with `_run_session(org)`. The
+# scans in `scheduler.py` loop over `_organization_ids()` and check
+# `unattended.org_allowed(org)` for each org BEFORE any run starts. The list
+# `WORKFLOW_UNATTENDED_ORGS` ships empty, so no unattended run starts until
+# the owner lists an org. `_organization_ids` is the one unbound read, and
+# `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names it.
+from acb_common.db import TenantUnbound, bind_tenant, release_tenant
+from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
     _get_db,
     _log,
@@ -79,8 +104,10 @@ from gateway.routes.workflows.engine.handlers import (
 )
 from gateway.routes.workflows.engine.runner import execute_workflow
 from gateway.routes.workflows.tools import (
+    NOTIFY_ACTIVITY,
     NOTIFY_WHATSAPP,
     execute_tool,
+    notify_activity,
     notify_owner_whatsapp,
 )
 from sqlalchemy import text
@@ -176,6 +203,23 @@ _SQL_WORKFLOW_BILLING_MEMBER = (
 )
 
 
+async def _organization_ids() -> list[str]:
+    """Every organization id, from the RLS-EXEMPT ``organization`` table.
+
+    This is a TENANT-DISCOVERY read, so it is unbound on purpose. It lists the
+    orgs and reads no workflow data, so it does not go blind under FORCE RLS.
+    Every read after it binds ONE org with ``_tenant_session(org)``. The caller
+    checks :func:`unattended.org_allowed` for each id BEFORE it reads or starts
+    anything (H-328 part (b)). Same shape as ``crm_sync/scheduler.py``.
+    """
+    db = await _get_db()
+    try:
+        rows = (await db.execute(text("SELECT id FROM organization ORDER BY id"))).fetchall()
+    finally:
+        await db.close()
+    return [str(r.id) for r in rows]
+
+
 async def _workflow_billing_member(workflow_id: str) -> str | None:
     """The member a workflow's agent node runs for. **A stored fact** (H-152).
 
@@ -192,9 +236,9 @@ async def _workflow_billing_member(workflow_id: str) -> str | None:
        and they belong to the workflow's organization. That is the person who
        pressed Run or approved the gate, so the bill names them.
     2. **The workflow's owner.** A schedule has no person, and the owner is
-       the one who set it running. ``_workflow_organization`` already takes
-       the tenant from the same owner, so the bill and the writes name one
-       organization.
+       the one who set it running. A run with no organization takes its
+       tenant from the same owner (``_workflow_organization``), so the bill
+       and the writes name one organization.
 
     ⚠️ **Never a request body.** A webhook payload, an event body and a
     ``user_email`` claim all stay out, because the member decides which
@@ -281,26 +325,36 @@ def _agent_runner(workflow_id: str) -> Any:
     return _run_agent_node
 
 
-async def _get_module_code(module_id: str) -> str | None:
-    db = await _get_db()
-    try:
-        row = (
-            await db.execute(
-                text("SELECT code FROM workflow_modules WHERE id = :id AND status = 'ready'"),
-                {"id": module_id},
-            )
-        ).fetchone()
-    finally:
-        await db.close()
-    return row.code if row is not None else None
+def _module_code_reader(organization_id: str | None) -> Any:
+    """The module node's read, with the run's organization bound in.
+
+    The read opens :func:`_run_session`, so a run sees only the modules of its
+    own organization. A module of another organization reads as no row.
+    """
+
+    async def _get_module_code(module_id: str) -> str | None:
+        async with _run_session(organization_id) as db:
+            row = (
+                await db.execute(
+                    text("SELECT code FROM workflow_modules WHERE id = :id AND status = 'ready'"),
+                    {"id": module_id},
+                )
+            ).fetchone()
+        return row.code if row is not None else None
+
+    return _get_module_code
 
 
-def _pm_task_updater(workflow_id: str) -> Any:
-    """The Projects write seam, with this workflow's identity bound in.
+def _pm_task_updater(workflow_id: str, organization_id: str | None) -> Any:
+    """The Projects write seam, with the workflow's identity and the run's
+    organization bound in.
 
     The import is inside the closure so the workflows package gains no
     import-time dependency on an app package, and so a deployment without
     Projects fails the one node that needs it rather than the whole engine.
+
+    :func:`_run_session` commits on a clean exit. A task of another
+    organization is not visible, so the patch reads it as ``Task not found``.
     """
 
     async def _update(task_id: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -312,33 +366,30 @@ def _pm_task_updater(workflow_id: str) -> Any:
             )
         except Exception as exc:  # pragma: no cover — Projects ships with the gateway
             raise NodeExecutionError("the Projects app is not available") from exc
-        db = await _get_db()
         try:
-            result = await apply_task_patch(
-                db, task_id, fields, actor=workflow_actor(workflow_id),
-            )
-            await db.commit()
-            return result
+            async with _run_session(organization_id) as db:
+                return await apply_task_patch(
+                    db, task_id, fields, actor=workflow_actor(workflow_id),
+                )
         except TaskPatchError as exc:
             raise NodeExecutionError(str(exc)) from exc
-        finally:
-            await db.close()
 
     return _update
 
 
 async def _workflow_organization(db: Any, workflow_id: str) -> str:
-    """The tenant a workflow's unattended writes belong to. **A stored fact.**
+    """The tenant of a run with no organization, from the workflow's owner.
 
-    ⚠️ **The `workflows` table has no `organization_id` column today** —
-    checked against `infra/postgres/132_workflows.sql` and against a live
-    catalog, not inferred: that column exists only in the unapplied
-    `generated/01_add_columns.sql` (H3 phase 1). So the tenant is resolved the
-    way `routes/crm/auto_lead._owner_organization` resolves the mailbox
-    owner's: the workflow's ``owner_email`` through ``app_user``. One shape for
-    "which tenant does this background unit act for", not two. When H3 phase 1
-    lands, this becomes a one-column read on the workflow row and this
-    function is where that change goes.
+    ⚠️ **This is the old path (H-328).** A run that carries an organization
+    never comes here. Under FORCE RLS an unbound session cannot read this join.
+    A fresh connection reads zero rows, so this function raises. A used
+    connection holds an empty ``app.tenant_id``, so the policy cast raises
+    ``DBAPIError`` (``invalid input syntax for type uuid: ""``). Either way,
+    that run fails its sweep or notify node. H4 slice 6c deletes this function
+    with its last caller.
+
+    The owner goes through ``app_user``, as
+    `routes/crm/auto_lead._owner_organization` resolves the mailbox owner's.
 
     Reads on the CALLER's (unbound) session because it is what DECIDES the
     tenant — the same ordering identity resolution has on the request path.
@@ -366,7 +417,7 @@ async def _workflow_organization(db: Any, workflow_id: str) -> str:
     return str(org)
 
 
-def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
+def _pm_lifecycle_sweeper(workflow_id: str, organization_id: str | None) -> Any:
     """The Projects lifecycle sweep (WS-27z), identity AND tenant bound in.
 
     Mirrors ``_pm_task_updater`` for the identity half — closure import so the
@@ -377,18 +428,15 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
     ⚠️ **WS-27aa / H4 — this one is no longer an unbound background site.**
     ``run_lifecycle_sweep`` used to walk `pm_projects` with no tenant
     predicate, so one workflow's schedule archived and closed every customer's
-    work. It now takes a required ``organization_id`` and refuses without one,
-    and the tenant is resolved here from a stored fact
-    (:func:`_workflow_organization`) and bound **explicitly** on the session
-    the sweep writes through — never inherited from whoever happened to
-    trigger the run, which is the inheritance H4 forbids. Two sessions, in
-    this order and for the reason auto_lead has them:
+    work. It now takes a required ``organization_id`` and refuses without one.
+    The tenant is bound **explicitly** on the session the sweep writes
+    through — never inherited from whoever happened to trigger the run, which
+    is the inheritance H4 forbids.
 
-    1. an unbound one to RESOLVE the tenant (it is the decision, so it cannot
-       already be inside it), closed before anything is written;
-    2. ``tenant_session(org)`` for the sweep itself, which issues the
-       ``SET LOCAL app.tenant_id`` the RLS policies will read the moment H3's
-       phase 4 lands, and commits on clean exit.
+    The tenant is the run's own organization (H-328 part (a)). A run with no
+    organization keeps the old path, :func:`_resolve_workflow_organization`.
+    ``tenant_session(org)`` issues ``SET LOCAL app.tenant_id`` for the sweep,
+    and commits on clean exit.
     """
 
     async def _sweep() -> dict[str, Any]:
@@ -399,11 +447,11 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
             )
         except Exception as exc:  # pragma: no cover — Projects ships with the gateway
             raise NodeExecutionError("the Projects app is not available") from exc
-        organization_id = await _resolve_workflow_organization(workflow_id)
-        async with _tenant_session(organization_id) as db:
+        org = organization_id or await _resolve_workflow_organization(workflow_id)
+        async with _tenant_session(org) as db:
             return await run_lifecycle_sweep(
                 db,
-                organization_id=organization_id,
+                organization_id=org,
                 actor=workflow_actor(workflow_id),
             )
 
@@ -414,8 +462,8 @@ async def _resolve_workflow_organization(workflow_id: str) -> str:
     """:func:`_workflow_organization` on its own unbound resolver session.
 
     H4: unbound ON PURPOSE — this session's whole job is to decide the
-    tenant, and it writes nothing. The lifecycle sweep and ``notify.whatsapp``
-    share it, so the two take the tenant one way."""
+    tenant, and it writes nothing. Only a run with no organization comes
+    here, from the lifecycle sweep or ``notify.whatsapp``."""
     resolver = await _get_db()
     try:
         return await _workflow_organization(resolver, workflow_id)
@@ -423,14 +471,17 @@ async def _resolve_workflow_organization(workflow_id: str) -> str:
         await resolver.close()
 
 
-async def _workflow_owner(workflow_id: str) -> tuple[str, str]:
+async def _workflow_owner(
+    workflow_id: str, organization_id: str | None,
+) -> tuple[str, str]:
     """The tenant and the owner's email of a workflow. **Stored facts.**
 
-    The tenant comes from :func:`_resolve_workflow_organization`, as the
-    lifecycle sweep takes it. The owner is then read in that tenant's
-    session. Raises when either is missing."""
-    organization_id = await _resolve_workflow_organization(workflow_id)
-    async with _tenant_session(organization_id) as db:
+    The tenant is the run's own organization. A run with no organization
+    keeps the old path, :func:`_resolve_workflow_organization`. The owner is
+    then read in that tenant's session, so a workflow of another organization
+    has no owner to read. Raises when either is missing."""
+    org = organization_id or await _resolve_workflow_organization(workflow_id)
+    async with _tenant_session(org) as db:
         owner = (
             await db.execute(
                 text("SELECT owner_email FROM workflows WHERE id = CAST(:wid AS uuid)"),
@@ -439,33 +490,46 @@ async def _workflow_owner(workflow_id: str) -> tuple[str, str]:
         ).scalar()
     if not owner:
         raise NodeExecutionError(f"workflow {workflow_id} has no owner to tell")
-    return organization_id, str(owner).strip().lower()
+    return org, str(owner).strip().lower()
 
 
-def _tool_runner(workflow_id: str) -> Any:
+def _tool_runner(workflow_id: str, organization_id: str | None) -> Any:
     """``execute_tool``, with the workflow's owner bound into the one step
     that tells a member: ``notify.whatsapp`` (WS-59 RE-5). The step's
     arguments never name the member."""
 
     async def _run(action: str, args: dict[str, Any], actor: str) -> dict[str, Any]:
+        if action == NOTIFY_ACTIVITY and organization_id:
+            # The feed is keyed for each tenant (H-201c): the run's org,
+            # never the ambient value, which a scheduled run does not have.
+            return await notify_activity(args, actor, organization_id=organization_id)
         if action != NOTIFY_WHATSAPP:
             return await execute_tool(action, args, actor)
         if not workflow_id:
             raise NodeExecutionError("notify.whatsapp needs a saved workflow")
-        org, owner = await _workflow_owner(workflow_id)
+        org, owner = await _workflow_owner(workflow_id, organization_id)
         return await notify_owner_whatsapp(org, owner, workflow_id, args)
 
     return _run
 
 
-def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
+def build_node_services(
+    actor: str, workflow_id: str, organization_id: str | None,
+) -> NodeServices:
+    """The node seams of one run, bound to the run's organization.
+
+    *organization_id* has no default, so a call site that forgets it fails at
+    once. The value comes from the run (:func:`_execute_run`), never from the
+    ambient tenant or from node input. ``None`` means that the run carries no
+    organization, so it keeps the old path until H4 slice 6c.
+    """
     return NodeServices(
         run_agent=_agent_runner(workflow_id),
-        run_tool=_tool_runner(workflow_id),
-        get_module_code=_get_module_code,
+        run_tool=_tool_runner(workflow_id, organization_id),
+        get_module_code=_module_code_reader(organization_id),
         actor=actor,
-        update_task=_pm_task_updater(workflow_id),
-        run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id),
+        update_task=_pm_task_updater(workflow_id, organization_id),
+        run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id, organization_id),
     )
 
 
@@ -474,16 +538,21 @@ def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
 
 @contextlib.asynccontextmanager
 async def _run_session(organization_id: str | None) -> Any:
-    """One session for one run-lifecycle write. It commits on a clean exit.
+    """One session for one run-lifecycle step. It commits on a clean exit.
 
-    A run that carries an organization writes through
-    ``_tenant_session(organization_id)``. Only the F13 agent entry points
-    start such a run, with the org of the agent run. The org is never
-    inherited from the ambient context, which is what H4 forbids.
+    A run that carries an organization uses
+    ``_tenant_session(organization_id)``, for its run rows and for the module
+    read and the task write of its nodes. The F13 agent entry points start
+    such a run with the org of the agent run. The scans start or resume one
+    with the org of the row, for a listed org only (H-328 part (b)). The org
+    is never inherited from the ambient context, which is what H4 forbids.
+    The one exception is the read at the approval door (:func:`resume_run`).
 
     A run with no organization keeps the unbound ``_get_db()`` (the H4 note at
-    the top of this module). Under FORCE RLS that write fails, and H4 slice 6c
-    owns the conversion.
+    the top of this module). Under FORCE RLS that read finds no row on a fresh
+    connection, and raises ``DBAPIError`` on a used one (``invalid input syntax
+    for type uuid: ""``). That write fails on both. H4 slice 6c owns the
+    conversion.
     """
     if organization_id:
         async with _tenant_session(organization_id) as db:
@@ -502,9 +571,10 @@ def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
 
     A wait of up to ``WAIT_INLINE_MAX_SECONDS`` runs inline and never pauses.
     A longer wait, or a duration that only the trigger data decides, can
-    pause. Only the schedule scanner resumes such a pause, and its scan is
-    not tenant-bound yet (H4 slice 6c). So the F13 entry point refuses these
-    workflows rather than start a run that stays paused for good.
+    pause. Only the wait scan resumes such a pause, and it acts only for an org
+    on ``WORKFLOW_UNATTENDED_ORGS`` (H-328 part (b)). That list ships empty.
+    So the F13 entry point refuses these workflows rather than start a run
+    that can stay paused for good. Part (c) owns this refusal.
     """
     out: list[str] = []
     for block in serialized.get("blocks") or []:
@@ -518,6 +588,41 @@ def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
         if seconds > WAIT_INLINE_MAX_SECONDS:
             out.append(str(block.get("id")))
     return out
+
+
+#: The node types that write ``pm_tasks`` with no member check.
+_MEMBER_BLIND_WRITE_TYPES = frozenset({"pm_task", "pm_lifecycle"})
+
+#: Why such a node does not run. It names no task, so it tells no one that a
+#: private task exists.
+_MEMBER_BLIND_REASON = "A run does not check which tasks a member can see."
+#: What a run row and the approver read when a resume stops at such a node.
+_RESUME_REFUSED = (
+    "This run stopped at its gate, because a later node can change Projects "
+    f"tasks. {_MEMBER_BLIND_REASON}"
+)
+
+
+def _member_blind_write_nodes(serialized: dict[str, Any]) -> list[str]:
+    """Ids of the nodes in *serialized* that write tasks with no member check.
+
+    A ``pm_task`` or ``pm_lifecycle`` node writes ``pm_tasks`` by primary key
+    in the run's org. No step asks what the run's starter can see, and RLS
+    binds only the tenant. So a member's agent could name another member's
+    private task in the trigger payload, and the run would change that task.
+    A fixed task id has the same gap, because the agent still picks the
+    workflow. The sweep has it too, and it archives and closes tasks.
+
+    :func:`run_published_workflow`, the schedule scan (``scheduler._scan_org``)
+    and :func:`resume_run` refuse these nodes, whether the task id is a
+    template or fixed. The refusal stays until a run checks a verified member.
+    Part (c) of H-328 must decide which member that is (``workflows_app.md``).
+    """
+    return [
+        str(block.get("id"))
+        for block in serialized.get("blocks") or []
+        if str(block.get("type") or "") in _MEMBER_BLIND_WRITE_TYPES
+    ]
 
 
 def _require_org(organization_id: str | None) -> str:
@@ -566,8 +671,12 @@ async def start_run(
 ) -> str:
     """Create the run row + hub entry and launch the supervised task.
 
-    *organization_id* binds the run's writes (:func:`_run_session`). Only the
-    F13 agent entry point passes it, from the agent run's binding.
+    *organization_id* binds the run's writes (:func:`_run_session`). Two
+    callers pass it. The agent door (:func:`run_published_workflow`) passes the
+    org of the agent run's binding. The schedule scan (``scheduler._scan_org``)
+    passes the org of the workflow row, for a listed org only. Each caller
+    refuses a node of :func:`_member_blind_write_nodes` first.
+    ``tests/unit/test_workflows_start_run_org_fence.py`` names each caller.
     """
     global _ACTIVE_TOTAL
     if _ACTIVE_TOTAL >= MAX_CONCURRENT_RUNS:
@@ -628,8 +737,13 @@ async def record_skipped_run(
     trigger_kind: str,
     trigger_payload: dict[str, Any],
     reason: str,
+    organization_id: str | None = None,
 ) -> str | None:
     """Write a terminal run row for a trigger that fired but could not run.
+
+    *organization_id* binds the write (:func:`_run_session`). The scan passes
+    the org of the workflow row. An org that is not on the allowlist writes
+    nothing and returns ``None``, so a refused org leaves no row (H-328 (b)).
 
     The schedule scanner CAS-claims ``last_fired_at`` *before* it starts the
     run, because the claim is what stops two workers double-firing one tick.
@@ -644,10 +758,12 @@ async def record_skipped_run(
     auto-disable policy counts consecutive *failures*, and being busy must
     never take a healthy automation offline.
     """
+    if organization_id and not unattended.org_allowed(organization_id):
+        _log.warning("workflows.skipped_run_org_not_listed", workflow_id=workflow_id)
+        return None
     run_id = str(uuid.uuid4())
     try:
-        db = await _get_db()
-        try:
+        async with _run_session(organization_id) as db:
             await db.execute(
                 text(
                     """INSERT INTO workflow_runs
@@ -666,9 +782,6 @@ async def record_skipped_run(
                     "err": reason[:500],
                 },
             )
-            await db.commit()
-        finally:
-            await db.close()
     except Exception as exc:  # pragma: no cover - best effort bookkeeping
         _log.warning(
             "workflows.skipped_run_persist_failed",
@@ -689,6 +802,7 @@ async def record_skipped_run(
         run_id=run_id,
         status="cancelled",
         reason=reason[:160],
+        organization_id=organization_id,
     )
     return run_id
 
@@ -719,6 +833,7 @@ async def _execute_run(
         user=started_by or None,
         phase="start",
         run_id=run_id,
+        organization_id=organization_id,
     )
     _hub_emit(run_id, {"event": "run", "status": "running"})
 
@@ -739,8 +854,16 @@ async def _execute_run(
     # member. Closed as the last act of the `finally` below. An unresolved
     # member binds nothing, so a manual run keeps its clicker as before.
     from acb_common import job_member_scope
+    from acb_common.no_person import no_person_scope
 
     member_scope = contextlib.ExitStack()
+    # AUTO-7a (`proactive_agent.md` §4.2): nobody watches these kinds. The kind
+    # is a literal of the starting code or the stored run row, never a payload.
+    # An elapsed wait has no person present either, whatever the kind: the wait
+    # scan resumes it, and nobody decides anything (H-328 part (b)). The wait
+    # comes from the `reason` of the stored pause row (`resume_run`).
+    if trigger_kind in UNATTENDED_TRIGGERS or elapsed_waits:
+        member_scope.enter_context(no_person_scope())
     billing_member = await _workflow_billing_member(workflow_id)
     if billing_member:
         member_scope.enter_context(
@@ -753,7 +876,7 @@ async def _execute_run(
         outcome = await execute_workflow(
             serialized,
             trigger_payload,
-            build_node_services(actor, workflow_id),
+            build_node_services(actor, workflow_id, organization_id),
             variables=variables,
             emit=emit,
             precomputed=precomputed,
@@ -812,6 +935,7 @@ async def _execute_run(
             phase="end",
             run_id=run_id,
             status=status,
+            organization_id=organization_id,
         )
         try:
             await evaluate_automation_health(
@@ -819,6 +943,7 @@ async def _execute_run(
                 workflow_name,
                 trigger_kind=trigger_kind,
                 status=status,
+                organization_id=organization_id,
             )
         finally:
             member_scope.close()
@@ -894,31 +1019,44 @@ async def reconcile_orphaned_runs() -> int:
     scope and not yet tenant-bound, H4 slice 6c). The gate lives HERE, inside
     the function — never as an ``if`` at the gateway call site. Returns 0 (no
     rows reconciled) when disabled.
+
+    **H-328 part (b): one pass for each LISTED org.** The sweep loops over
+    :func:`_organization_ids`, skips an org that is not on
+    ``WORKFLOW_UNATTENDED_ORGS``, and binds each listed org with
+    :func:`_run_session`. Until the owner lists an org, it reads and writes no
+    run row. It marks rows ``failed`` and sends nothing and spends nothing. It
+    covers only listed orgs, because a ``failed`` unattended row counts toward
+    the auto-disable streak, and ``runs.py`` still patches an orphan lazily on
+    each read for every other org.
     """
     if os.getenv("WORKFLOW_SCHEDULER_ENABLED", "").strip().lower() in {
         "0", "false", "no", "off",
     }:
         _log.info("workflows.reconcile_disabled")
         return 0
+    count = 0
     try:
-        db = await _get_db()
-        try:
-            result = await db.execute(
-                text(
-                    """UPDATE workflow_runs SET
-                         status = 'failed',
-                         error = COALESCE(error, 'interrupted by a platform restart'),
-                         finished_at = now()
-                       WHERE status = 'running'"""
-                ),
-            )
-            await db.commit()
-            count = int(result.rowcount or 0)
-        finally:
-            await db.close()
+        orgs = await _organization_ids()
     except Exception as exc:  # best effort — reads still self-heal lazily
         _log.warning("workflows.reconcile_failed", error=str(exc)[:160])
         return 0
+    for org in orgs:
+        if not unattended.org_allowed(org):
+            continue
+        try:
+            async with _run_session(org) as db:
+                result = await db.execute(
+                    text(
+                        """UPDATE workflow_runs SET
+                             status = 'failed',
+                             error = COALESCE(error, 'interrupted by a platform restart'),
+                             finished_at = now()
+                           WHERE status = 'running'"""
+                    ),
+                )
+                count += int(result.rowcount or 0)
+        except Exception as exc:  # one org must not hide the others
+            _log.warning("workflows.reconcile_failed", error=str(exc)[:160])
     if count:
         _log.info("workflows.orphaned_runs_reconciled", count=count)
     return count
@@ -933,8 +1071,14 @@ async def evaluate_automation_health(
     *,
     trigger_kind: str,
     status: str,
+    organization_id: str | None = None,
 ) -> bool:
     """Disable a published workflow whose unattended runs keep failing.
+
+    *organization_id* is the org of the run row (H-328 part (b)). The read and
+    the disable bind it with :func:`_run_session`. An org that is not on the
+    allowlist counts nothing and disables nothing, so a workflow of an unlisted
+    org never auto-disables. A run with no org keeps the old unbound path.
 
     Spec R2 asks for a "disabled-on-repeated-failure policy with notification"
     because a published workflow keeps firing on its schedule long after the
@@ -964,13 +1108,14 @@ async def evaluate_automation_health(
     """
     if status != "failed" or trigger_kind not in UNATTENDED_TRIGGERS:
         return False
+    if organization_id and not unattended.org_allowed(organization_id):
+        return False
     reason = (
         f"Auto-disabled after {AUTO_DISABLE_AFTER} consecutive failed runs "
         "from unattended triggers. Fix the workflow, then re-enable it."
     )
     try:
-        db = await _get_db()
-        try:
+        async with _run_session(organization_id) as db:
             rows = (
                 await db.execute(
                     text(
@@ -1001,11 +1146,8 @@ async def evaluate_automation_health(
                 ),
                 {"id": workflow_id, "reason": reason},
             )
-            await db.commit()
             if not result.rowcount:
                 return False
-        finally:
-            await db.close()
     except Exception as exc:  # a health check must never fail a run
         _log.warning(
             "workflows.health_check_failed",
@@ -1026,6 +1168,7 @@ async def evaluate_automation_health(
         status="auto_disabled",
         reason=reason,
         consecutive_failures=AUTO_DISABLE_AFTER,
+        organization_id=organization_id,
     )
     return True
 
@@ -1058,6 +1201,12 @@ async def _hold_at_gate(
     resumes the run once it passes. Either way everything a resume needs
     travels in the snapshot, so even a draft test run (no published version to
     reload) resumes cleanly, and the pause outlives a gateway restart.
+
+    ⚠️ **Park and ask (AUTO-7b).** An approval gate of a run with no person
+    present asks the workflow's owner through ONE decision, when
+    ``AUTO_PARK_ORGS`` and ``DECISIONS_ORGS`` list the run's org
+    (:func:`_park_with_decision`). Then no proposal is filed. In each other
+    case the gate takes the broker door below, as AUTO-7a left it.
     """
     node_label = next(
         (
@@ -1068,6 +1217,25 @@ async def _hold_at_gate(
         node_id,
     )
     is_wait = resume_at is not None
+    if not is_wait and await _park_with_decision(
+        run_id=run_id,
+        workflow_id=workflow_id,
+        workflow_name=workflow_name,
+        node_id=node_id,
+        node_label=node_label,
+        snapshot=_pause_snapshot(
+            serialized=serialized,
+            trigger_payload=trigger_payload,
+            variables=variables,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            started_by=started_by,
+            action_id=None,
+            resume_at=None,
+        ),
+        organization_id=organization_id,
+    ):
+        return
     action_id: str | None = None
     if not is_wait:
         try:
@@ -1106,16 +1274,16 @@ async def _hold_at_gate(
                     "node_id": node_id,
                     "reason": "wait" if is_wait else "approval",
                     "snapshot": json.dumps(
-                        {
-                            "serialized": serialized,
-                            "trigger_payload": trigger_payload,
-                            "variables": variables,
-                            "workflow_id": workflow_id,
-                            "workflow_name": workflow_name,
-                            "started_by": started_by,
-                            "action_id": action_id,
-                            "resume_at": resume_at,
-                        },
+                        _pause_snapshot(
+                            serialized=serialized,
+                            trigger_payload=trigger_payload,
+                            variables=variables,
+                            workflow_id=workflow_id,
+                            workflow_name=workflow_name,
+                            started_by=started_by,
+                            action_id=action_id,
+                            resume_at=resume_at,
+                        ),
                         default=str,
                     ),
                 },
@@ -1124,24 +1292,157 @@ async def _hold_at_gate(
         _log.warning("workflows.pause_persist_failed", run_id=run_id, error=str(exc)[:160])
 
 
+def _pause_snapshot(
+    *,
+    serialized: dict[str, Any],
+    trigger_payload: dict[str, Any],
+    variables: dict[str, Any],
+    workflow_id: str,
+    workflow_name: str,
+    started_by: str,
+    action_id: str | None,
+    resume_at: float | None,
+) -> dict[str, Any]:
+    """What a resume needs, in the key order that the pause row has always
+    stored. Both doors of :func:`_hold_at_gate` write it."""
+    return {
+        "serialized": serialized,
+        "trigger_payload": trigger_payload,
+        "variables": variables,
+        "workflow_id": workflow_id,
+        "workflow_name": workflow_name,
+        "started_by": started_by,
+        "action_id": action_id,
+        "resume_at": resume_at,
+    }
+
+
+async def _park_with_decision(
+    *,
+    run_id: str,
+    workflow_id: str,
+    workflow_name: str,
+    node_id: str,
+    node_label: str,
+    snapshot: dict[str, Any],
+    organization_id: str | None,
+) -> bool:
+    """AUTO-7b: park a marked run's approval gate on ONE decision of its owner.
+
+    True when the subject task, the decision and the pause row committed in
+    one ``_run_session(org)``. False when nothing was written, and then the
+    caller files the broker proposal of AUTO-7a. Four facts must hold first:
+    the run is marked (``no_person_present``), it carries an org,
+    ``park.park_allowed(org)`` is true, and the owner resolves.
+
+    The decider is ``workflows.owner_email``, read in the run's org
+    (:func:`_workflow_owner`). It is never the billing member, the ambient
+    member or a payload field. The org is the run's stored org, bound for the
+    ask with ``bind_tenant`` as a job binds its own record. ``DecisionRefused``,
+    a missing owner or any failure rolls the transaction back, and returns
+    False. After the commit it bumps the owner's My Day version, because the
+    subject task sends no event. Fence: ``tests/unit/test_auto_park.py``.
+    """
+    from acb_common.no_person import no_person_present
+    from gateway.routes.workflows import park
+
+    if not organization_id or not no_person_present():
+        return False
+    if not park.park_allowed(organization_id):
+        return False
+    try:
+        _, owner = await _workflow_owner(workflow_id, organization_id)
+        token = bind_tenant(organization_id)
+        try:
+            async with _run_session(organization_id) as db:
+                parked = await park.park_with_decision(
+                    db,
+                    organization_id=organization_id,
+                    owner=owner,
+                    workflow_id=workflow_id,
+                    workflow_name=workflow_name,
+                    run_id=run_id,
+                    node_id=node_id,
+                    node_label=node_label,
+                    snapshot=snapshot,
+                )
+        finally:
+            release_tenant(token)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # the broker door of AUTO-7a takes the gate
+        _log.warning(
+            "workflows.park_refused",
+            run_id=run_id,
+            reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
+        )
+        return False
+    _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
+    # After the commit: the subject task sent no event, so move the owner's
+    # My Day version here. It waits a bounded time and never raises.
+    await park.bump_owner_my_day(organization_id, owner)
+    return True
+
+
 async def resume_run(
-    run_id: str, *, resumed_by: str = "approver", organization_id: str | None = None,
+    run_id: str,
+    *,
+    resumed_by: str = "approver",
+    organization_id: str | None = None,
+    pause_id: str | None = None,
 ) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
 
-    Two callers, one path: the broker handler when a human approves, and the
-    schedule scanner when a long wait's deadline passes. The pause row's
-    ``reason`` decides which gate is cleared — an elapsed wait must not also
-    clear an approval further down the graph.
+    Three callers, one path: the broker handler when a human approves, the
+    schedule scanner when a long wait's deadline passes, and the decided scan
+    when the owner answers a parked gate with yes (AUTO-7b,
+    ``scheduler.scan_decided_pauses``). The pause row's ``reason`` decides
+    which gate is cleared — an elapsed wait must not also clear an approval
+    further down the graph.
 
-    *organization_id* binds the read, the claim and the resumed run
-    (:func:`_run_session`). The broker handler passes the approver's org.
-    Under FORCE RLS a run of another org is not visible, so it reads as
-    ``no run`` and nothing resumes. The schedule scanner passes no org yet
-    (H4 slice 6c), so the agent entry point refuses a long wait.
+    ⚠️ **Exactly one resume** (AUTO-7b). The pause UPDATE names
+    ``status = 'pending'`` and the run UPDATE names ``status = 'paused'``.
+    Each one returns the row it won. A caller that wins neither starts
+    nothing, so two scans, or a scan and the broker door, start one
+    ``_execute_run``. Before AUTO-7b these UPDATEs had no guard.
+
+    ⚠️ **The scans name the pause they read** (AUTO-7b). *pause_id* is the id
+    of the pause row that the wait scan or the decided scan read. With it,
+    only THAT pause can resume, while it is still pending. So a late yes to
+    gate 1 finds its pause settled and never opens gate 2. Without it, the
+    broker door resumes the newest pending pause, as before.
+
+    *organization_id* binds the read and the claim (:func:`_run_session`).
+    The broker handler passes the approver's org. Under FORCE RLS a run of
+    another org is not visible, so it reads as ``no run`` and nothing resumes.
+    The wait scan passes the org of the run ROW, for a listed org only
+    (H-328 part (b)). A run with no org is not found by that scan, so the agent
+    entry point still refuses a long wait until part (c). A resume of an
+    elapsed wait runs with the AUTO-7a mark, whatever the kind of the run,
+    because the scan resumes it and no person is present.
+
+    ⚠️ **The approval door is the one exception to "never the ambient tenant"
+    and to "part (a) wakes nothing".** The handler takes the approver's
+    ``current_tenant()`` for any paused run, whatever started it. RLS makes
+    that org equal the stored org, so no run of another org leaks. The resumed
+    run takes its org from the run row. So an approver who clears a run that
+    paused before RLS now runs its module and notify nodes. A person approved
+    that run, and nothing wakes without one.
+
+    ⚠️ **A resume never reaches a task write.** A node of
+    :func:`_member_blind_write_nodes` that has not run closes the run as
+    ``cancelled`` and the pause as ``rejected``, as a rejected approval does.
+    That is not ``failed``: the platform stopped the run, so the auto-disable
+    policy does not count it. A node that already ran stays replayed, so a
+    resume past it goes on.
     """
     global _ACTIVE_TOTAL
+    from acb_common.no_person import no_person_present, no_person_refusal
+
+    if no_person_present():  # AUTO-7a: a marked turn resumes nothing.
+        _log.warning("workflows.resume_refused_no_person", run_id=run_id)
+        return no_person_refusal()
     async with _run_session(organization_id) as db:
         run = (
             await db.execute(
@@ -1154,41 +1455,96 @@ async def resume_run(
                 "ok": False,
                 "error": f"run {run_id} is not paused" if run is not None else f"no run {run_id}",
             }
-        pause = (
-            await db.execute(
-                text(
-                    "SELECT * FROM workflow_run_pauses "
-                    "WHERE run_id = :id AND status = 'pending' "
-                    "ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"id": run_id},
-            )
-        ).fetchone()
+        if pause_id is not None:
+            pause = (
+                await db.execute(
+                    text(
+                        "SELECT * FROM workflow_run_pauses "
+                        "WHERE id = CAST(:pid AS uuid) AND run_id = :id "
+                        "AND status = 'pending'"
+                    ),
+                    {"id": run_id, "pid": str(pause_id)},
+                )
+            ).fetchone()
+        else:
+            pause = (
+                await db.execute(
+                    text(
+                        "SELECT * FROM workflow_run_pauses "
+                        "WHERE run_id = :id AND status = 'pending' "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"id": run_id},
+                )
+            ).fetchone()
         if pause is None:
             return {"ok": False, "error": f"run {run_id} has no pending pause"}
         snapshot = parse_jsonb(pause.snapshot, {}) or {}
-        await db.execute(
-            text(
-                "UPDATE workflow_run_pauses SET status = 'resolved', "
-                "resolved_at = now() WHERE id = :id"
-            ),
-            {"id": str(pause.id)},
-        )
-        await db.execute(
-            text("UPDATE workflow_runs SET status = 'running' WHERE id = :id"),
-            {"id": run_id},
-        )
+        serialized = snapshot.get("serialized") or {}
         node_results = parse_jsonb(run.node_results, {}) or {}
+        precomputed = {
+            nid: res.get("output")
+            for nid, res in node_results.items()
+            if isinstance(res, dict) and res.get("status") == "ok"
+        }
+        blind = [n for n in _member_blind_write_nodes(serialized) if n not in precomputed]
+        # The compare-and-set (AUTO-7b). Each UPDATE names the status that it
+        # read, and RETURNING says whether it won. Two concurrent resumers
+        # read the same pending pause. The second UPDATE waits for the first
+        # one's row lock, then finds the pause settled and matches no row. So
+        # exactly one caller starts `_execute_run`.
+        claimed = (
+            await db.execute(
+                text(
+                    "UPDATE workflow_run_pauses SET status = :settled, "
+                    "resolved_at = now() WHERE id = :id AND status = 'pending' "
+                    "RETURNING id"
+                ),
+                {"id": str(pause.id), "settled": "rejected" if blind else "resolved"},
+            )
+        ).fetchone()
+        if claimed is None:
+            return {"ok": False, "error": f"run {run_id} has no pending pause"}
+        if blind:
+            moved = await db.execute(
+                text(
+                    "UPDATE workflow_runs SET status = 'cancelled', "
+                    "error = :error, finished_at = now() "
+                    "WHERE id = :id AND status = 'paused' RETURNING id"
+                ),
+                {"id": run_id, "error": _RESUME_REFUSED},
+            )
+        else:
+            moved = await db.execute(
+                text(
+                    "UPDATE workflow_runs SET status = 'running' "
+                    "WHERE id = :id AND status = 'paused' RETURNING id"
+                ),
+                {"id": run_id},
+            )
+        if moved.fetchone() is None:
+            # The run left `paused` under us. Undo the pause claim too.
+            await db.rollback()
+            return {"ok": False, "error": f"run {run_id} is not paused"}
 
     gate_node = str(pause.node_id)
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
-    serialized = snapshot.get("serialized") or {}
-    precomputed = {
-        nid: res.get("output")
-        for nid, res in node_results.items()
-        if isinstance(res, dict) and res.get("status") == "ok"
-    }
     workflow_id = str(snapshot.get("workflow_id") or run.workflow_id)
+    workflow_name = str(snapshot.get("workflow_name") or run.workflow_name)
+    run_org = getattr(run, "organization_id", None)
+    if blind:
+        _log.warning("workflows.resume_refused", run_id=run_id, nodes=blind)
+        publish_workflow_activity(
+            workflow_id,
+            workflow_name,
+            user=resumed_by,
+            phase="end",
+            run_id=run_id,
+            status="cancelled",
+            reason=_RESUME_REFUSED,
+            organization_id=str(run_org) if run_org else organization_id,
+        )
+        return {"ok": False, "error": _RESUME_REFUSED, "run_id": run_id, "node_id": gate_node}
     _HUBS[run_id] = RunHub()
     _ACTIVE_TOTAL += 1
     _ACTIVE_BY_WORKFLOW[workflow_id] = _ACTIVE_BY_WORKFLOW.get(workflow_id, 0) + 1
@@ -1196,7 +1552,7 @@ async def resume_run(
         _execute_run(
             run_id=run_id,
             workflow_id=workflow_id,
-            workflow_name=str(snapshot.get("workflow_name") or run.workflow_name),
+            workflow_name=workflow_name,
             serialized=serialized,
             trigger_payload=snapshot.get("trigger_payload") or {},
             variables=snapshot.get("variables") or {},
@@ -1208,7 +1564,7 @@ async def resume_run(
             precomputed=precomputed,
             resolved_approvals=set() if is_wait else {gate_node},
             elapsed_waits={gate_node} if is_wait else set(),
-            organization_id=organization_id,
+            organization_id=str(run_org) if run_org else None,
         ),
         name=f"workflow-resume:{run_id}",
     )
@@ -1258,7 +1614,8 @@ async def run_published_workflow(
     concurrency caps, trigger kind ``api``. Returns ``{run_id, …}`` or
     ``{error}`` (ambiguous/unknown refs are reported, never guessed). The
     name match is case-insensitive. The run carries the org, so its writes
-    bind it too (:func:`_run_session`).
+    bind it too (:func:`_run_session`). A workflow that holds a node of
+    :func:`_member_blind_write_nodes` is refused, so an agent writes no task.
     """
     org = _require_org(organization_id)
     async with _tenant_session(org) as db:
@@ -1283,6 +1640,11 @@ async def run_published_workflow(
         serialized = await load_version_serialized(db, str(row.id), int(row.latest_version))
     if serialized is None:
         return {"error": f"published version missing for workflow '{row.name}'"}
+    if _member_blind_write_nodes(serialized):
+        return {
+            "error": f"workflow '{row.name}' can change Projects tasks, so an "
+            f"agent cannot start it yet. {_MEMBER_BLIND_REASON} Nothing ran."
+        }
     long_waits = _long_wait_nodes(serialized)
     if long_waits:
         return {

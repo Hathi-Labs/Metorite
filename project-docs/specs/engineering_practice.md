@@ -58,8 +58,10 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
    `staging` ref, and that ref takes every merge. A nightly rebuild from an
    anonymised dump of production keeps it production-shaped, so it cannot
    drift.
-4. **Production** runs on its own box. It applies the `release` ref. A daily run
-   moves that ref at 21:30 UTC. A manual dispatch moves it for a hotfix.
+4. **Production** runs on its own box. It applies the `release` ref. A slot run
+   moves that ref three times a day, at 05:30, 13:30 and 21:30 UTC (D194). A
+   manual dispatch moves it for a hotfix. The home box's timer starts each
+   slot run with a nightly dispatch (D178).
 
 `specs/staging_and_daily_release.md` owns staging and the daily release. Root
 `CLAUDE.md` §4 says what to do after a merge. Test on staging before
@@ -128,14 +130,250 @@ the row the LEFT JOIN exists to include, and it removes that row first. Below
    database and failed on a full one. That test reported on the database
    instead of on the function.
 
+### 1.2 Run the whole app locally — one command
+
+**Owner request, 2026-10-30 (Metorite task LD-1).** Find the UI and function
+bugs on this machine, before a push. Staging is the last check, not the first.
+
+```sh
+bash scripts/dev_up.sh           # start. The first run builds and seeds (about 2 min).
+bash scripts/dev_up.sh --check   # health, then the tenant-isolation check
+bash scripts/dev_up.sh --stop    # stop the app. --down also removes the data.
+```
+
+It gives each worktree its own stack on `127.0.0.1`, with its own ports:
+
+- **Postgres** with the whole ladder and the RLS promotion. The gateway
+  connects as `acb_app` (`NOSUPERUSER NOBYPASSRLS`), as in production.
+- **Redis**, of its own.
+- **The gateway** with `--reload`, and **the web app** (`next dev`), signed in
+  as `dev@fracktal.in`.
+- **Two made-up organizations:** Kite & Co. (yours) and Northwind. The seed
+  checks that neither one sees the other, through the API and through an
+  unbound read as `acb_app`.
+
+**Nothing leaves the machine.** Each process starts with a clean environment
+(`env -i`). The script refuses a checkout with a `.env`, because the gateway
+reads `.env` itself. Production's switches (`scripts/dev_up/prod_flags.env`)
+come across with the outbound ones held off, by the pattern of
+`scripts/staging_refresh.sh`. Fence: `tests/unit/test_dev_up.py`.
+
+**What it cannot test.** The stack holds no keys. Mail sync, sending, WhatsApp,
+CRM sync, OAuth sign-in and model calls do not work. The owner retired staging
+(D144), so §1.3.2 says where those get their check.
+
+**Why the ladder runs inside the container.** Measured 2026-10-30 on the
+Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
+89 s with nothing to apply. Inside the container it took 38 s and 6 s.
+
+⚠️ **Never point `pytest` at this database.** The suites reset what they touch
+(§1.1). `--env` prints `DEV_UP_*` names, never `DATABASE_URL`, for that reason.
+
+### 1.3 Preview, approve, gate, merge: the owner loop (D145)
+
+**Owner directive, 2026-10-31 (Metorite task LD-7).** Show the owner a change
+the moment it works. Run the full gates after the owner approves it. Move
+production three times a day, at 05:30, 13:30 and 21:30 UTC (D194 supersedes
+"once a day").
+
+```text
+build ──▶ preview ──▶ owner approves ──▶ local staging gate ──▶ merge ──▶ next release slot
+            ▲               │
+            └── change it ◀─┘
+```
+
+**1. Build with the stack up.** Start `bash scripts/dev_up.sh` in the worktree
+when the slice starts, not when it ends. The gateway reloads and `next dev`
+reloads, so the preview is ready when the code is.
+
+**2. Preview.** When the slice works in the running app, send the owner one
+message, in chat and on the task. It holds these four items:
+
+- The URL of the page that shows the change, on `127.0.0.1`.
+- What changed, in three lines or fewer.
+- Where to click, step by step.
+- For a UI change, the captures of the `visual-review` skill.
+
+Then call `ask_on_task` with two options, **Approve** and **Change it**. In
+the same step, push the branch and open the PR as a draft. GitHub's
+`pr-check` then runs while the owner looks. It runs the tests that the diff can
+affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
+`main` after the merge (tier 2). The R8 suites run there only after CIV-4b.
+
+A slice with nothing to see skips the preview. Docs, tests, a script and a
+refactor with no change in behaviour go straight to step 4.
+
+**Small screen change (D200).** A small, low-risk change on an existing screen
+skips the wait for approval. The slice is LOW or STANDARD, and it is one field,
+one control, one line of text or a layout fix, or its whole change sits behind
+a flag that is off. It still needs the captures, the verifier and the full
+gates. After the merge, ask the owner "Looks right" or "Change it" on the task.
+D200 lists the cases that do not qualify. When in doubt, preview first.
+
+**3. The owner answers.**
+
+- **Approve:** go to step 4.
+- **Change it:** build again, then send a new preview.
+- **No answer in this session:** leave the PR as a draft and the question
+  open. The next session finds the answer in `my_work` as `run_answered`.
+
+**4. The local staging gate (LD-9).** Run `bash scripts/stage_local.sh` in the
+worktree. The independent verifier, and the reviewer by tier, run beside it.
+The gate tests the merge of the branch with today's `origin/main`, not the
+branch alone. It runs four steps:
+
+1. The full pr-check suite on a local CI lane (`scripts/ci_local.sh`). The
+   home server runs it first.
+2. The production build: `next build` and `next start`, and the gateway with
+   no reload, as `acb_app` under FORCE RLS.
+3. The migration rehearsal. It restores last night's reduced copy at
+   production's migration ledger. Then `scripts/apply_migrations.sh`, the
+   runner that the deploy uses, applies the branch's new migrations.
+4. Smoke: health, `/version`, the tenant-isolation check and the Playwright
+   smoke set.
+
+A pass posts the commit status `local-staging` = `success` on the exact head
+commit, with a summary of the run. A failure posts `failure` and names the
+step. Fence: `tests/unit/test_stage_local.py` (LD-9).
+
+**5. Merge.** Run `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n>
+--squash`. From LD-10, `premerge.sh` refuses a head commit with no
+`local-staging` pass. A new commit on the branch needs a new pass. LD-10 names
+its fence.
+
+**6. Production, three times a day (D194).** Each release slot, at 05:30,
+13:30 and 21:30 UTC, ships the tip of `main` (§2 and
+`specs/staging_and_daily_release.md` §4). An agent dispatches `deploy.yml`
+only for a hotfix that the owner asks for, or when production is down. Report
+a merge as "reaches production at the next release slot". After the release,
+confirm `/version` `applied_sha`. The home box's timer starts each release
+(D178). An agent never sets `nightly=true` by hand.
+
+**Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
+`bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
+the PR body.
+
+**Steps 1 to 3 are advisory (R7).** No test makes a skipped preview fail. The
+owner sees a missing preview, because no approval arrives.
+
+#### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
+
+**Status, 2026-10-31:** 🟡 LD-8c is built (PR 1554), and it reaches
+production at the 21:30 UTC release. LD-8a and LD-8b are in build. The
+spec-auditor gave GO-NARROWED and split LD-8 into three slices.
+
+**Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
+night (`scripts/staging_export.sh`). It holds the organizations in
+`STAGING_EXPORT_SLUGS`, minimised by `infra/staging/minimise.sql`. It is about
+83 MB, at `/var/lib/acb-staging-export/current/` on the production box. The
+files are `root:acb`, mode 0640, so `ssh metorite` (user `acb`) reads them with
+no sudo.
+
+**Measured 2026-10-31, and the reason LD-8c goes first:**
+
+- **The copy still holds secrets.** `minimise.sql` keeps `push_subscriptions`,
+  the live push keys of real devices (`endpoint`, `p256dh`, `auth`). It also
+  keeps `plugins.auth_config`, `whatsapp_member_links.code_hash` and
+  `whatsapp_pending_acts.confirm_code_hash`. No script deletes them.
+- **The nightly backup check fails.** On 2026-10-31 at 02:37 UTC, the restore
+  in the verify container stopped: "memory required is 65 MB,
+  maintenance_work_mem is 64 MB". The dump exists, but nobody proved it
+  restorable. `staging_export.sh` runs only after a good verify, so no copy
+  arrived.
+- So **no copy comes to this PC before LD-8c lands and the next backup
+  passes.** The owner approved a copy with its credentials blanked.
+
+**LD-8c: AGENT-SAFE to build, HIGH to land (deploy path).** It ships at the
+21:30 UTC release, which the home box starts (D178).
+
+- `scripts/backup_db.sh` starts the verify container with
+  `-c maintenance_work_mem=256MB`. Fence: `tests/unit/test_backup_deploy_wiring.py`.
+- `minimise.sql` deletes `push_subscriptions` (with RE-9b), and blanks the
+  three columns above. The plugin auth also leaves `plugins.manifest`. Each
+  open WhatsApp act closes. Its step 6 name check also catches `p256dh`,
+  `auth`, `code_hash`, any `token` and `encryption_key`. Fences:
+  `tests/unit/test_staging_minimise_r8.py` (R8) and
+  `tests/unit/test_staging_export.py`.
+- Each restore script asks for 256 MB too (`restore_db.sh`,
+  `staging_refresh.sh`). The production pooler ignores that request, so H-441
+  holds the disaster-restore fix.
+- Proof: the backup at 02:30 UTC on 2026-11-01 logs "restore verified", and a
+  new `current` copy appears.
+
+**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH.**
+
+- It pulls the copy over `ssh metorite` with `scp` or `ssh ... tar`, because
+  Git Bash has no `rsync`. The target is `~/.metorite/prod-copy/<UTC date>/`.
+- It limits the folder to the current user with `icacls`: no inheritance, one
+  principal. NTFS ignores a POSIX mode, so the test checks the ACL.
+- It checks `SHA256SUMS`. It takes the age from the remote `stat -c %Y` of
+  `staging.dump`, prints it, and refuses a copy older than 36 hours.
+- It keeps the 2 newest copies. It refuses a target inside a git work tree. It
+  never prints the content of a file.
+- Fence: `tests/unit/test_prod_copy.py`, with `ssh` replaced by a stub
+  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy, the retention of
+  2, and a target inside a git work tree.
+
+**LD-8b: `bash scripts/dev_up.sh --data prod --as <email>`. AGENT-SAFE, HIGH.**
+
+- The dump is `pg_dump` 17 (archive format 1.16). So this mode uses
+  `pgvector/pgvector:pg17`. `.dev_up/state` records the data mode, and a switch
+  needs `--reset`.
+- It ports `scripts/staging_refresh.sh` steps 4 to 6 into the container, as one
+  `bash -c` run: the roles from `roles.txt`, the schemas and extensions from
+  `extensions.txt`, then `pg_restore --no-owner --no-acl` with the
+  `SCHEMA - public` entry left out. A line `pg_restore: error` stops it.
+- Before the gateway starts, it runs `DELETE FROM push_subscriptions`. This is
+  a second defence after LD-8c.
+- It skips the demo seed and the RLS promotion replay, because the copy holds
+  both. It grants `acb_app` (NOSUPERUSER NOBYPASSRLS). Then
+  `apply_migrations.sh` applies the branch's pending migrations.
+- It reads production's switches through `DEV_UP_FLAGS_FILE=<copy>/flags.env`
+  and the existing `flag_env`, so every held switch stays off. It never writes
+  `scripts/dev_up/prod_flags.env`.
+- `--as` names the member to sign in as. It must be an `app_user` with an
+  active `org_membership`. With no `--as`, it refuses and lists the active
+  members.
+- The web app reads `DEV_SIGNED_IN_EMAIL` in `src/lib/gateway.ts`, in the
+  `!isAuthEnabled` branch only. Production still returns no identity. Fence:
+  `src/lib/authFailsClosed.test.ts`. The UI gate of
+  `workbench/control_plane/AGENTS.md` applies.
+- Fences: new cases in `tests/unit/test_dev_up.py`. R8 on the restored copy:
+  `relforcerowsecurity` holds on the tenant tables, `push_subscriptions` has 0
+  rows, and `acb_app` reads 0 rows of another organization.
+
+**Non-goals.** No write to production. No change to the export schedule. The
+copy is never used by CI, never goes into git, a log, a PR or a chat message,
+and never leaves this PC.
+
+**Verify with:**
+
+```sh
+uv run pytest tests/unit/test_prod_copy.py tests/unit/test_dev_up.py \
+  tests/unit/test_staging_export.py tests/unit/test_staging_box.py \
+  tests/unit/test_backup_deploy_wiring.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_staging_minimise_r8.py -q
+cd workbench/control_plane && npx vitest run src/lib/authFailsClosed.test.ts
+```
+
+#### 1.3.2 What local staging cannot test
+
+This PC holds no production keys. So it cannot test OAuth sign-in on the real
+domain, mail, WhatsApp, CRM sync or model calls. It cannot test Caddy, the
+systemd units or `deploy/*.sh` on a box either. The release's own smoke jobs
+(`smoke` and `chat-smoke`) check those on production, and then the owner does.
+A flag that needs a live check still waits for the owner (D144 point 6).
+
 ## 2. Release: deploy is not release
 
 **Deploy** = the code is on the box. **Release** = a customer can see the
 behaviour. Keep them separate, because that separation is what makes a bad merge
 a non-event.
 
-- **A merge deploys to staging, and production takes one release a day**
-  (WS-38, `specs/staging_and_daily_release.md`).
+- **A merge deploys to staging, and production takes three releases a day**,
+  at 05:30, 13:30 and 21:30 UTC (WS-38, D194,
+  `specs/staging_and_daily_release.md`).
 - **Ship dark.** Every feature lands behind a flag, defaulting OFF, and the flip
   is a deliberate act — for anything outward-facing or spend-bearing, an
   **owner-gated** one (`work_plan.md` §6). This is already our habit and it is
@@ -160,8 +398,8 @@ a non-event.
   pooled cutover a ring is a per-org feature flag, which **D25.2** already fixed
   as the only version-skew mechanism we support (one codebase, one schema, always
   latest).
-- **The ring order matters more than the clock.** The clock is 21:30 UTC each
-  day. The order is "us first, then one, then all".
+- **The ring order matters more than the clock.** The clock is 05:30, 13:30
+  and 21:30 UTC each day (D194), and the home box's timer starts it (D178). The order is "us first, then one, then all".
 
 ## 3. Migrations — the sharpest edge we have
 
@@ -251,7 +489,9 @@ three distinct symptoms, one cause.
 
 **Cap work in flight.** The constraint is not agent capacity; it is integration
 bandwidth, and that is one person. Three or four open branches is the ceiling. A
-queue of six (2026-08-09) is above it.
+queue of six (2026-08-09) is above it. More machines do not raise this cap.
+`docs/dev_capacity.md` sizes lanes, sub-agents and CI to the machines that we
+have, inside this cap.
 
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the
@@ -260,7 +500,9 @@ not LOW) → open a PR → merge, watch the deploy and the `main` unit job, and
 test on staging.
 `.claude/commands/next-ticket.md` owns the steps and the tiers (owner decision,
 2026-10-16). Locally, run `scripts/affected_tests.py`. pr-check runs the
-whole suite. Two properties make it work:
+tests that the diff can affect (`affected_tests.py --gate`), and the full
+suite when the diff is FULL. `main` runs the full suite after the merge. The
+tiers are in `specs/ci_velocity.md` §4 (D176). Two properties make it work:
 
 1. **The verifier must not be the implementer**, and re-derives its facts from
    the code rather than trusting the write-up.
@@ -364,6 +606,15 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   adversarial review, the
   visual review, the board row, the spec header (R4) and new fence tests (R7)
   wait for the hardening pass.
+- **Both run the change on the local stack** (§1.2, owner request 2026-10-30).
+  The implementer checks each criterion in the running app before it reports.
+  The verifier checks them again on its own run and quotes the evidence.
+  Staging is then a smoke check, plus a full test of what the PC cannot run:
+  the deploy path, real OAuth, real webhooks and syncs, and a migration on
+  production-shaped data.
+- **A small slice skips the spec audit** when its Metorite task states the
+  acceptance criteria (`/next-ticket` step 2). A HIGH-tier slice, and the
+  first slice of a spec, keep it.
 - A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
   migration, money, credits, secrets, a member or role write, or the deploy
   path.
@@ -373,6 +624,11 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   The full adversarial review still follows the tier of the slice
   (`/next-ticket` step 1b). `workbench/control_plane/DESIGN_SYSTEM.md` §11
   holds the gate. The other process fences stay advisory.
+- **The CI tiers (D176).** A PR runs lint, the SAFETY fences and the unit
+  tests that its diff can affect. A FULL diff runs all of them. `main` runs
+  the full suite in batches, and a red batch is fixed forward at once. The R8
+  suites join that batch with CIV-4b, and CIV-3 merges only after CIV-4b.
+  `specs/ci_velocity.md` §4 owns the tiers.
 
 **2. Harden.** One PR when the feature works, labelled `harden`.
 
@@ -396,19 +652,27 @@ fence goes into one list in the PR that adds it. If you are not sure, choose
 **Before you push.** `bash scripts/prepush.sh` runs the fences and the
 affected tests in a few minutes.
 
-**The whole suite, on this PC.** `bash scripts/ci_local.sh` runs every
-pr-check job in the `metorite-ci` WSL2 distro. The distro is preset, so a run
+**The whole suite, on the home server or this PC.** `bash scripts/ci_local.sh`
+runs every pr-check job on a preset machine. The machine is preset, so a run
 spends its time on tests, not on installs. The jobs come from
 `.github/workflows/pr-check.yml` through `scripts/ci_pc/steps.py`, so the two
-cannot drift. Set it up once with `bash scripts/ci_pc/setup.sh`.
+cannot drift.
 
+- **Two lanes (task 1534).** The home server runs the suite as user `ci`
+  (`ci@metorite-home`, port 2222, over Tailscale). This PC's `metorite-ci`
+  WSL2 distro takes the run when the home server is busy or does not answer.
+  So two suites can run at once. `--home` or `--pc` picks one lane. Each lane
+  runs one suite at a time, behind a lock.
+- **Setup.** This PC's lane: `bash scripts/ci_pc/setup.sh`. The home server:
+  `scripts/home_server/remote_access.ps1`, then `wsl_setup.ps1`. That runs
+  `setup.sh`, which presets the `ci` user with the same `bootstrap.sh`.
 - It tests a COMMIT. Commit first.
-- The distro cannot read the Windows drives and cannot start a Windows
-  program. The code reaches it through `git`, never through a mount.
+- Neither lane can read the Windows drives or start a Windows program. The
+  code reaches it through `git`, never through a mount.
 - It is not the merge gate. pr-check on GitHub is.
-- It shares ONE WSL2 VM with Docker Desktop and every distro. So it sizes its
-  shards by free memory, caps each container, and refuses to start below
-  8 GB free. On 2026-10-20 an uncapped run hung the VM for every session.
+- Each lane shares ONE WSL2 VM with the other distros of its machine. So it
+  sizes its shards by free memory, caps each container, and refuses to start
+  below 8 GB free. On 2026-10-20 an uncapped run hung the VM for every session.
 - When WSL or Docker hangs, run `bash scripts/ci_pc/doctor.sh` from
   Windows. `--fix` repairs it in a known order: `wsl --shutdown`, then the
   WSL service (one UAC prompt), then Docker Desktop and only its own distro,

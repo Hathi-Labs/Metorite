@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent } from "../lib/utils";
 import { getEmail, fetchFullBody, detectReplyCommitment } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
 import { useDraftSession } from "../lib/useDraftSession";
 import { splitQuotedText } from "../lib/quoting";
 import { useEmailStore, withPatch } from "../lib/emailStore";
@@ -20,7 +21,7 @@ import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
 import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import {
   autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
   type DraftStatus,
@@ -53,6 +54,7 @@ export function ConversationView({
   messages,
   openedId,
   renderActions,
+  renderReplyBar,
   lightVersions,
   onSent,
 }: {
@@ -62,6 +64,9 @@ export function ConversationView({
    *  Forward and "More actions". The reading pane owns every handler, so
    *  each card acts on its own message. */
   renderActions?: (message: Email) => ReactNode;
+  /** The Reply, Reply all and Forward buttons below the body of one open card
+   *  (`MessageReplyBar`). The reading pane owns these handlers too. */
+  renderReplyBar?: (message: Email) => ReactNode;
   /** The messages whose light version the member asked for. */
   lightVersions?: ReadonlySet<string>;
   /** Called after an in-thread draft is sent so the parent can surface the
@@ -155,7 +160,7 @@ export function ConversationView({
           .then((full) => setHydrated((h) => ({ ...h, [m.id]: full })))
           // On failure, cache the list row so the effect doesn't retry this
           // message forever every time `hydrated` changes for another card.
-          .catch(() => setHydrated((h) => ({ ...h, [m.id]: m })));
+          .catch(() => setHydrated((h) => ({ ...h, [m.id]: withFailedFiles(m) })));
       }
     });
   }, [expanded, visible, hydrated]);
@@ -254,16 +259,30 @@ export function ConversationView({
               <div className="px-3 pb-3">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   {/* Every recipient of each mail of a thread: To, Cc and the
-                      Bcc of a mail the member sent. One cut line hid the Cc
-                      (owner report, 2026-10-24). */}
-                  <div className="min-w-0 space-y-0.5 text-[11px]">
-                    <RecipientList label="To" people={m.to} accountId={m.accountId} />
-                    <RecipientList label="Cc" people={m.cc ?? []} accountId={m.accountId} />
-                    <RecipientList label="Bcc" people={m.bcc ?? []} accountId={m.accountId} />
-                  </div>
+                      Bcc of a mail the member sent, in one line until the
+                      member asks (owner, 2026-11-01). The Cc stays in the
+                      line by name: one cut line hid it (2026-10-24). */}
+                  <RecipientSummary to={m.to} cc={m.cc} bcc={m.bcc} accountId={m.accountId} className="min-w-0 space-y-0.5 text-[11px]" />
                   {/* A direct child: the row measures this line for its width. */}
                   {renderActions?.(view)}
                 </div>
+                {/* The files of this message, on top of its body as in Outlook
+                    (owner, 2026-11-06). The same chips as the single email, so
+                    the earlier messages of a thread show their files too. The
+                    fetch below settles `hydrated`, also on a failure. */}
+                {view.hasAttachments && (
+                  <AttachmentList
+                    attachments={view.attachments}
+                    status={view.attachmentsStatus}
+                    onRetry={async () => {
+                      // This one message: the other cards stay as they are.
+                      const again = await getEmail(m.id);
+                      setHydrated((h) => ({ ...h, [m.id]: again }));
+                    }}
+                    pending={!hydrated[m.id]}
+                    className="mb-3"
+                  />
+                )}
                 {view.bodyHtml || view.bodyText ? (
                   <MessageContent
                     html={view.bodyHtml}
@@ -277,15 +296,7 @@ export function ConversationView({
                     No preview text.
                   </div>
                 )}
-                {/* Per-message attachments — same card UI (with image
-                    thumbnails) as the single-message reader, so a thread's
-                    earlier messages surface their files too. */}
-                {view.hasAttachments && (
-                  <AttachmentList
-                    attachments={view.attachments}
-                    className="mt-4 pt-3 border-t border-border"
-                  />
-                )}
+                {renderReplyBar?.(view)}
               </div>
             )}
           </div>
@@ -699,6 +710,7 @@ export function DraftCard({
     <div
       ref={cardRef}
       data-email-composer=""
+      data-ask-clear=""
       style={size.rootStyle}
       className={`border border-primary/40 rounded-lg bg-primary/5 px-3 py-3 ${size.rootClass}`}
     >

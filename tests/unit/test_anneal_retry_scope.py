@@ -135,7 +135,7 @@ class _Fakes:
         ok = {n: {"token": "x"} for n in names if is_authorized is None or is_authorized(n)}
         return ok, {n: "refused" for n in names if n not in ok}
 
-    async def authorizer(self, _payload, _thread=None):
+    async def authorizer(self, _payload, _thread=None, *, session_user=None):
         self.state["authorizer_calls"] += 1
         return _next(self.state["authorizers"])
 

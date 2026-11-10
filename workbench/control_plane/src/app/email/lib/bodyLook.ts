@@ -173,6 +173,26 @@ export function frameColorScheme(look: BodyLook): "light" | "dark" {
   return look === "native" ? "dark" : "light";
 }
 
+/**
+ * The height of the content of a mail frame, in px (owner, 2026-11-06).
+ *
+ * The height of the root element is never less than the height of the frame.
+ * So a measure of it could not shrink a frame: a short mail kept its first
+ * 400 px, and each new measure added the slack again. The buttons below the
+ * body fell off the screen.
+ *
+ * While the content fits the frame, the body gives its true height. The root
+ * element counts only when it holds more than the frame shows, for content
+ * that the body does not contain, such as a box placed against the page.
+ */
+export function frameContentHeight(m: {
+  bodyScroll: number;
+  docScroll: number;
+  docClient: number;
+}): number {
+  return m.docScroll > m.docClient ? Math.max(m.docScroll, m.bodyScroll) : m.bodyScroll;
+}
+
 // ── The base colour of the invert ──────────────────────────────────────────
 
 /** The filter of the invert look, and of each re-inverted image. */

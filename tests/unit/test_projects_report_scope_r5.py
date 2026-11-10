@@ -49,12 +49,15 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from datetime import UTC, datetime
+
 from fastapi import HTTPException
 from gateway.routes.projects import analytics as ana
 from gateway.routes.projects import analytics_capacity as cap_mod
 from gateway.routes.projects import analytics_conflicts as conf_mod
 from gateway.routes.projects import analytics_dataset as ds
 from gateway.routes.projects import analytics_pulse as pul
+from gateway.routes.projects import due_day
 from gateway.routes.projects import report_scope as scope
 from gateway.routes.projects import reports as rep
 from sqlalchemy import text
@@ -852,7 +855,9 @@ def test_j_a_saved_row_with_no_subject_renders_as_before(seeded, wired) -> None:
                 wired["vis"],
             )
             return (await db.execute(
-                text(ana.load_sql(where)), ana.load_params(wired["vis"], seeded["project"]),
+                text(ana.load_sql(where)),
+                {**ana.load_params(wired["vis"], seeded["project"]),
+                 "day_start": due_day.day_start("UTC", datetime.now(UTC))},
             )).fetchall()
     rows = asyncio.run(direct())
     want = [

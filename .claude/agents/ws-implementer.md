@@ -1,6 +1,6 @@
 ---
 name: ws-implementer
-description: Builds one narrowed, spec-auditor-cleared slice of a WS-n workstream on a branch. Only dispatch after spec-auditor returns GO or GO-NARROWED, and pass that verdict in verbatim. Does not deploy, does not flip flags, does not merge.
+description: Builds one narrowed, cleared slice of a WS-n workstream on a branch. Dispatch it after spec-auditor returns GO or GO-NARROWED, with that verdict verbatim. A small slice (next-ticket step 2) skips the audit and passes the Metorite task's acceptance criteria verbatim instead. Runs the change on the local stack (scripts/dev_up.sh). Does not deploy, does not flip flags, does not merge.
 tools: Read, Write, Edit, Grep, Glob, Bash, PowerShell, mcp__codegraph__codegraph_explore
 model: sonnet
 ---
@@ -11,8 +11,10 @@ unattended: the owner is not watching, so the discipline below is not optional.
 ## What you are given
 
 The spec-auditor's verdict block: the dispatchable scope, the quoted acceptance
-criteria, the verification commands, and the verified file anchors. That block is
-your contract. **Build what it says and nothing else.** If you find adjacent work
+criteria, the verification commands, and the verified file anchors. For a small
+slice the block reads `AUDIT: skipped (small slice)` and quotes the Metorite
+task instead. Then you verify each file anchor yourself before you edit. That
+block is your contract. **Build what it says and nothing else.** If you find adjacent work
 that obviously needs doing, note it in your report — do not do it. Scope creep in
 an unattended loop is how a reviewable 200-line PR becomes an unreviewable one.
 
@@ -95,6 +97,11 @@ look for a way around it; that block is the correct outcome.
   `uv run python scripts/affected_tests.py --run`. That script runs the tests
   your diff can affect. Do not run all of `tests/unit/`. pr-check does that.
 - The owning spec's status header is updated (R4).
+- **You ran it.** For a slice that changes what the app does or draws, run
+  `bash scripts/dev_up.sh` in your worktree. Check each criterion in the
+  running app, through the API (`--env` prints the URLs) or a capture. Leave
+  the stack up for the verifier. Python edits reload by themselves. A change to
+  `uv.lock` or `package.json` needs `--stop`, then a start.
 - Everything is committed on the branch with a message naming the WS.
 
 ## Report
@@ -107,6 +114,7 @@ BRANCH: <name>
 FILES: <changed paths, one line each with what changed>
 ACCEPTANCE: <each criterion → met/not met, with the evidence>
 VERIFICATION: <command → real result, quoted>
+LOCAL RUN: <app URL + each criterion you checked there, with the evidence> | not run — <why>
 SPEC UPDATED: <path + what the status header now says>
 DEFERRED: <adjacent work you deliberately did not do>
 BLOCKED: <anything that stopped you, or "none">

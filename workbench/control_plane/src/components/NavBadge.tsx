@@ -72,7 +72,7 @@ export default function NavBadge({
       aria-label={label}
       title={label}
       data-nav-badge={tone}
-      className={`flex items-center justify-center rounded-full text-[10px] font-bold leading-none ${PLACE[placement]} ${TONE[tone]} ${className}`}
+      className={`flex shrink-0 items-center justify-center whitespace-nowrap rounded-full text-[10px] font-bold leading-none ${PLACE[placement]} ${TONE[tone]} ${className}`}
     >
       {text ?? badgeText(count)}
     </span>

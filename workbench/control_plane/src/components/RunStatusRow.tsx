@@ -115,7 +115,7 @@ export default function RunStatusRow({
       data-run-status={placement}
       data-run-tone={view.tone}
       title={text}
-      className="flex min-w-0 items-center gap-2 text-[11px]"
+      className="flex min-w-0 items-center gap-2 text-[11px] glass:text-caption"
     >
       <Icon
         name={TONE_ICON[view.tone]}

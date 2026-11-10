@@ -38,6 +38,7 @@ then re-evaluate whether five floor modes still earn their place*).
 """
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import time
@@ -294,8 +295,16 @@ async def discard_pending(thread_id: str) -> int:
 
 def make_signal(
     *, thread_id: str, author: str, text: str, run_id: str | None = None,
+    typed: bool = False,
 ) -> dict[str, Any]:
-    """One steer, as it is stored and as it travels on the control bus."""
+    """One steer, as it is stored and as it travels on the control bus.
+
+    ``typed`` is True only when the member typed *text* (PZ-31). The steer
+    route sets False for a card answer and a Continue turn. Only a typed
+    steer of the run member grounds a profile write
+    (``assistant_profile.add_steered_words``). A stored steer with no
+    ``typed`` key reads as False.
+    """
     return {
         "id": uuid.uuid4().hex,
         "threadId": thread_id,
@@ -303,6 +312,7 @@ def make_signal(
         "text": text,
         "targetRunId": run_id,
         "ts": int(time.time() * 1000),
+        "typed": typed is True,
     }
 
 
@@ -434,8 +444,8 @@ async def discard_signal(thread_id: str, signal_id: str) -> None:
 # Cross-worker delivery is the control bus's job (dispatch_control), not this
 # dict's — by the time text lands here it has already reached the right worker.
 
-#: Each entry keeps the signal it came from (id, author, text), so a note the
-#: run never read can go back to the durable store as the same steer.
+#: Each entry keeps the signal it came from (id, author, text, typed), so a
+#: note the run never read can go back to the durable store as the same steer.
 _PENDING_GUIDANCE: dict[str, list[dict[str, Any]]] = {}
 
 #: Threads whose run can read no more guidance: it has sent its terminal
@@ -449,12 +459,16 @@ _CLOSED: set[str] = set()
 
 def buffer_guidance(
     thread_id: str, author: str, text: str, *, signal_id: str = "",
+    typed: bool = False,
 ) -> bool:
     """Queue one attributed note for injection at the run's next tool boundary.
 
     Returns False when nothing was queued: no thread, no text, or a run that
     has already ended (:func:`return_unconsumed`). The caller then keeps the
     durable signal, so the steer is answered by the follow-up turn.
+
+    ``typed`` is the signal's flag (:func:`make_signal`). The entry keeps it,
+    so a note that goes back to the store keeps it too (PZ-31).
     """
     if not thread_id or not (text or "").strip():
         return False
@@ -467,6 +481,7 @@ def buffer_guidance(
         buf.pop(0)
     entry: dict[str, Any] = {
         "note": note, "id": signal_id, "author": who, "text": text.strip(),
+        "typed": typed is True,
         # A number that is never used twice in this process. A waiting card
         # compares two reads of these (:func:`guidance_marks`).
         "seq": next(_GUIDANCE_SEQ),
@@ -575,6 +590,9 @@ async def return_unconsumed(thread_id: str) -> int:
                 "targetRunId": None,
                 "ts": int(time.time() * 1000),
                 "returned": True,
+                # PZ-31: the flag goes back with the steer, so the follow-up
+                # grounds the member's own typed words.
+                "typed": e.get("typed") is True,
             }
             if signal["text"] and await persist_signal(thread_id, signal):
                 given += 1
@@ -618,6 +636,23 @@ async def end_of_run(thread_id: str) -> int:
         _CLOSED.discard(thread_id)
 
 
+def _count_typed_steers(entries: list[dict[str, Any]]) -> None:
+    """Make the run member's own typed steers in *entries* typed words of
+    the run (PZ-31). The model now reads them, so a later profile save in
+    the same run may ground in them.
+
+    The rule lives in ``assistant_profile.add_steered_words``: the flag must
+    be True, and the author must be the member that the chat route named
+    for the run. This function only hands each entry over. It knows no
+    member, and it reads none from the steer text. Never raises.
+    """
+    with contextlib.suppress(Exception):  # a note must reach the model anyway
+        from acb_common.assistant_profile import add_steered_words
+
+        for e in entries:
+            add_steered_words(e.get("author"), e.get("text"), typed=e.get("typed"))
+
+
 def decorate_tool_result(result: Any, thread_id: str | None = None) -> Any:
     """Append any pending steer notes to a tool's return value.
 
@@ -651,6 +686,7 @@ def decorate_tool_result(result: Any, thread_id: str | None = None) -> Any:
         if not notes:
             return result
         _forget_durable(tid, entries)
+        _count_typed_steers(entries)
         block = (
             "\n\n[The following arrived from a participant while you were "
             "working. Treat it as instruction from the user, and adjust what "
@@ -716,6 +752,7 @@ def without_replayed(
 
 async def send_steer(
     thread_id: str, author: str, text: str, *, run_id: str | None = None,
+    typed: bool = False,
 ) -> dict[str, Any]:
     """Persist a steer and deliver it to whichever worker owns the run.
 
@@ -727,9 +764,13 @@ async def send_steer(
     ``undelivered`` is True when NO process heard the steer. The route then
     asks ``run_liveness`` whether the run is dead, and if so it starts the
     next run itself, in the same request (incident 2026-10-09).
+
+    ``typed`` says the member typed *text* (PZ-31, :func:`make_signal`). The
+    default is False, so a caller that does not say grounds nothing.
     """
     signal = make_signal(
         thread_id=thread_id, author=author, text=text, run_id=run_id,
+        typed=typed,
     )
     stored = await persist_signal(thread_id, signal)
 
@@ -739,6 +780,7 @@ async def send_steer(
         "signal_id": signal["id"],
         "author": author,
         "text": text,
+        "typed": signal["typed"],
     }
     try:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415

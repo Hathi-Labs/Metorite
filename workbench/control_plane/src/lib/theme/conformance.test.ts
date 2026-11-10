@@ -222,9 +222,9 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
     "the theme picker: accent presets and swatches, i.e. colour as this page's DATA",
   "app/whatsapp/connect/page.tsx": "Meta brand blue on a 'Connect with Facebook' button",
   "components/MetoriteMark.tsx":
-    "the Metorite comet's own gradient, copied once from brand/metorite-logo.svg and " +
-    "its -dark twin. A brand mark keeps its colours under every accent, or it stops " +
-    "being the mark",
+    "the Metorite comet's own fill, black or white, copied once from " +
+    "brand/metorite-logo.svg and its -dark twin. A brand mark keeps its colours " +
+    "under every accent, or it stops being the mark",
   "app/manifest.ts":
     "the web manifest's splash and frame colours: the browser reads this JSON " +
     "outside the page, where no CSS token exists, so it can only take a literal",
@@ -373,7 +373,8 @@ describe("solid controls go through the Button primitive", () => {
   // 21 since the same day: that Send button is the `Button` primitive now.
   // 20 since 2026-10-12: the composer's split Send/Queue/Steer pill is gone.
   // Send and Stop are one `ChatSendButton` (`lib/chatSteer.ts`).
-  const SOLID_BUTTON_DEBT = 20;
+  // 19 since 2026-10-31: the Meeting copilot switch is a `Switch` now (GL-2).
+  const SOLID_BUTTON_DEBT = 19;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -450,7 +451,7 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 2,
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
-    "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
+    "app/email/components/automation/ai-settings/fixDialog.tsx": 2,
     // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
     // review round 1: the banner gives no setup link).
     "app/integrations/components/ApiKeysView.tsx": 43,
@@ -1183,15 +1184,13 @@ describe("the headless substrate is wrapped, not imported", () => {
     // panel and buttons, and no portalled picker inside.
     ...MY_TASKS_ALERT_LAYER,
     "app/tasks/components/TaskSettingsModal.tsx",
-    // CRM-U2 (WS-53, 2026-10-11) — the five CRM overlays. The record sheet
-    // is a `Modal` drawer, and the lost-reason delete is a `ConfirmDialog`.
+    // CRM-U2 (WS-53, 2026-10-11) — the CRM overlays. The lost-reason delete
+    // is a `ConfirmDialog`. The record sheet left this list with ORC-1: it is
+    // a `CardPanel` now, and `crmCardPanel.test.ts` holds it.
     "app/crm/components/ConvertModal.tsx",
     "app/crm/components/MoveModal.tsx",
     "app/crm/components/PipelineSettings.tsx",
     "app/crm/components/QuickCreateModal.tsx",
-    // CRM-Q6b: both record pages draw their drawer through ONE frame, so the
-    // frame is what imports Modal (the `ManagerFrame` rule above).
-    "app/crm/components/RecordShell.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {
@@ -1236,7 +1235,9 @@ describe("the headless substrate is wrapped, not imported", () => {
     // moves onto `Modal`.
     const low = MY_TASKS_ALERT_LAYER.filter((f) => !/layer="alert"/.test(read(f)));
     expect(low, "These open under TaskFocusModal. Give them layer=\"alert\".").toEqual([]);
-    expect(read("app/tasks/components/TaskFocusModal.tsx")).toMatch(/fixed inset-0 z-\[80\]/);
+    // TC-1 (2026-11-03): the overlay now sits at the card layer (z-15, `lib/layers.ts`),
+    // below every dialog, so the alert layer stays safe and no longer needed.
+    expect(read("app/tasks/components/TaskFocusModal.tsx")).toContain("TASK_CARD_FRAME");
   });
 
   // ── The Toast primitive (WS-27ak item 3) ─────────────────────────────────

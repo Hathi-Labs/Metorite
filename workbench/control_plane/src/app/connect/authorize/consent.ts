@@ -100,17 +100,44 @@ export function isCheckView(value: unknown): value is CheckView {
   );
 }
 
+/**
+ * What `check` answers for a first-party client that the member already
+ * approved for these scopes (D-EA-11, spec §10.7). The gateway minted a code
+ * on the member's live connection, so the page shows no screen and goes on.
+ *
+ * ⚠️ Only the gateway decides this. The page never trusts a client by its
+ * name or host. An answer that is not this exact shape is not a pass: the
+ * page then reads it as a `CheckView`, or as a refusal. The redirect must be
+ * `https`, because the gateway sends a code without a click only there.
+ */
+export interface ContinueView {
+  first_party: true;
+  redirect_to: string;
+}
+
+export function isContinueView(value: unknown): value is ContinueView {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Partial<ContinueView>;
+  return (
+    v.first_party === true &&
+    typeof v.redirect_to === "string" &&
+    v.redirect_to.startsWith("https://") &&
+    !("consent_ticket" in (v as object))
+  );
+}
+
 export const OFFLINE_ACCESS = "offline_access";
+export const READ_SCOPE = "projects:read";
 
 /** The words of each scope. A scope the page does not know shows its name. */
 export const SCOPE_COPY: Record<string, { label: string; detail: string }> = {
   "projects:read": {
     label: "Read your projects and tasks",
-    detail: "Only the projects and tasks you can see in Metorite.",
+    detail: "Needed for everything below. Only what you can see in Metorite.",
   },
   "projects:write": {
     label: "Change your projects and tasks",
-    detail: "Create and update tasks as you, where you may change them.",
+    detail: "As you, where you may change them.",
   },
   "context:read": {
     label: "Read company context",
@@ -156,50 +183,61 @@ export function canApprove(view: CheckView, chosen: ReadonlySet<string>): boolea
   return grantedScopes(view, chosen).some((s) => s !== OFFLINE_ACCESS);
 }
 
-/** The most projects the picker lists. The gateway caps pins at 50 too. */
-export const MAX_PIN_CHOICES = 50;
-
-export interface PinChoice {
-  id: string;
-  name: string;
-  depth: number;
-}
-
-interface TreeNode {
-  id?: unknown;
-  name?: unknown;
-  archived_at?: unknown;
-  children?: unknown;
+/**
+ * Turn one scope on or off.
+ *
+ * "Read your projects and tasks" is needed for everything below it, so turning
+ * it off clears the others, and turning another one on also turns it on (when
+ * the agent asked for it). `offline_access` has no box and never changes.
+ */
+export function toggleScope(view: CheckView, chosen: ReadonlySet<string>, scope: string): Set<string> {
+  const next = new Set(chosen);
+  if (scope === OFFLINE_ACCESS) return next;
+  if (next.has(scope)) {
+    next.delete(scope);
+    if (scope === READ_SCOPE) next.clear();
+    return next;
+  }
+  next.add(scope);
+  if (view.scopes.includes(READ_SCOPE)) next.add(READ_SCOPE);
+  return next;
 }
 
 /**
- * The projects a member may pin, in tree order, at most 50.
- *
- * `GET /projects/tree` never holds a personal project (`tree.py` reads
- * `personal_owner IS NULL`), so every row here is a team project. An archived
- * node and its subtree stay out. A pin covers its subtree at the gateway
- * (`external_agent_access.md` §7.3), so a space or a folder is a fair pin.
+ * A read scope (SW-34b): `projects:read`, `context:read` or `<app>:read`.
+ * The same rule as `agent_oauth.READ_SCOPES` on the server.
  */
-export function pinChoices(tree: unknown, limit = MAX_PIN_CHOICES): PinChoice[] {
-  const rows = (tree as { rows?: unknown } | null)?.rows;
-  const out: PinChoice[] = [];
-  const walk = (nodes: unknown, depth: number) => {
-    if (!Array.isArray(nodes)) return;
-    for (const node of nodes as TreeNode[]) {
-      if (out.length >= limit) return;
-      if (!node || typeof node.id !== "string" || typeof node.name !== "string") continue;
-      if (node.archived_at) continue;
-      out.push({ id: node.id, name: node.name, depth });
-      walk(node.children, depth + 1);
-    }
-  };
-  walk(rows, 0);
-  return out;
+export function isReadScope(scope: string): boolean {
+  return scope.endsWith(":read");
+}
+
+/**
+ * True when the "Read only" choice can change something: the agent asked for
+ * a read scope and for a scope that is not a read scope.
+ */
+export function offersReadOnly(view: CheckView): boolean {
+  const asked = view.scopes.filter((s) => s !== OFFLINE_ACCESS);
+  return asked.some(isReadScope) && asked.some((s) => !isReadScope(s));
+}
+
+/**
+ * The "Read only" choice (SW-34b): each read scope that the agent asked for,
+ * and no other. `grantedScopes` adds `offline_access` when it was asked for.
+ */
+export function readOnlyChoice(view: CheckView): Set<string> {
+  return new Set(view.scopes.filter((s) => s !== OFFLINE_ACCESS && isReadScope(s)));
+}
+
+/** True when the choice holds one scope or more, and each is a read scope. */
+export function isReadOnly(chosen: ReadonlySet<string>): boolean {
+  return chosen.size > 0 && [...chosen].every(isReadScope);
 }
 
 export interface Choice {
   scopes: ReadonlySet<string>;
   pins: readonly string[];
+  /** The left-out list of D-EA-12. The gateway reads it next to the pins. */
+  leftOut: readonly string[];
   includePersonal: boolean;
 }
 
@@ -210,6 +248,7 @@ export function approveBody(request: AuthorizeRequest, view: CheckView, choice: 
     consent_ticket: view.consent_ticket,
     scopes: grantedScopes(view, choice.scopes),
     pinned_projects: [...choice.pins],
+    left_out_projects: [...choice.leftOut],
     include_personal: choice.includePersonal,
   };
 }

@@ -854,3 +854,179 @@ class TestReviewRoundOne:
         routes = _routes(events)
         assert [r["request"] for r in routes] == [1], routes
         assert routes[0]["tier"] == "tier-balanced"
+
+
+# ── 6. WS-67 OA-7f: pack items in the turn-kind request ──────────────────────
+# ``one_assistant_context.md`` §4.2.8 (OA-7f). The request that already runs
+# holds one ``yes_no`` item for each pack that the run can still load. Each
+# case names, in its docstring, the mutation that turns it red (R7).
+
+LONG_NO_MAIL = (
+    "Please look at what the finance team agreed on Friday and tell me which "
+    "supplier invoices are still open for the March batch run"
+)
+OFFER = ("email", "email-setup")
+
+
+def _items(body: dict[str, Any]) -> list[dict[str, Any]]:
+    return json.loads(body["messages"][-1]["content"])["items"]
+
+
+def _pack_reply(
+    kind: str = "chat", packs: dict[str, tuple[Any, Any]] | None = None,
+    confidence: float = 0.95,
+) -> Callable[[dict[str, Any]], Any]:
+    """A System-1 reply. *packs* maps a slug to its ``(choice, confidence)``."""
+    def reply(body: dict[str, Any]) -> httpx.Response:
+        rows = [{"id": "turn", "choice": kind, "confidence": confidence, "reason": "r"}]
+        for slug, (choice, conf) in (packs or {}).items():
+            rows.append({"id": f"pack:{slug}", "choice": choice, "confidence": conf,
+                         "reason": "the message needs it"})
+        return _answers(*rows)
+    return reply
+
+
+def _kind_with(message: str, packs: tuple[str, ...] = OFFER, effort: str = "auto",
+               default: str | None = None):
+    return asyncio.run(tier_policy.turn_kind(
+        message, ("vocabulary",), effort, packs=packs, default=default))
+
+
+@pytest.mark.usefixtures("_routed", "_patient")
+class TestTurnKindPackItems:
+    def test_a_long_turn_with_no_mail_word_loads_the_pack_with_one_request(
+        self, monkeypatch,
+    ) -> None:
+        """Acceptance. One request holds the turn item and one item for each
+        pack, and a yes at the threshold names the pack. Mutation: send the
+        pack question in a second request → two requests → red. Mutation:
+        drop the items → no pack named → red."""
+        wire = _wire(monkeypatch, _pack_reply("chat", {"email": ("yes", 0.9), "email-setup": ("no", 0.9)}))
+        turn = _kind_with(LONG_NO_MAIL)
+        assert len(wire.requests) == 1
+        assert [i["id"] for i in _items(wire.bodies[0])] == ["turn", "pack:email", "pack:email-setup"]
+        assert all(i["options"] == ["yes", "no"] and i["kind"] == "yes_no"
+                   for i in _items(wire.bodies[0])[1:])
+        assert turn.packs == ("email",) and (turn.kind, turn.source) == ("chat", "system_one")
+
+    def test_with_no_packs_the_request_is_the_one_of_before(self, monkeypatch) -> None:
+        """Flag off, or a run with no loader: the executor passes no packs.
+        The body is byte for byte the body of a call without the argument.
+        Mutation: add an item, or a word of context, when the list is empty
+        → the bodies differ → red."""
+        wire = _wire(monkeypatch, _turn_reply("chat"))
+        asyncio.run(tier_policy.turn_kind(LONG_NO_MAIL, ("vocabulary",), "auto"))
+        asyncio.run(tier_policy.turn_kind(LONG_NO_MAIL, ("vocabulary",), "auto", packs=()))
+        assert len(wire.requests) == 2
+        assert wire.requests[0].content == wire.requests[1].content
+        assert [i["id"] for i in _items(wire.bodies[0])] == ["turn"]
+
+    def test_a_short_turn_a_max_turn_and_a_pinned_turn_send_no_item(self, monkeypatch) -> None:
+        """The items ride in the request that goes out anyway. Mutation: ask
+        for the packs when the turn is short, Max or pinned → a request goes
+        out → red."""
+        wire = _wire(monkeypatch, _pack_reply("chat", {"email": ("yes", 0.99)}))
+        short = _kind_with("check my inbox")
+        maxed = _kind_with(LONG_NO_MAIL, effort="max")
+        pinned = _kind_with(LONG_NO_MAIL, default="tier-powerful")
+        assert wire.requests == []
+        assert (short.source, maxed.source, pinned.source) == ("short", "max", "pinned")
+        assert short.packs == maxed.packs == pinned.packs == ()
+
+    @pytest.mark.parametrize("reply", [
+        _pack_reply("chat", {"email": ("maybe", 0.99)}),
+        _pack_reply("chat", {"email": ("yes", 0.69)}),
+        _pack_reply("chat", {"email": ("yes", 7)}),
+        _pack_reply("chat", {"email": ("yes", "high")}),
+        _pack_reply("chat", {"email": (None, None)}),
+        lambda body: _answers({"id": "turn", "choice": "chat", "confidence": 0.9, "reason": "r"}),
+        lambda body: _answers({"id": "pack:crm-records", "choice": "yes", "confidence": 1, "reason": "r"}),
+        lambda body: _completion("not json at all"),
+        lambda body: _completion(json.dumps({"answers": "yes"})),
+    ])
+    def test_a_garbled_or_unsure_answer_loads_nothing(self, reply, monkeypatch) -> None:
+        """Fail closed. Mutation: read an off-scale confidence, a choice
+        outside the options, a missing answer or an unknown id as a yes, or
+        drop the threshold → a pack is named → red."""
+        _wire(monkeypatch, reply)
+        assert _kind_with(LONG_NO_MAIL, packs=("email",)).packs == ()
+
+    def test_a_timeout_and_a_failure_load_nothing(self, monkeypatch) -> None:
+        """Mutation: keep the packs of an answer that came too late, or on a
+        failed request → a pack is named → red."""
+        async def slow(_body: dict[str, Any]) -> httpx.Response:
+            await asyncio.sleep(1.0)
+            return _pack_reply("chat", {"email": ("yes", 0.99)})(_body)
+
+        _wire(monkeypatch, slow)
+        monkeypatch.setattr(tier_policy, "TURN_KIND_TIMEOUT_S", 0.1)
+        timed = _kind_with(LONG_NO_MAIL)
+        assert (timed.source, timed.packs) == ("timeout", ())
+        _wire(monkeypatch, lambda body: httpx.Response(500, json={}))
+        monkeypatch.setattr(tier_policy, "TURN_KIND_TIMEOUT_S", 30.0)
+        failed = _kind_with(LONG_NO_MAIL)
+        assert failed.packs == () and failed.source in {"unavailable", "error"}
+
+    @pytest.mark.parametrize(("kind", "conf", "want_kind", "want_source"), [
+        ("code", 0.95, "code", "system_one"),
+        ("code", 0.40, "chat", "unsure"),
+        ("plan", 0.95, "plan", "system_one"),
+    ])
+    def test_a_pack_answer_never_changes_the_kind_or_the_tier(
+        self, kind, conf, want_kind, want_source, monkeypatch,
+    ) -> None:
+        """The kind, its source and the tier come from the turn item alone,
+        with or without a sure pack answer. Mutation: let a pack yes raise
+        the confidence of the kind, set the kind, or move the tier → the
+        kind or the tier differs from the run with no items → red."""
+        _wire(monkeypatch, _pack_reply(kind, {"email": ("yes", 0.99)}, confidence=conf))
+        with_items = _kind_with(LONG_NO_MAIL)
+        _wire(monkeypatch, _turn_reply(kind, conf))
+        without = asyncio.run(tier_policy.turn_kind(LONG_NO_MAIL, ("vocabulary",), "auto"))
+        assert (with_items.kind, with_items.source) == (want_kind, want_source)
+        assert (with_items.kind, with_items.source) == (without.kind, without.source)
+        assert with_items.packs == ("email",), "an unsure kind keeps a sure pack"
+        mine = tier_policy.choose(default="tier-balanced", kind=with_items.kind, effort="auto")
+        theirs = tier_policy.choose(default="tier-balanced", kind=without.kind, effort="auto")
+        assert mine == theirs
+
+    def test_the_policy_carries_the_packs_and_the_tier_ignores_them(self) -> None:
+        """Mutation: read ``packs`` in ``run_choice`` → a run with packs gets
+        another tier or reason → red."""
+        base = dict(agent=PA, run_id="r", default="tier-balanced", kind="chat", effort="auto")
+        bare = tier_policy.RunTierPolicy(**base)
+        packed = tier_policy.RunTierPolicy(**base, packs=("email",))
+        assert packed.run_choice() == bare.run_choice() and packed.run_tier() == bare.run_tier()
+        assert packed.reasoning_effort() == bare.reasoning_effort()
+
+    def test_the_effort_item_and_the_pack_items_share_one_request(self, monkeypatch) -> None:
+        """Mutation: send the pack items in a request of their own, or drop
+        the effort item when packs ride → the count or the ids differ → red."""
+        def reply(body: dict[str, Any]) -> httpx.Response:
+            return _answers(
+                {"id": "turn", "choice": "chat", "confidence": 0.9, "reason": "r"},
+                {"id": "effort", "choice": "yes", "confidence": 0.9, "reason": "r"},
+                {"id": "pack:email", "choice": "yes", "confidence": 0.9, "reason": "r"},
+            )
+
+        wire = _wire(monkeypatch, reply)
+        turn = asyncio.run(tier_policy.turn_kind(
+            LONG_NO_MAIL, ("vocabulary",), "auto", read_effort=True, packs=("email",)))
+        assert len(wire.requests) == 1
+        assert [i["id"] for i in _items(wire.bodies[0])] == ["turn", "effort", "pack:email"]
+        assert turn.effort == tier_policy.TEXT_EFFORT and turn.packs == ("email",)
+
+    def test_the_request_never_holds_more_than_twenty_items(self, monkeypatch) -> None:
+        """The cap of System 1 is 20 items. Mutation: take every slug → 22
+        items, and ``bad_items`` fails the whole request → red. A slug that
+        is no pack, or is named twice, gives no item."""
+        wire = _wire(monkeypatch, _pack_reply("chat"))
+        _kind_with(LONG_NO_MAIL, packs=("email", "email", "nope", "core", *[f"x{i}" for i in range(30)]))
+        assert [i["id"] for i in _items(wire.bodies[0])] == ["turn", "pack:email"]
+        from acb_skills import system_one
+
+        monkeypatch.setattr(tier_policy, "pack_items", lambda slugs: [
+            system_one.Item(id=f"pack:p{i}", question="q", kind="yes_no", options=system_one.YES_NO)
+            for i in range(40)])
+        _kind_with(LONG_NO_MAIL, packs=("email",))
+        assert len(_items(wire.bodies[1])) == system_one.MAX_ITEMS

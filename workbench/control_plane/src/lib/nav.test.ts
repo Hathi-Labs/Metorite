@@ -18,6 +18,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { JOBS } from "@/lib/shell/registry";
+import { featureForPath } from "./access";
 import {
   CHROMELESS_ROUTES,
   isChromeless,
@@ -77,6 +78,11 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // nav order.
   ["apps", "/knowledge"],
   ["ai-studio", "/chat"],
+  // Added 2026-11-05 by owner decision in chat (D179, task 1795), taking
+  // the live set from FOURTEEN to FIFTEEN. Studio sits after Chat, in nav
+  // order. The routes still need STUDIO_ORGS, so an org not listed sees the
+  // "not open yet" state.
+  ["ai-studio", "/studio"],
   ["admin", "/approvals"],
   ["admin", "/settings/organization"],
   ["admin", "/settings/appearance"],
@@ -132,7 +138,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the fourteen panes launch_surface.md §2 names", () => {
+  it("ships exactly the fifteen panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
@@ -293,7 +299,14 @@ describe("every live pane carries its manifest (D89)", () => {
 
   it("puts only pages about the member in the account menu", () => {
     const account = PANES.filter((p) => p.door === "account").map((p) => p.href);
-    expect(account).toEqual(["/people/me", "/settings/appearance"]);
+    expect(account).toEqual(["/people/me"]);
+  });
+
+  it("gives Appearance a sidebar door in Admin, starred like any app (owner, 2026-11-01)", () => {
+    const look = PANES.find((p) => p.href === "/settings/appearance")!;
+    expect(look.team).toBe("admin");
+    expect(look.door ?? "sidebar").toBe("sidebar");
+    expect(look.setting).toBeUndefined();
   });
 
   it("gives Organisation a sidebar door in Admin, as an app (owner, 2026-10-09)", () => {
@@ -305,10 +318,7 @@ describe("every live pane carries its manifest (D89)", () => {
   });
 
   it("marks only preferences as settings, so All apps lists apps", () => {
-    expect(PANES.filter((p) => p.setting).map((p) => p.href)).toEqual([
-      "/people/me",
-      "/settings/appearance",
-    ]);
+    expect(PANES.filter((p) => p.setting).map((p) => p.href)).toEqual(["/people/me"]);
     // A setting is never a sidebar door: it has no place to show then.
     expect(PANES.filter((p) => p.setting && p.door !== "account")).toEqual([]);
   });
@@ -357,7 +367,41 @@ describe("every job opens a page that exists (NS-2 done-when 2)", () => {
 describe("every live app has a job (NS-2 done-when 1)", () => {
   // A live app with no job is invisible in the command bar's Do group, so a
   // member who types what they want to do there finds only "Open …".
-  it.each(LIVE_PANES.map((p) => [p.label, p.href] as const))("%s (%s) has one job or more", (_label, href) => {
-    expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
+  // Studio went live on 2026-11-05 (D179) with no job. A job adds a row to
+  // the shell manifest, to the pinned job tables of `test_shell_manifests.py`
+  // and to the coordinator's `intent.JOBS`, and slice J1-1 is moving the
+  // Studio gate at the same time. A later slice adds the job and drops this
+  // line. No other app belongs here.
+  const NO_JOB_YET = ["/studio"];
+
+  it.each(LIVE_PANES.filter((p) => !NO_JOB_YET.includes(p.href)).map((p) => [p.label, p.href] as const))(
+    "%s (%s) has one job or more",
+    (_label, href) => {
+      expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
+    },
+  );
+
+  it("the no-job list holds only Studio, and an app with a job leaves it", () => {
+    expect(NO_JOB_YET).toEqual(["/studio"]);
+    for (const href of NO_JOB_YET) {
+      expect(JOBS.some((j) => j.app === href), `${href} has a job now: drop it from NO_JOB_YET`).toBe(false);
+    }
+  });
+});
+
+describe("the Studio library pane (ai_studio.md §14 A1)", () => {
+  it("PANES holds /studio as a live pane, and none of the three old hrefs", () => {
+    const studio = PANES.find((p) => p.href === "/studio");
+    expect(studio?.launch).toBe("live");
+    for (const old of ["/workflows", "/build/apps", "/build/agents"]) {
+      expect(PANES.some((p) => p.href === old), `${old} is a redirect now`).toBe(false);
+    }
+  });
+
+  it("the /studio item needs feature:studio, the gate of every /studio route (§14 J1)", () => {
+    const studio = PANES.find((p) => p.href === "/studio");
+    expect(studio?.feature).toBe("studio");
+    expect(featureForPath("/studio")).toBe("studio");
+    expect(featureForPath("/studio/skills/new")).toBe("studio");
   });
 });

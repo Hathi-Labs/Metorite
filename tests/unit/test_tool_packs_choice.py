@@ -63,6 +63,8 @@ MEMBER = "jane@acme.test"
 SESSION = "chat-oa7c-1"
 BOX = "acc-oa7c-1"
 ALL = frozenset({"email", "email-setup"})
+#: What ``packs_on`` gives with the flag at ``*`` (OA-8a added ``crm-records``).
+EVERY = frozenset(sf.pack_slugs())
 EMAIL_TOOLS = frozenset(sf.SKILL_FAMILIES["email"]["tools"]) - {"narrow_and_read"}
 SETUP_TOOLS = frozenset(sf.SKILL_FAMILIES["email-setup"]["tools"])
 CONFIG = json.loads((REPO / "apps/agents/agent-orchestrator/config.json")
@@ -337,10 +339,19 @@ async def test_the_apply_takes_an_evicted_pack_out_of_the_state(store, orchestra
 # ── 4. The cap ──────────────────────────────────────────────────────────────
 
 
-def _measured_base(agents: list[Any]) -> int:
-    return ti._pack_base_count(
-        agents[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
-        agent_config=CONFIG, disabled=frozenset())
+def _measured_base(agents: list[Any], *, facts_stay: bool = True) -> int:
+    """The estimate of the real orchestrator. By default the run holds the 3
+    CRM facts tools, as an org on ``CRM_QUESTIONS_ORGS`` does, so the numbers
+    of 2026-10-27 (55 tools) hold. With *facts_stay* False the estimate drops
+    them as a run of an org off the list does (OA-8f)."""
+    if not facts_stay:
+        return ti._pack_base_count(
+            agents[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+            agent_config=CONFIG, disabled=frozenset())
+    from unittest import mock
+
+    with mock.patch.object(ti, "_facts_removed", ti._facts_withheld):
+        return _measured_base(agents, facts_stay=False)
 
 
 async def test_the_cap_holds_110_tools_with_the_measured_base(orchestrator) -> None:
@@ -430,27 +441,29 @@ async def test_the_base_count_equals_the_injected_count_with_no_app_grant(
 ) -> None:
     """Fix round 1 (Q1): the apply stays before ``_inject_agent_tools``, so
     the cap reads an estimate. With no app grant the estimate equals the
-    count after the injection. ``_add_crm_facts_block`` can only take tools
-    away after it, and the executor logs the true count and warns past the
-    cap. Mutation: drop the CRM facts from the withheld names of the
-    estimate → it counts 2 tools that the run never holds → red for an org
-    that is not on the CRM list. Mutation: count the agent's own tools only
-    → red in both cases."""
+    count after the injection AND after ``_add_crm_facts_block`` (OA-8f: the
+    facts tools that the block removes are not in the estimate). The executor
+    logs the true count and warns past the cap. Mutation: drop the facts
+    removal from the estimate → it counts 3 tools that the run never holds →
+    red in both cases. Mutation: count the agent's own tools only → red in
+    both cases."""
     from acb_common import get_settings
 
     if facts == "org-not-on-the-crm-list":
         monkeypatch.setattr(get_settings(), "crm_questions_orgs", "org-other", raising=False)
     monkeypatch.setattr("orchestrator.app_tools.load_app_action_tools", lambda _name: [])
     with _tenant():
-        base = _measured_base(orchestrator)
+        base = _measured_base(orchestrator, facts_stay=False)
         ti._inject_agent_tools(
             orchestrator, tool_scope=list(CONFIG["tool_scope"]), agent_name="orchestrator",
             agent_config=CONFIG, no_egress=False,
         )
         injected = _names(orchestrator)
         await ti._add_crm_facts_block(orchestrator, frozenset(injected), no_egress=False)
-    assert base == len(injected), (base, len(injected))
-    assert len(_names(orchestrator)) <= base
+    assert base == len(_names(orchestrator)), (base, len(injected))
+    # A box with no list injects the 3 facts tools and the block takes them
+    # away. An org off the list never gets them in the first place.
+    assert len(injected) - base == (3 if facts == "crm-questions-off" else 0)
 
 
 # ── 5. The order ────────────────────────────────────────────────────────────
@@ -506,7 +519,10 @@ def test_each_persona_holds_the_email_delegation_text_exactly_once(
     text = agents._orchestrator_instructions(
         company_search, company_search, company_search, profile=profile, constraints=constraints)
     assert text.count(agents.EMAIL_DELEGATION_BULLETS) == 1
-    assert _bullets() == {EA: agents.EMAIL_DELEGATION_BULLETS}
+    assert _bullets() == {
+        EA: agents.EMAIL_DELEGATION_BULLETS,
+        "projects-assistant": agents.PROJECTS_DELEGATION_BULLETS,
+    }
 
 
 def test_a_persona_without_the_owners_text_refuses_the_swap() -> None:
@@ -841,7 +857,7 @@ async def test_only_the_members_own_web_chat_of_the_orchestrator_reads_packs(
     if why == "eligible":
         assert task is not None
         turn, allowed = await task
-        assert turn.stored and turn.turn == 1 and allowed == ALL
+        assert turn.stored and turn.turn == 1 and allowed == EVERY
         assert _pack_calls(store), "the eligible run read the state"
     else:
         assert task is None
@@ -1183,7 +1199,8 @@ def test_the_surface_adds_the_core_pack_and_nothing_else() -> None:
     names ``surface="email"`` too -> ``email-setup`` loads -> red."""
     turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "", True, surface="email")
     assert tp.choose(turn, allowed=ALL, base_tools=40).slugs == ("email",)
-    assert tp.surfaces() == {"email"}
+    # OA-8b: the Projects core pack serves three apps over one task store.
+    assert tp.surfaces() == {"email", "crm", "projects", "tasks", "calendar", "studio"}
     assert tp.PACKS["email-setup"].surface == ""
 
 
@@ -1306,7 +1323,7 @@ async def test_the_surface_changes_no_guard_of_the_pack_read(
         if why == "eligible":
             assert task is not None
             turn, allowed = await task
-            assert turn.surface == "email" and allowed == ALL
+            assert turn.surface == "email" and allowed == EVERY
         else:
             assert task is None
             assert _pack_calls(store) == []
@@ -1325,15 +1342,120 @@ def test_the_forged_surface_variable_is_cleaned_before_the_turn(store, monkeypat
 
 def test_the_gateway_pops_the_surface_and_binds_it_with_the_typed_words() -> None:
     """The route takes ``surface`` out of the payload, so it goes nowhere
-    else, and binds it for the run in the same ``with`` as the typed words.
-    The value is never read for a tenant or a member. Mutation: leave the
-    key in the payload, or drop the binding, or bind it outside the run ->
+    else, and binds it for the run in the same ``with`` as the typed words
+    and the sent words (WS-63 D-PZ-37). The value is never read for a tenant
+    or a member. Mutation: leave the key in the payload, or drop the binding,
+    or bind it outside the run, or bind the sent words in another scope ->
     red."""
     text = GATEWAY_ROUTE.read_text(encoding="utf-8")
     assert '_surface = req.payload.pop("surface", None)' in text
-    assert "with member_typed(_typed), surface_scope(_surface):" in text
+    assert "with member_typed(_typed, sent=_sent_text), surface_scope(_surface):" in text
     assert text.count("_surface") == 2, "popped once and bound once"
     assert "payload.get(\"surface\")" not in text and "payload[\"surface\"]" not in text
+
+
+# -- WS-63 D-PZ-37: the chooser reads the SENT words, typed or tapped --------
+
+#: A "Follow up" pill that Mira's reply made. The member tapped it, so the
+#: request carries no typed mark, and the typed words of the turn are "".
+PILL = "Draft a reply to the email from Acme"
+
+
+@pytest.mark.parametrize("sent", [PILL, None], ids=["the tap", "round 4"])
+async def test_a_tapped_turn_loads_the_pack_by_its_sent_words(
+    sent: str | None, store, monkeypatch,
+) -> None:
+    """The route binds the tap as sent words and no typed words. The pack read
+    of the executor reads the sent words, so the email pack loads by its
+    words, as it did before D-PZ-37. The typed words of the same turn stay
+    "", so the tap grounds no save. With no sent words (the round 4 binding)
+    the pack does not load. Mutation: the executor reads ``typed_words()``
+    again -> the tap loads no pack -> red."""
+    from acb_common import get_settings
+    from acb_common.assistant_profile import member_typed, typed_words
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "*", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    monkeypatch.setattr(ex, "_verified_run_member", lambda: MEMBER)
+    with member_typed("", sent=sent):
+        assert typed_words() == ""
+        task = ex._start_pack_turn("orchestrator", ORG, SESSION, member=MEMBER,
+                                   delegated=False, solo_room=True,
+                                   batch_thread=False, shows_cards=True)
+        assert task is not None
+        turn, _allowed = await task
+    choice = tp.choose(turn, allowed=ALL, base_tools=40)
+    if sent is None:
+        assert turn.words == "" and choice.slugs == ()
+    else:
+        assert turn.words == PILL
+        assert choice.slugs == ("email",) and choice.layers == {"email": "words"}
+
+
+def test_a_whatsapp_turn_gives_the_chooser_the_same_words() -> None:
+    """``bot_run`` binds the member's text with no ``sent`` keyword, because
+    the member types each WhatsApp message. Its sent words are its typed
+    words, as before D-PZ-37. A Confirm and a forwarded text bind "" for both.
+    Mutation: ``sent=None`` reads as "" -> red."""
+    from acb_common.assistant_profile import member_typed, sent_words, typed_words
+
+    with member_typed(PILL):
+        assert sent_words() == typed_words() == PILL
+    with member_typed(""):
+        assert sent_words() == typed_words() == ""
+
+
+def _names_in_code(tree: ast.AST, name: str) -> bool:
+    """True when the code of *tree* imports, reads or calls *name*: an import
+    of it (an alias too), a bare name, an attribute, or the string *name*
+    alone, as ``getattr`` and ``importlib`` take it. A docstring or a
+    comment that names it is no use of it."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom | ast.Import):
+            if any(alias.name == name or alias.name.endswith(f".{name}")
+                   for alias in node.names):
+                return True
+        elif isinstance(node, ast.Name) and node.id == name:
+            return True
+        elif isinstance(node, ast.Attribute) and node.attr == name:
+            return True
+        elif isinstance(node, ast.Constant) and node.value == name:
+            return True
+    return False
+
+
+def test_only_the_pack_read_reads_the_sent_words() -> None:
+    """The sent words choose tools and ground nothing. Only the pack read of
+    the executor imports or calls ``sent_words``, in any form, and only
+    ``acb_common/assistant_profile.py`` names ``MEMBER_SENT``. The pack read
+    reads no typed words. Mutation: a write tool, the corrections of a chat
+    or a hand-off reads ``sent_words`` (as ``sent_words()``, under an alias,
+    as ``ap.sent_words`` or through ``getattr``), or reads ``MEMBER_SENT``
+    itself -> a tap grounds a write -> red."""
+    home = "packages/acb_common/acb_common/assistant_profile.py"
+    readers: set[str] = set()
+    holders: set[str] = set()
+    for base in ("apps", "packages"):
+        for path in (REPO / base).rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            rel = path.relative_to(REPO).as_posix()
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "sent_words" not in text and "MEMBER_SENT" not in text:
+                continue
+            tree = ast.parse(text)
+            if rel != home and _names_in_code(tree, "sent_words"):
+                readers.add(rel)
+            if "MEMBER_SENT" in text:
+                holders.add(rel)
+    assert readers == {"apps/services/orchestrator/orchestrator/executor.py"}, readers
+    assert holders == {home}, holders
+    text = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    start = text.index("def _start_pack_turn(")
+    body = text[start:text.index("async def _apply_pack_turn(")]
+    assert "words = sent_words()" in body and "typed_words" not in body
 
 
 def test_only_the_pack_read_reads_the_surface() -> None:
@@ -1346,3 +1468,409 @@ def test_only_the_pack_read_reads_the_surface() -> None:
     start = text.index("def _start_pack_turn(")
     body = text[start:text.index("async def _apply_pack_turn(")]
     assert body.index("packs_on(organization_id)") < body.index("current_surface()")
+
+
+# ── 9. The CRM pack (WS-67 OA-8a, §4.3.2) ───────────────────────────────────
+
+CRM = "crm-assistant"
+CRM_ONLY = frozenset({"crm-records"})
+
+
+@pytest.mark.parametrize(("words", "loads"), [
+    ("How is the CRM looking?", True),
+    ("Any new leads from Zoho this week?", True),
+    ("What is in the sales pipeline?", True),
+    ("Show deals in the deal pipeline", True),
+    ("Create a lead for Acme", True),
+    ("Please convert the lead to a deal", True),
+    ("log a call with Ravi", True),
+    ("I need the lost reason", True),
+    ("Which pipeline stage is Acme in?", True),
+    ("Draft the PRD in Notion", False),
+    ("fix the CI pipeline", False),
+    ("lead the standup", False),
+    ("What stage is the project in?", False),
+    ("Close the deal on the contract", False),
+    ("Show my crmsync notes", False),
+    ("What is the weather in Pune?", False),
+])
+def test_the_crm_words_load_the_pack_as_whole_words(words: str, loads: bool) -> None:
+    """Whole words only. Bare "pipeline", "deal", "lead" and "stage" are out.
+    Mutation: add a bare "pipeline" or "lead" to the words -> "fix the CI
+    pipeline" or "lead the standup" loads the pack -> red."""
+    got = tp.choose(_turn(words=words), allowed=CRM_ONLY, base_tools=55).slugs
+    assert got == (("crm-records",) if loads else ())
+
+
+def test_the_crm_pack_words_leave_out_the_bare_words() -> None:
+    """Mutation: a bare word joins the list -> red."""
+    words = set(tp.PACKS["crm-records"].words)
+    assert not words & {"pipeline", "deal", "lead", "stage"}
+    assert {"crm", "zoho", "deals", "leads"} <= words
+
+
+def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
+    """Mutation: put ``crm-records`` before an email pack in ``PACKS`` -> an
+    email pack leaves first -> red."""
+    # OA-8b: the four Projects packs follow it, so the order ends with them.
+    # STU-G1: the studio pack is last of all.
+    # CAL-1a: calendar-day sits after the Projects packs and before studio.
+    assert list(tp.PACKS)[-10:] == [
+        "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
+        "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
+        "studio"]
+    assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
+    # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
+    # and the email pack stays.
+    words = "check my inbox and the crm deals"
+    cut = tp.choose(_turn(words=words), allowed=EVERY, base_tools=75)
+    assert cut.slugs == ("email",) and cut.skipped == ("crm-records",)
+    # Under the cap both load.
+    fits = tp.choose(_turn(words=words), allowed=EVERY, base_tools=55)
+    assert fits.slugs == ("email", "crm-records") and fits.skipped == ()
+    # All three packs are over 110 at the measured base. The CRM pack leaves first.
+    all3 = tp.choose(_turn(words="email rules, the inbox and the crm"), allowed=EVERY,
+                     base_tools=55)
+    assert all3.skipped[0] == "crm-records" and "crm-records" not in all3.slugs
+
+
+async def test_the_three_packs_are_over_the_cap_at_the_measured_base(orchestrator) -> None:
+    """The base is measured, not assumed. This pins the numbers that the order
+    rule above relies on."""
+    base = _measured_base(orchestrator)
+    n = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in sf.pack_slugs()}
+    assert base + n["email"] + n["crm-records"] <= tp.MAX_REQUEST_TOOLS
+    assert base + sum(n.values()) > tp.MAX_REQUEST_TOOLS
+
+
+@pytest.mark.parametrize("words", [
+    "What changed in the CRM last Tuesday?",
+    "Who changed the CRM setup this week?",
+])
+async def test_a_crm_history_question_loads_the_pack_that_holds_the_read(
+    words: str, store, orchestrator,
+) -> None:
+    """WS-CRM CRM-M1 (crm_conversational.md §8). The chat reaches the read of
+    the CRM Change history only through ``crm-records``: the orchestrator's
+    base does not hold ``crm_change_history``, because the base was at the
+    110-tool cap (``test_projects_packs.py``). A CRM history question loads
+    the pack in the real run, and then the run holds the tool. Mutation: drop
+    the tool from the family → the run lacks it → red. Mutation: put it back
+    in the orchestrator ``tool_scope`` → the base holds it → red."""
+    assert "crm_change_history" not in CONFIG["tool_scope"]
+    assert "crm_change_history" not in _names(orchestrator), "the base must not hold it"
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=CRM_ONLY)
+    assert applied is not None and applied.record.slugs == ("crm-records",), applied
+    assert "crm_change_history" in _names(orchestrator)
+    assert "Use crm_change_history" in tp.PACKS["crm-records"].rules
+    assert "CRM change history" in tp.PACKS["crm-records"].when
+
+
+def test_the_crm_persona_swaps_nothing_and_adds_the_rules() -> None:
+    """The orchestrator has no CRM text, so ``PACK_DELEGATION_BULLETS`` holds
+    no ``crm-assistant`` and the swap is skipped. The base persona stays
+    byte-identical before the rules. Mutation: raise for an owner with no
+    bullets -> ``persona_for`` raises -> red."""
+    persona = _agents_mod()._orchestrator_instructions(False)
+    assert CRM not in _bullets() and EA in _bullets()
+    text = tp.persona_for(persona, [("crm-records", False)], _bullets())
+    assert text.startswith(persona.rstrip("\n") + "\n\n")
+    assert "CRM TOOLS." in text and "No CRM agent exists to hand a task to." in text
+    assert _agents_mod().EMAIL_DELEGATION_BULLETS in text, "the email text is not touched"
+    assert text.count("CRM TOOLS.") == 1
+
+
+def test_an_owner_that_is_present_and_moved_still_raises() -> None:
+    """The skip is for an owner ABSENT from the bullets. Email, present in
+    ``PACK_DELEGATION_BULLETS``, still raises when its text is gone, and so
+    does any other owner that the bullets name. Mutation: skip on a missing
+    text instead of a missing owner -> red."""
+    persona = _agents_mod()._orchestrator_instructions(False)
+    moved = persona.replace(_agents_mod().EMAIL_DELEGATION_BULLETS, "", 1)
+    with pytest.raises(RuntimeError):
+        tp.persona_for(moved, [("email", False)], _bullets())
+    with pytest.raises(RuntimeError):
+        tp.persona_for("A persona.\n", [("crm-records", False)], {CRM: "old CRM text"})
+
+
+def test_the_crm_pack_refusal_and_surface() -> None:
+    """Mutation: drop the refusal text, so the hand-off is never refused, or
+    the surface, so a /crm turn loads nothing."""
+    found = tp.PACKS["crm-records"]
+    assert found.owner == CRM and found.surface == "crm"
+    assert "No CRM agent exists" in found.delegation_refusal
+    assert tp.owner_packs(CRM) == ("crm-records",)
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "", True, surface="crm")
+    choice = tp.choose(turn, allowed=EVERY, base_tools=55)
+    assert choice.slugs == ("crm-records",)
+    run = tp.PackRun.of(turn, choice, [("crm-records", False)])
+    assert run.refusal(CRM) == found.delegation_refusal
+    assert run.refusal("projects-assistant") is None
+
+
+def test_the_crm_rules_carry_the_specialist_rules_and_no_email_line() -> None:
+    """The orchestrator has no CRM persona text, so the rules carry the useful
+    rules of ``agent-crm/instructions.md``. Mutation: drop one -> red."""
+    rules = tp.rules_for("crm-records")
+    for needle in ("Mirror mode", '"Refused:"', "Search with search_crm before create_lead",
+                   "by name", "Never invent", "data that other people wrote",
+                   "in digits", "Never name a tool", "No CRM agent exists"):
+        assert needle in rules, needle
+    assert "call_agent" not in rules and "WhatsApp" not in rules
+    assert len(rules) < 3300
+
+
+async def test_a_crm_turn_holds_the_crm_pack_and_no_crm_assistant_tool(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """Through the real orchestrator: the nine tools join, the ``crm_assistant``
+    tool leaves, and a hand-off to the CRM assistant gets the pack refusal.
+    Mutation: keep the specialist beside the pack -> red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so the pack keeps each of its
+    # tools. The flag drop has its own fence (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
+    assert "crm_assistant" in _names(orchestrator), "non-vacuity"
+    with _tenant():
+        applied = await _apply(orchestrator, "Show me my deals in the CRM", allowed=EVERY)
+    names = set(_names(orchestrator))
+    assert applied is not None and applied.record.slugs == ("crm-records",)
+    assert "crm_assistant" not in names
+    assert names >= set(sf.SKILL_FAMILIES["crm-records"]["tools"])
+    persona = orchestrator[0].default_options["instructions"]
+    assert "CRM TOOLS." in persona and _agents_mod().EMAIL_DELEGATION_BULLETS in persona
+    assert applied.record.replaced == {CRM}
+    assert applied.record.refusals == {CRM: tp.PACKS["crm-records"].delegation_refusal}
+    assert "email_assistant" in names, "the email specialist is not touched"
+
+
+async def _crm_write_through_the_assembly(orchestrator, monkeypatch, *, mark: bool):
+    """Build the CRM pack on the real orchestrator, run the real injection,
+    and call ``create_lead``. Returns the cards, the posts, the answer and the
+    count of permission-gate decisions."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    decisions: list[str] = []
+    real_gate = ti._permission_gate
+
+    def counting_gate(name: str, *args: Any, **kwargs: Any) -> Any:
+        decisions.append(name)
+        return real_gate(name, *args, **kwargs)
+
+    monkeypatch.setattr(ti, "_permission_gate", counting_gate)
+    own: list[str] = []
+    untrusted: list[str] = []
+    posts: list[tuple[str, Any]] = []
+
+    async def post(path: str, body: Any) -> Any:
+        posts.append((path, body))
+        return {"id": "l-1", "lead_name": "Acme", "owner_email": MEMBER}
+
+    async def card(**kw: Any) -> bool:
+        own.append(str(kw.get("title")))
+        return True
+
+    async def untrusted_card(name: str, _kwargs: Any) -> bool:
+        untrusted.append(name)
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    monkeypatch.setattr(ti, "_untrusted_answer_card", untrusted_card)
+    with _tenant():
+        applied = await _apply(orchestrator, "Create a lead for Acme in the CRM", allowed=EVERY)
+        assert applied is not None and applied.record.slugs == ("crm-records",)
+        ti._inject_agent_tools(
+            orchestrator, tool_scope=list(CONFIG["tool_scope"]), agent_name="orchestrator",
+            agent_config=CONFIG, no_egress=False,
+        )
+        tool = next(t for t in orchestrator[0].default_options["tools"]
+                    if _name(t) == "create_lead")
+        monkeypatch.setattr(ti._PACK_OWNER_MODULES[CRM], "_post", post)
+        assert eg.is_held_card_write(tool.func), "non-vacuity: a write of the held list"
+        assert tool.func.__tool_risk__["open_world"] is True, "the list keeps it, no claim"
+        assert getattr(tool.func, "__cc_gated__", False) is True
+        with _bound(**_run_ctx(), **applied.context()):
+            if mark:  # this process read mail in the turn, after the pack was built
+                await eg.mark_untrusted_answer()
+            answer = await tool.func("Acme")
+    return own, untrusted, posts, str(answer), decisions
+
+
+async def test_a_crm_write_through_the_real_assembly_shows_one_card_and_one_gate(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """The pack tool carries ``__cc_gated__``, so ``_gate_own_maf_tools`` gates
+    it no second time: one permission decision, one card, one post. Mutation:
+    drop ``__cc_gated__`` from the pack tool -> the assembly gates it again ->
+    two decisions -> red."""
+    own, untrusted, posts, _answer, decisions = await _crm_write_through_the_assembly(
+        orchestrator, monkeypatch, mark=False)
+    assert untrusted == [] and len(own) == 1 and "CRM lead" in own[0], (own, untrusted)
+    assert [p for p, _ in posts] == ["/crm/leads"]
+    assert decisions == ["create_lead"], decisions
+
+
+async def test_a_crm_write_after_mail_in_the_same_turn_shows_its_one_card(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """RX-1 (D169). The chat read mail after the pack was built (the pack builds
+    open). The write stays, because the member's click on its own card is the
+    guard: one card, no untrusted card, one post. Mutation: take ``create_lead``
+    off ``HELD_CARD_WRITE_TOOLS`` -> the held answer and no card -> red."""
+    own, untrusted, posts, answer, decisions = await _crm_write_through_the_assembly(
+        orchestrator, monkeypatch, mark=True)
+    assert untrusted == [] and len(own) == 1 and "CRM lead" in own[0], (own, untrusted)
+    assert [p for p, _ in posts] == ["/crm/leads"]
+    assert decisions == ["create_lead"], decisions
+    assert "off now" not in answer, answer
+
+
+# ── 10. OA-8a fix round 1: the reason of a held CRM pack, the persona set ───
+
+
+async def _mark_chat_as_mail_read() -> None:
+    """The chat read mail on an earlier turn: Redis and this process hold the mark."""
+    with _tenant(), _bound(**_run_ctx()):
+        await eg.mark_untrusted_answer()
+
+
+async def test_a_held_crm_pack_in_a_mail_chat_gives_the_mail_reason_in_the_persona(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """The chat read mail, so the CRM pack builds held. The persona says why:
+    mail from outside senders, never "a sandboxed turn". With the ``email``
+    pack held too, no note of the persona gives the sandbox reason. Mutation:
+    take the session out of ``_hold_note`` -> the sandbox note -> red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    await _mark_chat_as_mail_read()
+    with _tenant():
+        applied = await _apply(orchestrator, "show my crm deals and check my inbox", allowed=EVERY)
+    assert applied is not None and set(applied.record.slugs) == {"crm-records", "email"}
+    assert applied.record.held == {"crm-records": True, "email": True}
+    persona = orchestrator[0].default_options["instructions"]
+    assert eg.EGRESS_HOLD_NOTE_SANDBOX not in persona
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in persona and eg.EGRESS_HOLD_NOTE_PACK in persona
+    assert "create_lead" in set(_names(orchestrator)), "RX-1: the card keeps the write"
+
+
+async def test_a_held_crm_pack_alone_gives_the_mail_reason_and_no_email_talk(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """The CRM note talks about the CRM pack, not about email tools. Mutation:
+    use the email note for every owner -> ``send_draft`` in the CRM persona ->
+    red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    await _mark_chat_as_mail_read()
+    with _tenant():
+        applied = await _apply(orchestrator, "show my crm deals", allowed=EVERY)
+    assert applied is not None and applied.record.slugs == ("crm-records",)
+    persona = orchestrator[0].default_options["instructions"]
+    block = persona[persona.index("CRM TOOLS."):]
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in block and eg.EGRESS_HOLD_NOTE_SANDBOX not in block
+    assert "send_draft" not in block and "schedule_send" not in block
+
+
+async def test_a_covered_run_keeps_the_sandbox_reason_for_a_held_crm_pack(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """A chat that read no mail but is held by a covered run (H-236) keeps the
+    sandbox reason. The fix reads the real session, and invents no mail reason.
+    Mutation: always answer the mail note -> red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    with _tenant():
+        applied = await _apply(
+            orchestrator, "show my crm deals", allowed=EVERY,
+            run_ctx=_run_ctx(no_egress=True))
+    assert applied is not None and applied.record.held == {"crm-records": True}
+    persona = orchestrator[0].default_options["instructions"]
+    assert eg.EGRESS_HOLD_NOTE_SANDBOX in persona
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER not in persona
+
+
+async def test_the_held_answer_of_a_write_names_the_tool_and_sends_nobody_away(store) -> None:
+    """The in-turn answer of a write that stays off names the tool and says why.
+    It talks of no email tool. RX-1: it offers no new chat and no app. The email
+    owner keeps the email wording. Mutation: fall back to the email text for
+    every owner -> ``send_draft`` in the answer -> red."""
+    await _mark_chat_as_mail_read()
+    crm = {"agent_name": CRM, eg.PACK_CALL_KEY: True, "session_id": SESSION}
+    email = {"agent_name": EA, eg.PACK_CALL_KEY: True, "session_id": SESSION}
+    with _tenant():
+        answer = eg.egress_held_answer("update_deal_status", crm)
+        mail = eg.egress_held_answer("send_email", email)
+    assert answer == eg.EGRESS_HELD_PACK_ANSWER_OTHER.format(name="update_deal_status")
+    assert answer.startswith("update_deal_status is off now.")
+    assert "new chat" not in answer and "the app" not in answer
+    assert "send_draft" not in answer and "mailbox" not in answer
+    assert "send_draft" in mail, "the email wording stays for an email tool"
+
+
+def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
+    monkeypatch,
+) -> None:
+    """``NO_PERSONA_BULLETS`` names the owners with no persona text. Any other
+    owner that a pack replaces and that has no bullet raises. Mutation: skip
+    the swap for any absent owner (the old rule) -> the second case does not
+    raise -> red. Mutation: drop ``crm-assistant`` from the set -> the first
+    case raises -> red."""
+    # OA-8b: the Projects assistant joins it. No bullet joins PACK_DELEGATION_BULLETS.
+    assert {CRM, "studio-builder"} == tp.NO_PERSONA_BULLETS
+    assert set(_bullets()) == {EA, "projects-assistant"}
+    persona = _agents_mod()._orchestrator_instructions(False)
+    text = tp.persona_for(persona, [("crm-records", False)], _bullets())
+    assert text.startswith(persona.rstrip("\n") + "\n\n")
+    with pytest.raises(RuntimeError, match="email-assistant"):
+        tp.persona_for(persona, [("email", False)], {})
+    _fake_packs(monkeypatch, {"x-pack": 3})
+    monkeypatch.setitem(tp.PACKS, "x-pack", tp.Pack(
+        slug="x-pack", rules="X RULES", words=("xword",), delegation_refusal="Not run."))
+    with pytest.raises(RuntimeError, match="x-agent"):
+        tp.persona_for(persona, [("x-pack", False)], _bullets())
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+@pytest.mark.parametrize("words", [
+    "Change the amount of the Acme deal in the CRM to 50000",
+    "Mark my CRM follow-up task with Acme as done",
+])
+async def test_a_crm_edit_turn_loads_the_record_edit_and_the_task_change(
+    words: str, store, orchestrator,
+) -> None:
+    """WS-CRM CRM-M2b (crm_conversational.md §8). A CRM turn loads
+    ``crm-records``, and the run then holds both new tools. The base does not
+    hold them: it is at the 110-tool cap. Mutation: drop a tool from the family
+    -> the run lacks it -> red."""
+    for name in ("crm_update_record", "crm_update_task"):
+        assert name not in CONFIG["tool_scope"]
+        assert name not in _names(orchestrator), "the base must not hold it"
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=CRM_ONLY)
+    assert applied is not None and applied.record.slugs == ("crm-records",), applied
+    held = set(_names(orchestrator))
+    assert {"crm_update_record", "crm_update_task"} <= held
+    assert "crm_update_record" in tp.PACKS["crm-records"].rules
+    assert "crm_update_task" in tp.PACKS["crm-records"].rules

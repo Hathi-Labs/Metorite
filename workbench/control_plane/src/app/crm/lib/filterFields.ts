@@ -21,14 +21,13 @@ import { fillLabel, fillOf, type FieldDef } from "./fields";
 import type { EntitySlug } from "./types";
 import type { CrmView, RangeKey } from "./urlState";
 
-export type FilterGroup = "Dates" | "Picklists" | "Numbers" | "Text" | "Other";
+export type FilterGroup = "Dates" | "Choices" | "Numbers" | "Other";
 
 /** The groups, in the order of the panel. */
 export const FILTER_GROUPS: readonly FilterGroup[] = [
   "Dates",
-  "Picklists",
+  "Choices",
   "Numbers",
-  "Text",
   "Other",
 ];
 
@@ -60,7 +59,7 @@ const RANGE_PAIRS: ReadonlyArray<readonly [string, string, RangeKey, RangeKey]> 
 ];
 
 const GROUP_OF_KIND: Record<CustomFilterKind, FilterGroup> = {
-  options: "Picklists",
+  options: "Choices",
   number: "Numbers",
   date: "Dates",
   boolean: "Other",

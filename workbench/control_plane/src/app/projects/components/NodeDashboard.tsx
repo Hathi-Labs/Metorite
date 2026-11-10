@@ -66,17 +66,11 @@ import {
   completionPercent,
 } from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
-import { CATEGORY_LABEL } from "@/lib/statusCategory";
+import { ProjectUpdateLine } from "./ProjectUpdateLine";
+import { CATEGORY_LABEL, STATUS_CATEGORIES } from "@/lib/statusCategory";
 
-/** The order lanes read in — the same left-to-right a board uses. */
-const CATEGORY_ORDER = [
-  "triage",
-  "backlog",
-  "todo",
-  "in_progress",
-  "done",
-  "cancelled",
-] as const;
+/** The order lanes read in: the one lifecycle order of `lib/statusCategory.ts`. */
+const CATEGORY_ORDER = STATUS_CATEGORIES;
 
 /** The labels are `lib/statusCategory.ts`'s. One place names a category. */
 const CATEGORY_LABELS: Record<string, string> = CATEGORY_LABEL;
@@ -404,8 +398,14 @@ export default function NodeDashboard({
   finished,
   outlook,
   onReport,
+  personal = false,
+  personalPlaces,
 }: {
   summary: NodeSummary;
+  /** OP-12b — the summary is the private space. Its empty state names a folder. */
+  personal?: boolean;
+  /** The live folders and projects under the personal root, from the tree the page holds. */
+  personalPlaces?: number;
   /** Drill into a child. The tree selection and this view stay in step. */
   onOpen: (id: string) => void;
   /**
@@ -481,6 +481,14 @@ export default function NodeDashboard({
         ) : null}
       </div>
 
+      {/* WS-39 LP-1a: the newest update of a project, from the same read as
+          the roll-up (`summary.latest_update`), so nothing moves when it
+          arrives. No key (the flag is off) and null (no update) draw nothing
+          and keep no space. */}
+      {(level === "project" || level === "subproject") && summary.latest_update ? (
+        <ProjectUpdateLine update={summary.latest_update} />
+      ) : null}
+
       {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
           neither 2 nor 3, so the last tile used to sit alone on its own row
           at phone and tablet width — an orphan, which reads as a tile that
@@ -496,33 +504,39 @@ export default function NodeDashboard({
               ? "Spaces"
               : level === "project" || level === "subproject"
                 ? "Subprojects"
-                : "Projects"
+                : // OP-12b — the private space holds folders AND projects.
+                  personal
+                  ? "Folders and projects"
+                  : "Projects"
           }
           value={
             level === "portfolio"
               ? // `children` is typed as present and is not guaranteed to be.
                 // Absent means the server did not say, which is a dash, not 0.
                 (hasChildren ? children.length : undefined)
+              : personal
+                ? // OP-12b: every live folder and project under the root, at any depth.
+                  personalPlaces
               : summary.projects
           }
         />
-        {/* ⚠️ The TOTAL, and it is not decoration. The rows below add up to
-            this — Direct work plus every child — and until there was a total
-            on screen a reader had no way to check that, which is the whole
-            reason the Direct work row exists. The portfolio strip has carried
-            a Tasks tile since it shipped; a node had none. */}
+        {/* ⚠️ OPEN work, and it matches the sidebar. The row beside a node there
+            counts open tasks (not done, not cancelled), and this tile used to
+            count EVERY task, so one node showed two numbers (owner,
+            2026-10-30). The rows below still add up to the total of the node:
+            Open, Done and cancelled together. The title says so. */}
         <Stat
-          label="Tasks"
-          value={summary.tasks}
+          label="Open"
+          value={summary.tasks == null ? undefined : openCount(summary)}
           title={
             hasChildren && children.length > 0
-              ? "Every task in this subtree, the node's own included. The rows below add up to this."
-              : "Every task in this scope."
+              ? "Tasks not done or cancelled, the node's own included. Open, Done and cancelled add up to the rows below."
+              : "Tasks not done or cancelled in this scope."
           }
         />
         <Stat label="To do" value={todo} />
         <Stat label="In progress" value={inProgress} />
-        <Stat label="Done" value={done} />
+        <Stat label="Done" value={done} title="Tasks that are delivered." />
         <Stat
           label="Overdue"
           value={summary.overdue}
@@ -566,7 +580,7 @@ export default function NodeDashboard({
             </div>
           ) : (
             <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
-              {emptyCopy(summary)}
+              {emptyCopy(summary, { personal })}
             </p>
           )}
         </div>

@@ -11,16 +11,33 @@
  *   artifactUpdates  — new FileEntry objects pushed in from SSE (ST-AV-06); merged into tree
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
+import { useClampedMenu } from "@/lib/menuClamp";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceFileUrl } from "@/lib/artifactKind";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Files in inputs/, outputs/, and agent-data/ are user/agent-generated
  *  and safe to delete from the Files Viewer.  Everything else (agent
  *  source, configs, skills) is hidden from the UI entirely. */
+/** The file menu's box. It stays above the phone's bar (MOB-9 fix round). */
+function ArtifactMenuBox({ x, y, children }: { x: number; y: number; children: React.ReactNode }) {
+  const { ref, pos, maxHeight } = useClampedMenu(x, y);
+  return (
+    <div
+      ref={ref}
+      className="fixed z-[81] min-w-[190px] overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-2xl"
+      style={{ left: pos.x, top: pos.y, ...(maxHeight ? { maxHeight, overflowY: "auto" as const } : {}) }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function isDeletable(entry: FileEntry): boolean {
   const p = entry.path;
   return (
@@ -149,6 +166,9 @@ function TreeNodeRow({
   // renders (rules-of-hooks): context-menu anchor + per-file history/promote state.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [history, setHistory] = useState<FileHistoryRow[] | null>(null);
+  // A bar tap closes the menu and the history window (MOB-9).
+  useCloseOnBarTap(() => setMenu(null), menu !== null);
+  useCloseOnBarTap(() => setHistory(null), history !== null);
   const [promoting, setPromoting] = useState(false);
   const paddingLeft = 8 + depth * 12;
 
@@ -242,7 +262,7 @@ function TreeNodeRow({
   return (
     <>
       <div
-        className="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-secondary cursor-pointer transition-colors"
+        className="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-secondary cursor-pointer transition-colors glass:rounded-[10px] glass:px-2 glass:py-1 glass:text-footnote"
         style={{ paddingLeft: paddingLeft + 14 }}
         onClick={() => onFileOpen(entry)}
         onContextMenu={openContext}
@@ -282,10 +302,7 @@ function TreeNodeRow({
               setMenu(null);
             }}
           />
-          <div
-            className="fixed z-[81] min-w-[190px] overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-2xl"
-            style={{ left: menu.x, top: menu.y }}
-          >
+          <ArtifactMenuBox x={menu.x} y={menu.y}>
             {onOpenInSidePanel && (
               <button
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-popover-foreground hover:bg-secondary transition-colors"
@@ -331,7 +348,7 @@ function TreeNodeRow({
               <Icon name="Download" size={13} className="shrink-0 text-muted-foreground" />
               Download
             </a>
-          </div>
+          </ArtifactMenuBox>
         </>
       )}
 
@@ -441,6 +458,10 @@ export default function ArtifactSidebar({
     }
   }, [sessionId]);
 
+  // Task #124: the assistant made a file in another chat surface (the dock).
+  // This panel lists the same workspace, so it reads the tree again now.
+  useLiveRefresh(() => void fetchTree(), "artifacts");
+
   // Reload when session changes
   useEffect(() => {
     if (sessionId !== prevSessionRef.current) {
@@ -485,8 +506,8 @@ export default function ArtifactSidebar({
     <aside
       className={
         fullWidth
-          ? "h-full w-full border-l border-border bg-card flex flex-col"
-          : `shrink-0 ${edgeBorder} border-border bg-card/40 flex flex-col transition-all duration-200 ${
+          ? "h-full w-full border-l border-border bg-card flex flex-col glass:border-transparent"
+          : `shrink-0 ${edgeBorder} border-border bg-card/40 flex flex-col transition-all duration-200 glass:border-transparent glass:bg-card ${
               open ? "w-64" : "w-10"
             }`
       }
@@ -494,9 +515,9 @@ export default function ArtifactSidebar({
       {/* Header — only rendered while open; the collapsed state is a rail
           (icon + count + vertical label) matching the other columns. */}
       {open && (
-        <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2.5 glass:border-transparent">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-foreground">Files</span>
+            <span className="text-xs font-semibold text-foreground glass:text-label">Files</span>
             {files.length > 0 && (
               <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {files.length}

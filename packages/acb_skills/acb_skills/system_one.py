@@ -46,7 +46,7 @@ from typing import Any
 
 from acb_common import get_logger
 
-from acb_skills.tier_policy import SYSTEM_ONE_TIER
+from acb_skills.tier_policy import REASONING_OFF, SYSTEM_ONE_TIER
 
 _log = get_logger("acb_skills.system_one")
 
@@ -103,6 +103,26 @@ INSTRUCTIONS = (
 #: :data:`INSTRUCTIONS` and :func:`parse_answers` checks it.
 #: ``test_the_request_asks_for_json_mode_and_names_no_schema`` pins this.
 RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
+
+#: The output ceiling of one request is computed from the item count.
+#: One answer object is the keys and the id (about 20 tokens), a choice
+#: (about 10), a confidence (about 5) and a reason of at most
+#: :data:`REASON_MAX` characters (at most 120 tokens, the worst case for text
+#: that is not English). 160 tokens per item is that sum with a margin.
+#: ``{"answers": [`` and the closing brackets take about 10 tokens.
+ANSWER_TOKENS = 160
+ENVELOPE_TOKENS = 32
+
+
+def max_tokens_for(item_count: int) -> int:
+    """The output ceiling for *item_count* items (20 items give 3,232).
+
+    A reply that the ceiling cuts is not valid JSON. :func:`parse_answers`
+    then raises ``not_json``, which the tool reads as ``error`` and so as
+    ``chat``. A cut reply never reads as a wrong kind.
+    """
+    return ENVELOPE_TOKENS + ANSWER_TOKENS * max(1, item_count)
+
 
 #: A reason that holds one of these is dropped (§6.7 rule 3). It errs toward
 #: dropping, because a dropped reason costs nothing: the choice still stands.
@@ -362,7 +382,14 @@ async def _ask(context: str, items: list[Item], timeout_s: float) -> list[Answer
     try:
         response = await agent.run(
             _message(context, items),
-            options={"response_format": RESPONSE_FORMAT},
+            options={
+                "response_format": RESPONSE_FORMAT,
+                # Thinking OFF (chat speed, 2026-10-30). DeepSeek thinks at
+                # high effort by default: 180 output tokens for a 30-60
+                # token answer. REASONING_OFF is the one shared constant.
+                "reasoning_effort": REASONING_OFF,
+                "max_tokens": max_tokens_for(len(items)),
+            },
             client_kwargs={"extra_headers": headers},
         )
     except Exception as exc:  # a Router refusal, a timeout, a MAF fault

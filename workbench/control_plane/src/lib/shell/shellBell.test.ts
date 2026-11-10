@@ -54,6 +54,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { needsKey, type NeedsItem } from "./needs";
+import { NeedsList, type NeedsYou } from "./NeedsYouCard";
 import { BELL_POLL_MS, BellButton, ShellBell, bellBadge, bellLabel, joinNeedsPoll, shownOfTotal } from "./ShellBell";
 import { shellDockOn } from "./dockFlag";
 
@@ -211,7 +212,11 @@ describe("the flag decides where the bell is", () => {
   });
 
   it("the sidebar head and the phone drawer draw the bell only with the flag on", () => {
-    expect(code(read("../../components/Sidebar.tsx"))).toMatch(/\{!barOn && dockOn \? <ShellBell \/> : null\}/);
+    // GL-12 (owner, 2026-11-01): Needs you folds into My Day. The sidebar
+    // draws no bell: its My Day row counts what waits and opens the page.
+    const side = read("../../components/Sidebar.tsx");
+    expect(code(side)).not.toMatch(/<ShellBell/);
+    expect(side).toMatch(/<MyDayRow/);
     const shell = code(read("../../components/AppShell.tsx"));
     expect(shell).toMatch(/\{dockOn \? <ShellBell onBeforeOpen=\{close\}/);
     expect(shell.match(/\{dockOn \? <ShellBellHost placement=/g)?.length).toBe(2);
@@ -337,7 +342,7 @@ describe("one list for the bell and the card", () => {
     expect(card).toMatch(/<HomeCard[^>]*>\s*<NeedsList needs=\{needs\} now=\{now\}( first=\{first\})? \/>/);
     const bell = code(read("./ShellBell.tsx"));
     expect(bell).toMatch(/^import \{[^}]*\bNeedsList\b[^}]*\} from "\.\/NeedsYouCard";/m);
-    expect(bell).toMatch(/<NeedsList needs=\{panelNeeds\} now=\{now\} \/>/);
+    expect(bell).toMatch(/<NeedsList needs=\{panelNeeds\} now=\{now\} extra=\{extra\} \/>/);
     // The panel's needs are the reader's, with only the act wrapped.
     expect(bell).toMatch(/\.\.\.needs,\s*act: \(item, from\) =>/);
   });
@@ -379,5 +384,34 @@ describe("one list for the bell and the card", () => {
     const undo = code(read("../../app/tasks/components/UndoToast.tsx"));
     // The fallback binds no key, and stands down while a page holds the toast.
     expect(undo).toMatch(/useUndoToastSync\(false, !held, false\)/);
+  });
+});
+
+describe("an empty feed with install setup rows", () => {
+  const empty: NeedsYou = {
+    items: [],
+    count: 0,
+    total: 0,
+    sources: {},
+    byApp: {},
+    floors: new Set(),
+    loading: false,
+    error: null,
+    refresh: () => {},
+    errors: {},
+    act: () => {},
+  };
+  const extra = [{ installId: "i1", title: "Finish setting up Acme", href: "/setup" }];
+
+  it("shows the setup row and not the green empty line", () => {
+    const html = renderToStaticMarkup(createElement(NeedsList, { needs: empty, now: null, extra }));
+    expect(html).toContain("Finish setting up Acme");
+    expect(html).not.toContain("Nothing needs you");
+    expect(html).not.toContain("Nothing else needs you");
+  });
+
+  it("keeps the empty line when there are no setup rows", () => {
+    const html = renderToStaticMarkup(createElement(NeedsList, { needs: empty, now: null }));
+    expect(html).toContain("Nothing needs you right now.");
   });
 });

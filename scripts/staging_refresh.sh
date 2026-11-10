@@ -16,7 +16,8 @@
 #      That key can read the export folder and nothing else (rrsync -ro).
 #   3. Checks the checksums and the age (36 hours at most).
 #   4. Drops and rebuilds the database `postgres` in acb-staging-db: the roles
-#      and extensions the dump names, then pg_restore.
+#      and extensions the dump names, then pg_restore. Then it deletes every
+#      copied web push subscription, so staging pushes to no real phone.
 #   5. Gives the gateway the non-owner role acb_app (handover §H3), so RLS binds
 #      staging as it binds production (R5).
 #   6. Copies production's feature switches into the two env files, except the
@@ -111,13 +112,22 @@ rc=0
 # has no error. pg_restore needs a file it can seek in for -L.
 docker cp "$import_dir/staging.dump" "$ctr:/tmp/staging.dump"
 docker exec "$ctr" sh -c 'pg_restore -l /tmp/staging.dump | grep -vE "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public " > /tmp/staging.list'
-docker exec "$ctr" pg_restore -U postgres -d postgres --no-owner --no-acl \
+# LD-8c: the restore builds a vector index that needs more than the 64 MB
+# default of maintenance_work_mem. `env` sets PGOPTIONS inside the container,
+# as scripts/restore_db.sh does. Fence: tests/unit/test_staging_box.py.
+docker exec "$ctr" env "PGOPTIONS=-c maintenance_work_mem=256MB" \
+  pg_restore -U postgres -d postgres --no-owner --no-acl \
   -L /tmp/staging.list /tmp/staging.dump > "$log" 2>&1 || rc=$?
 docker exec "$ctr" rm -f /tmp/staging.dump /tmp/staging.list
 if [ "$rc" != "0" ] || grep -qE '^pg_restore: error' "$log"; then
   grep -E '^pg_restore: error' "$log" | head -20 >&2 || true
   fail "pg_restore failed (exit $rc). See $log"
 fi
+# A push subscription is a device credential of a real member, so staging
+# deletes each copied one and never pushes to a real phone (WS-66 RE-9b). The
+# export deletes them too. This runs at the refresh only, so a subscription
+# that a member makes on dev.metorite.com after it stays.
+dpsql -d postgres -c "DELETE FROM public.push_subscriptions" < /dev/null
 
 # ── 5. The gateway's role: not owner, not superuser, no RLS bypass ───────────
 dpsql -d postgres <<SQL

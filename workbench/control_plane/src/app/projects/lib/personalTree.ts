@@ -14,6 +14,7 @@
 
 import type { ProjectRow } from "./api";
 import { splitArchived, type ArchiveSplit } from "./archivedRoots";
+import { PERSONAL_NODE_NAME, displayNodeName, isPersonalRoot } from "./tree";
 
 /** The heading of the section. The lock icon is drawn beside it. */
 export const PERSONAL_SECTION_LABEL = "Personal";
@@ -23,13 +24,103 @@ export const PERSONAL_SECTION_HINT = "Private to you";
 
 const NONE: ProjectRow[] = [];
 
+/** The one name of the private space (D-OP-2, OP-12b). Defined in `tree.ts`, the leaf module. */
+export { PERSONAL_NODE_NAME, displayNodeName, isPersonalRoot };
+
+/** The line under the title of the private space. */
+export const PERSONAL_SPACE_NOTE =
+  "Only you can see this. These tasks also show in My tasks.";
+
+/** The accessible label of the lock on a private task in My tasks. */
+export const PRIVATE_TASK_LABEL = "Private";
+
+/**
+ * The id of the member's personal root as the page last loaded it. A surface
+ * that prints a server `project_name` (Needs attention, Triage, Analytics,
+ * Reports) has no tree, so it asks the seam through `displayRowProject`. The
+ * page sets this with `rememberPersonalRoot`. The match is by ID only: a team
+ * project that is named "My tasks" keeps its name.
+ */
+let rememberedRootId: string | null = null;
+
+export function rememberPersonalRoot(roots: readonly ProjectRow[] | null | undefined): void {
+  rememberedRootId = (roots ?? []).find((n) => isPersonalRoot(n))?.id ?? null;
+}
+
+/**
+ * The name to print for a row that carries a project id and a stored name (a
+ * search hit, a needs-attention row). `personalRootId` is the id of the
+ * member's personal root, or defaults to the one the page remembered.
+ */
+export function displayProjectName(
+  projectId: string | null | undefined,
+  storedName: string | null | undefined,
+  personalRootId?: string | null,
+): string | null {
+  const rootId = personalRootId ?? rememberedRootId;
+  if (projectId && rootId && projectId === rootId) return PERSONAL_NODE_NAME;
+  return storedName ?? null;
+}
+
+/** `displayProjectName` for a server row. */
+export function displayRowProject(
+  row: { project_id?: string | null; project_name?: string | null },
+): string | null {
+  return displayProjectName(row.project_id, row.project_name);
+}
+
 /** The roots of the Personal section: the caller's own tree, or none when the flag is off. */
 export function personalRoots(
   data: { personal?: ProjectRow[] | null } | null | undefined,
   enabled: boolean,
 ): ProjectRow[] {
   if (!enabled) return NONE;
-  return data?.personal ?? NONE;
+  const roots = data?.personal ?? NONE;
+  // The root carries its display name, so every reader of the tree prints it.
+  return roots.map((root) =>
+    isPersonalRoot(root) && root.name !== PERSONAL_NODE_NAME
+      ? { ...root, name: displayNodeName(root) }
+      : root,
+  );
+}
+
+/** Every live folder and project under a personal root, at any depth. A filed one and its subtree do not count. */
+export function personalPlaceCount(root: Pick<ProjectRow, "children">): number {
+  let n = 0;
+  for (const child of root.children ?? []) {
+    if (child.archived_at) continue;
+    n += 1 + personalPlaceCount(child);
+  }
+  return n;
+}
+
+/**
+ * The line under the PERSONAL heading when the member made nothing there
+ * (owner, 2026-10-30). The "+" of the section creates a "New folder" or a
+ * "New project" (`childCreationOptions`), so the line names both. Null once
+ * the root has any child, archived ones included.
+ */
+export const PERSONAL_EMPTY_LINE = "No personal folders or projects yet.";
+export function personalEmptyLine(personal: readonly ProjectRow[]): string | null {
+  const { root, rows } = personalHeading(personal);
+  return root && rows.length === 0 ? PERSONAL_EMPTY_LINE : null;
+}
+
+/**
+ * What the sidebar draws under the PERSONAL heading (OP-12b). The heading IS
+ * the first root, so that root never draws as a row. Its children draw
+ * directly under the heading. A member holds one root (a partial unique index
+ * on `personal_owner`), but a second root would be a node the heading cannot
+ * stand for. It stays a row, so nothing is hidden.
+ */
+export function personalHeading(personal: readonly ProjectRow[]): {
+  root: ProjectRow | null;
+  rows: ProjectRow[];
+} {
+  const root = personal.find((n) => isPersonalRoot(n)) ?? null;
+  if (!root) return { root: null, rows: personal as ProjectRow[] };
+  const others = personal.filter((n) => n !== root);
+  return { root, rows: [...(root.children ?? []), ...others] };
 }
 
 /**

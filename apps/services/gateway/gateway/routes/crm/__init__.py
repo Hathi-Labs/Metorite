@@ -102,12 +102,21 @@ A view is not a CRM record, so the routes work in Mirror mode as well.
 ``aggregate.py`` is WS-53 CRM-C7 — ``GET /crm/aggregate`` and
 ``GET /crm/aggregate/stage-dwell``, the totals that an agent reads. Read only.
 It builds its filters with ``records.list_query``, the one list builder.
-``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member.
+``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member,
+and ``PUT /crm/settings/labels`` (CRM-Z10g), the names of the core records in
+a Native CRM, admin only.
 
 ``convert_mapping.py`` is WS-53 CRM-C6a — ``GET`` and ``PUT
 /crm/conversion-mapping``, the lead-conversion mapping of a Native CRM (table
 ``crm_convert_mappings``). Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and
 409 in Mirror mode. ``pipeline.convert_lead`` applies the map.
+
+``cutover.py`` is WS-53 CRM-Z10a — ``GET /crm/cutover/preview``, what moves to
+Metorite when the org leaves Zoho and what does not. Read only, with no source
+call. Admin only, behind ``CRM_MIRROR``, and Mirror mode only. CRM-Z10b adds
+the switch: ``POST /crm/cutover/start``, ``GET /crm/cutover/status`` and
+``POST /crm/cutover``. Admin only, behind ``CRM_CUTOVER_ORGS``, and the admin
+types ``SWITCH``.
 
 ``note_search.py`` is WS-53 CRM-Q27 — ``GET /crm/notes/search``, the notes
 nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
@@ -132,6 +141,11 @@ the table, and only for an org on ``CRM_DIGEST_ORGS``.
 and of each member (table ``crm_business_rules``), and the hold and the
 confirm of a rule from the chat. An org outside ``CRM_ANSWER_FIRST_ORGS``
 gets 404 ``rules_off``.
+
+``change_log.py`` is WS-CRM CRM-M1 — ``GET /crm/change-history`` and
+``POST /crm/change-history/{id}/undo`` (table ``crm_change_log``), and
+``log_change``, the one writer of a Change history row. Each feature module
+registers the Undo of its own areas there.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -139,8 +153,10 @@ from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
 from gateway.routes.crm import analysis as _analysis  # noqa: F401
 from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
+from gateway.routes.crm import change_log as _change_log  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
+from gateway.routes.crm import cutover as _cutover  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import digests as _digests  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401

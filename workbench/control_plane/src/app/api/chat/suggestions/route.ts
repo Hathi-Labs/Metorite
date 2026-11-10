@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { gatewayFetch, requireIdentity } from "@/lib/gateway";
+import { helperModel } from "@/lib/helperModel";
 
 // Resolves the signed-in member, so it is never statically evaluated.
 export const dynamic = "force-dynamic";
@@ -16,7 +17,8 @@ const LITELLM_BASE_URL =
   process.env.COPILOT_LLM_BASE_URL ?? process.env.LITELLM_BASE_URL ?? "http://127.0.0.1:8080/v1";
 const LITELLM_KEY =
   process.env.LITELLM_MASTER_KEY ?? "";
-const SUGGESTION_MODEL = process.env.SUGGESTION_MODEL ?? "deepseek/deepseek-chat";
+// A tier name, so the Router and the local path both accept it.
+const SUGGESTION_MODEL = helperModel();
 
 /** Ensure the base URL ends with /v1 (env values vary). */
 function v1Base(): string {
@@ -46,6 +48,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: SUGGESTION_MODEL,
+        thinking: { type: "disabled" },
         max_tokens: 150,
         temperature: 0.7,
         messages: [

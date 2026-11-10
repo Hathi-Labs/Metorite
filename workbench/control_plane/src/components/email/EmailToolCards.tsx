@@ -37,6 +37,7 @@
 
 import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Badge from "@/components/ui/Badge";
 import { Textarea } from "@/components/ui/Input";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
@@ -576,9 +577,9 @@ function useOpenEmail() {
 /** The frame of a receipt, and the tone of its icon. The same classes as the
  *  Tasks receipts (`TaskToolCards`), so the two apps draw one receipt. */
 export function receiptTone(failed: boolean, danger = false): { frame: string; icon: string } {
-  if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5", icon: "text-destructive" };
-  if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5", icon: "text-warning" };
-  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40", icon: "text-success" };
+  if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5 glass:rounded-[16px] glass:p-3", icon: "text-destructive" };
+  if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5 glass:rounded-[16px] glass:p-3", icon: "text-warning" };
+  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3", icon: "text-success" };
 }
 
 /** A small control in a dense card row. The shared `Button`, at the card's
@@ -702,8 +703,12 @@ function DraftResultCard({
     }
   };
 
+  // The send asks once, in the shared dialog, never the browser's
+  // confirm box (UXD-3). Undo send (task 901) will replace the ask.
+  const [asking, setAsking] = useState(false);
   const send = async () => {
-    if (!canAct || !confirm(head.from ? `Send this reply from ${head.from}?` : "Send this reply now?")) return;
+    if (!canAct) return;
+    setAsking(false);
     setState("sending");
     try {
       // "saved": the save named no draft id to send, so it stays in Drafts.
@@ -720,7 +725,7 @@ function DraftResultCard({
   // folds (`lib/cardRollup.ts` rule 1). Then it is a receipt, and may fold.
   return (
     <RollupCard id={`tool:${e.id}`} title="Draft reply" icon="PenLine" header="own" pending={!done}>
-    <div data-email-card="draft" className={CARD_FRAME_CLASS}>
+    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} ${done ? "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3" : "glass:rounded-[16px] glass:p-3 glass:border-primary/35 glass:glass-raised"}`}>
       <CardHead tone="text-primary" aside={head.from ? `from ${head.from}` : undefined} />
       <RollupBody className="pt-1.5">
       <Textarea
@@ -749,9 +754,19 @@ function DraftResultCard({
             >
               Save to Drafts
             </Button>
-            <Button size="sm" icon="Send" loading={state === "sending"} onClick={send} disabled={!canAct || acting}>
+            <Button size="sm" icon="Send" loading={state === "sending"} onClick={() => setAsking(true)} disabled={!canAct || acting}>
               Send
             </Button>
+            <ConfirmDialog
+              open={asking}
+              title="Send this reply?"
+              body={head.from ? `It goes from ${head.from}.` : "It goes now."}
+              confirmLabel="Send"
+              confirmVariant="primary"
+              icon="Send"
+              onConfirm={() => void send()}
+              onCancel={() => setAsking(false)}
+            />
           </>
         )}
         {state === "error" && (
@@ -836,8 +851,10 @@ function RuleResultCard({
   const op = String(a.conditional_operator ?? "OR").toUpperCase() === "AND" ? "and" : "or";
   const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled" | "failed">("idle");
 
+  const [asking, setAsking] = useState(false);
   const del = async () => {
-    if (!ruleId || !confirm(`Delete rule "${name}"?`)) return;
+    if (!ruleId) return;
+    setAsking(false);
     setState("busy");
     try {
       await deleteRule(ruleId);
@@ -858,9 +875,24 @@ function RuleResultCard({
   };
 
   const title = `${created ? "Created rule" : "Updated rule"}: ${name}`;
+  // The rule is written. Disable and Delete are optional, so the card is a
+  // receipt and opens folded (task 1003). The folded row says what it does.
+  const ruleSummary = [conds.length ? `${conds.length} condition${conds.length > 1 ? "s" : ""}` : "",
+    actions.length ? `${actions.length} action${actions.length > 1 ? "s" : ""}` : ""]
+    .filter(Boolean).join(", ");
+  // The folded row keeps the one warning of the open card (task 1003).
+  const ruleSummaryFull = [ruleSummary || title, a.automated === false ? "proposes for approval" : ""]
+    .filter(Boolean).join(" · ");
   const tone = receiptTone(false);
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon="Sparkles" header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={title}
+      icon="Sparkles"
+      summary={ruleSummaryFull}
+      receipt={e.status !== "error" && state !== "failed"}
+      header="own"
+    >
     <div data-email-card="rule" className={tone.frame}>
       {/* The result of an act sits BESIDE the header, with the buttons it
           replaces. The header's aside shows only while the card is open, so
@@ -880,9 +912,20 @@ function RuleResultCard({
                 Disable
               </Button>
             )}
-            <Button variant="secondary" size="none" className={DENSE} onClick={del}>
+            <Button variant="secondary" size="none" className={DENSE} onClick={() => setAsking(true)}>
               Delete
             </Button>
+            <ConfirmDialog
+              open={asking}
+              title="Delete this rule?"
+              subject={name}
+              body="The rule stops at once. Mail it already moved stays where it is."
+              confirmLabel="Delete"
+              confirmVariant="destructive"
+              icon="Trash2"
+              onConfirm={() => void del()}
+              onCancel={() => setAsking(false)}
+            />
           </>
         )}
         {state === "busy" && <AppIcon name="Loader2" size={12} className="animate-spin text-muted-foreground" />}
@@ -974,7 +1017,14 @@ function SettingsUpdatedCard({ event: e }: { event: ToolEvent }) {
   const tone = receiptTone(false);
 
   return (
-    <RollupCard id={`tool:${e.id}`} title="Settings updated" icon="Settings2" header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title="Settings updated"
+      icon="Settings2"
+      header="own"
+      summary={changed.map(([label, value]) => `${label}: ${value}`).join(", ") || undefined}
+      receipt
+    >
     <div data-email-card="settings" className={tone.frame}>
       <CardHead tone={tone.icon}>
         <Button variant="secondary" size="none" className={DENSE} onClick={() => router.push("/email")}>
@@ -1182,7 +1232,7 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
 
   return (
     <RollupCard id={`tool:${events[0].id}`} title={meta.label} icon={iconName} rows={rows.length} header="own">
-    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-primary">
         {actionable.length > 1 && (
           <BulkButtons
@@ -1322,7 +1372,7 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
       header="own"
       summary={groups.map((g) => g.title).join(", ")}
     >
-    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
+    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-primary" aside={`in ${groups.length} group${groups.length > 1 ? "s" : ""}`} />
       <RollupBody className="pt-2">
       <div className="space-y-1.5">
@@ -1361,7 +1411,7 @@ function GroupSection({
     (r) => !["archived", "read", "busy"].includes(statuses[r.id] ?? "idle"),
   );
   return (
-    <div className="rounded-md border border-border/70 bg-background/40">
+    <div className="rounded-md border border-border/70 bg-background/40 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
       <div className="flex items-center gap-1.5 px-2 py-1.5">
         <Button
           variant="text"
@@ -1658,7 +1708,7 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   if (!id) {
     return (
       <RollupCard id={`tool:${e.id}`} title={subject} icon="Mail" header="own">
-      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
         <CardHead tone="text-primary" aside={from || undefined} />
       </div>
       </RollupCard>
@@ -1666,7 +1716,7 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   }
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
+    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <EmailRow
         row={{ id, sender: from || "(unknown sender)", subject }}
         defaultOpen
@@ -1696,9 +1746,11 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
   // The count reads after the title, on the title row ("Labels updated · 2
   // emails"), as before.
   const title = failed ? "Couldn't update labels" : "Labels updated";
+  const labelSummary = [add.length ? `Added ${add.join(", ")}` : "", remove.length ? `Removed ${remove.join(", ")}` : ""]
+    .filter(Boolean).join(". ");
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" summary={labelSummary} receipt={!failed} header="own">
     <div data-email-card="label" className={tone.frame}>
       <CardHead
         tone={failed ? tone.icon : "text-primary"}
@@ -1762,7 +1814,7 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
 
   // One row, and no body: nothing folds, so it draws no toggle.
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} receipt={!failed} header="own">
     <div data-email-card="manage" className={tone.frame}>
       <CardHead tone={tone.icon} />
     </div>
@@ -1976,6 +2028,8 @@ function RulesOverviewCard({
   const [rules, setRules] = useState(parsed.rules);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  // The row whose Delete waits in the shared dialog (UXD-3).
+  const [asking, setAsking] = useState<ParsedRuleRow | null>(null);
 
   // Unparseable output (error text, older format) → the plain-text card.
   if (parsed.rules.length === 0) return <InfoResultCard event={e} />;
@@ -1997,7 +2051,8 @@ function RulesOverviewCard({
   };
 
   const del = async (row: ParsedRuleRow) => {
-    if (busy || !confirm(`Delete rule "${row.name}"?`)) return;
+    setAsking(null);
+    if (busy) return;
     setBusy(row.id);
     setError(false);
     try {
@@ -2020,7 +2075,7 @@ function RulesOverviewCard({
         {rules.map((r) => (
           <div
             key={r.id}
-            className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5"
+            className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5 glass:rounded-[10px] glass:border-transparent glass:bg-secondary"
           >
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="text-[11px] font-medium text-foreground truncate flex-1 min-w-0">
@@ -2061,7 +2116,7 @@ function RulesOverviewCard({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    onClick={() => del(r)}
+                    onClick={() => setAsking(r)}
                     title="Delete this rule"
                     aria-label="Delete this rule"
                     className="flex-shrink-0"
@@ -2088,6 +2143,17 @@ function RulesOverviewCard({
           </div>
         ))}
       </ShowMore>
+      <ConfirmDialog
+        open={asking !== null}
+        title="Delete this rule?"
+        subject={asking?.name ?? null}
+        body="The rule stops at once. Mail it already moved stays where it is."
+        confirmLabel="Delete"
+        confirmVariant="destructive"
+        icon="Trash2"
+        onConfirm={() => { if (asking) void del(asking); }}
+        onCancel={() => setAsking(null)}
+      />
       {parsed.settings && (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
           {parsed.settings}
@@ -2171,6 +2237,21 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
 
 // ── Generic action card ───────────────────────────────────────────────────────
 
+/**
+ * `run_rules` is a read when the member asked for a preview, an estimate or a
+ * status. It changes mail only for `past` and `retry_failed`, and for `new`
+ * or `message` with `dry_run` false (`agents.py` `run_rules`). A read is not a
+ * receipt, so its card opens (task 1003).
+ */
+export function readsOnly(e: ToolEvent): boolean {
+  if (e.name !== "run_rules" && e.name !== "run_rules_now") return false;
+  const a = (e.args ?? {}) as Record<string, unknown>;
+  const scope = String(a.scope ?? "new").trim().toLowerCase();
+  if (scope === "estimate" || scope === "status") return true;
+  if (scope === "past" || scope === "retry_failed" || scope === "retry") return false;
+  return String(a.dry_run ?? "true").trim().toLowerCase() !== "false";
+}
+
 /** Confirmation card for any mutating tool — icon + label + result summary. */
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
@@ -2186,6 +2267,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       title={meta.label}
       icon={iconName}
       summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      receipt={!failed && !readsOnly(e)}
       header="own"
     >
     <div data-email-card="action" className={tone.frame}>
@@ -2210,7 +2292,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  *  member, a send that the tool refused, or a cancel. The card for it never
  *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
  *  answer, which told the member that mail went out. */
-export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused";
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused" | "revised";
 
 export function noActionOf(raw: string | null | undefined): NoAction | null {
   const t = (raw || "").trimStart();
@@ -2220,6 +2302,9 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   // button whose body is the refusal.
   if (/^Refused:/.test(t)) return "refused";
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  // §18.11: a chat message closed the card, and the model writes the new
+  // draft. Nothing was sent, so the card never says "Email sent".
+  if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";
   if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
@@ -2232,7 +2317,15 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
   unchanged: { icon: "CircleSlash", label: "Nothing changed" },
   cancelled: { icon: "X", label: "Cancelled" },
   refused: { icon: "CircleSlash", label: "Not done" },
+  revised: { icon: "PencilLine", label: "Draft being changed" },
 };
+
+/** The words of a closed card that a chat message revised. The result itself
+ *  is the model's instruction, so the member never reads it. Fix round 6:
+ *  when the revise did not run, the same card comes back under it, so the
+ *  words name that case too. */
+export const REVISED_NOTE =
+  "You wrote in the chat, so this card closed. Nothing was sent. A new draft can follow, or the same card can come back.";
 
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
   const meta = NO_ACTION_META[kind];
@@ -2240,11 +2333,13 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
   // A question back to the member waits on the member: it never folds.
   return (
     <RollupCard id={`tool:${e.id}`} title={meta.label} icon={meta.icon} header="own" pending={kind === "question"}>
-    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-muted-foreground" />
       <RollupBody>
           {/* No clamp: a question lists each mailbox, and each one matters. */}
-          {result && (
+          {kind === "revised" ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{REVISED_NOTE}</p>
+          ) : result && (
             <div className="mt-0.5">
               <Readout result={result} />
             </div>

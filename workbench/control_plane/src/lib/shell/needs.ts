@@ -23,10 +23,42 @@ import { PROJECTS_CACHE, notificationsApi } from "@/app/projects/lib/api";
 import { type CompletionStore, type DoneRow, markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
 import { cacheKey } from "@/lib/dataCache";
 
-export type NeedsApp = "tasks" | "approvals" | "projects" | "email";
-export type NeedsKind = "overdue" | "approval" | "due_today" | "notification" | "needs_reply";
+export type NeedsApp = "tasks" | "approvals" | "projects" | "email" | "calendar";
+export type NeedsKind =
+  | "overdue"
+  | "approval"
+  | "due_today"
+  | "notification"
+  | "needs_reply"
+  | "reminder_due"
+  | "reminder_check"
+  | "reminder_unconfirmed";
 export type NeedsAct = "done" | "read";
 export type SourceState = "ok" | "failed" | "absent";
+
+/**
+ * The app that owns each SOURCE of the needs feed. THE one map from a source
+ * id to its app. The server keys `sources`, `totals` and `capped` by the
+ * source id (`needs.py`), and the reminders source is `reminders`, not its
+ * app `calendar`. So every reader of those three goes through this map, and
+ * a new provider adds one line here.
+ */
+export const NEEDS_SOURCE_APP = {
+  tasks: "tasks",
+  approvals: "approvals",
+  projects: "projects",
+  email: "email",
+  reminders: "calendar",
+} as const satisfies Record<string, NeedsApp>;
+
+export type NeedsSource = keyof typeof NEEDS_SOURCE_APP;
+
+// Every source counts on its app's row. RM-2b held `reminders` out, because
+// the server keys the totals by source and the client read them by app. The
+// map above closed that gap, and the owner asked for the Calendar count on
+// 2026-11-03 (`calendar_events_reminders.md` §5.6, RM-2b decision 5).
+
+const NEEDS_SOURCES = Object.keys(NEEDS_SOURCE_APP) as NeedsSource[];
 
 /** One row of the feed, exactly as `GET /shell/needs` sends it. */
 export interface NeedsItem {
@@ -57,7 +89,7 @@ export interface NeedsFeed {
    */
   total: number;
   items: NeedsItem[];
-  sources: Partial<Record<NeedsApp, SourceState>>;
+  sources: Partial<Record<NeedsSource, SourceState>>;
   /**
    * How many need the member in each source that answered `ok`. It is the
    * app's own count where its read has one (the Projects bell's unread
@@ -66,13 +98,13 @@ export interface NeedsFeed {
    * rows from `items` entirely. An older gateway leaves it out, and a count
    * then reads the rows in `items`.
    */
-  totals: Partial<Record<NeedsApp, number>>;
+  totals: Partial<Record<NeedsSource, number>>;
   /**
    * The sources whose `totals` entry is a FLOOR: the read stopped at its
    * cap of 15 and has no count, so the source holds that many OR MORE. The
    * row prints "15+" (`navNeeds.ts`). An older gateway leaves it out.
    */
-  capped: NeedsApp[];
+  capped: NeedsSource[];
 }
 
 /**
@@ -87,6 +119,10 @@ export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
+  // WS-66: the reminders that need the member count on the Calendar row
+  // (fired, checked back, or unconfirmed). One still ahead today needs
+  // nothing yet, so it is not a needs row and has no count.
+  calendar: "/calendar",
 };
 
 /**
@@ -104,12 +140,13 @@ export function countsByApp(
   approvals: boolean,
 ): Partial<Record<NeedsApp, number>> {
   const out: Partial<Record<NeedsApp, number>> = {};
-  for (const app of Object.keys(NEEDS_APP_HREF) as NeedsApp[]) {
-    if (feed.sources?.[app] !== "ok") continue;
+  for (const source of NEEDS_SOURCES) {
+    const app = NEEDS_SOURCE_APP[source];
+    if (feed.sources?.[source] !== "ok") continue;
     if (app === "approvals" && !approvals) continue;
     const sent = feed.items.filter((i) => i.app === app).length;
     const still = shown.filter((i) => i.app === app).length;
-    const total = feed.totals?.[app];
+    const total = feed.totals?.[source];
     const before = typeof total === "number" && Number.isFinite(total) ? Math.max(total, sent) : sent;
     out[app] = Math.max(0, before - (sent - still));
   }
@@ -122,8 +159,10 @@ export function countsByApp(
  */
 export function floorApps(feed: NeedsFeed, approvals: boolean): Set<NeedsApp> {
   const out = new Set<NeedsApp>();
-  for (const app of Array.isArray(feed.capped) ? feed.capped : []) {
-    if (!(app in NEEDS_APP_HREF) || feed.sources?.[app] !== "ok") continue;
+  for (const source of Array.isArray(feed.capped) ? feed.capped : []) {
+    if (!Object.hasOwn(NEEDS_SOURCE_APP, source)) continue;
+    if (feed.sources?.[source] !== "ok") continue;
+    const app = NEEDS_SOURCE_APP[source];
     if (app === "approvals" && !approvals) continue;
     out.add(app);
   }
@@ -171,7 +210,19 @@ function byHref(
  * approval row has no act: approving runs an outward write, so the member
  * opens Approvals and reads the proposal first.
  */
-export const KIND_ORDER: readonly NeedsKind[] = ["overdue", "approval", "due_today", "notification", "needs_reply"];
+export const KIND_ORDER: readonly NeedsKind[] = [
+  // RX-7: a reminder that fired and waits on the member comes first, so the
+  // server's cut to 30 rows cannot drop it (`needs.py` `KIND_ORDER`).
+  "reminder_due",
+  "reminder_check",
+  "overdue",
+  "approval",
+  "due_today",
+  "notification",
+  "needs_reply",
+  // WS-66 RM-2b: a reminder that Metorite stopped checking is the last kind.
+  "reminder_unconfirmed",
+];
 
 /** How many rows the feed asks for. The BFF and the gateway both cap it. */
 export const NEEDS_LIMIT = 30;

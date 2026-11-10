@@ -169,9 +169,13 @@ async def _build(kind: str, data: dict[str, Any]) -> Any:
 # ── Small text helpers ──────────────────────────────────────────────────────
 
 
+#: The words of a due row on the My Day view, in place of a span of time.
+_DUE_WORDS = {"due_today": "due today", "overdue": "overdue"}
+
+
 def _now() -> datetime:
-    """The one clock of the views. It splits overdue work from work due
-    today, and it words "3 days late" and "in 2 h".
+    """The one clock of the views. It gives the member's today, which splits
+    overdue work from work due today, and it words "in 2 h".
 
     A test freezes THIS, so the rows it builds and the split agree
     (``test_wac_views.py`` ``TestTheClock``), as #951 did for the needs feed.
@@ -316,7 +320,10 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
                          for k, n in counts.items() if k in dict(_KINDS))
     sections = []
     for kind, label in _KINDS:
-        rows = [_row(i.get("title"), str(i.get("detail") or ""), _when(i.get("at"), now))
+        # A due date is a day, so a due row names no hour (RX-5). This read
+        # holds no zone, so only the Overdue view counts the days.
+        rows = [_row(i.get("title"), str(i.get("detail") or ""),
+                     _DUE_WORDS.get(kind) or _when(i.get("at"), now))
                 for i in items if i.get("kind") == kind]
         sections.append((label, rows))
     total = len(items) + (1 if capped else 0)
@@ -326,28 +333,21 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
 
 async def view_due(ctx: Any, *, kind: str) -> View:
     """``kind`` is "due_today" or "overdue": the member's own due work."""
+    from gateway.routes.projects.due_day import local_date
     from gateway.routes.projects.personal import my_due_tasks
-    from gateway.routes.shell.needs import HIDDEN_DISPOSITIONS
+    from gateway.routes.shell.needs import _instant, due_kind
 
     # The read is oldest deadline first, so a short limit fills with overdue
     # work and hides what is due later today (WAC-10c review). One member's
     # due work is small, so read deep, and never say "none" at the cap.
     answer = await my_due_tasks(ctx, limit=DUE_READ)
     at_cap = len(answer.get("rows") or []) >= DUE_READ
-    now = _now()
+    zone = answer.get("timezone")
+    today = local_date(zone, _now())
     rows: list[tuple[datetime, dict]] = []
     for t in answer.get("rows") or []:
-        if t.get("completed_at") or t.get("disposition") in HIDDEN_DISPOSITIONS:
-            continue
-        try:
-            due = datetime.fromisoformat(str(t.get("due_at")).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if due.tzinfo is None:
-            due = due.replace(tzinfo=UTC)
-        if (due < now) != (kind == "overdue"):
-            continue
-        rows.append((due, t))
+        if due_kind(t, zone, today) == kind:
+            rows.append((_instant(t.get("due_at")), t))
     rows.sort(key=lambda p: p[0])
     title = "*Overdue*" if kind == "overdue" else "*Due today*"
     if not rows and at_cap:
@@ -356,11 +356,11 @@ async def view_due(ctx: Any, *, kind: str) -> View:
         quiet = "Nothing is overdue. ✅" if kind == "overdue" else "Nothing is due today. ✅"
         el = await _build("buttons", {"body": quiet, "buttons": ["My day", "Calendar"]})
         return View(kind, title, [el])
-    tz = ZoneInfo(answer.get("timezone") or "UTC")
     list_rows = []
     for due, t in rows:
-        when = (_when(due, now).replace(" ago", " late") if kind == "overdue"
-                else f"due {due.astimezone(tz):%H:%M}")
+        # A due date is a day, so no row names a clock (RX-5).
+        late = (today - local_date(zone, due)).days
+        when = f"{_plural(late, 'day')} late" if kind == "overdue" else "due today"
         list_rows.append(_row(t.get("title"), str(t.get("project_name") or ""), when))
     by_project: dict[str, int] = {}
     for _due, t in rows:

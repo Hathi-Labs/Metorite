@@ -42,6 +42,7 @@ import {
   fetchPublicKey,
   forgetThisDevice,
   isIos,
+  isPhone,
   permissionState,
   pushSupport,
   loadPushView,
@@ -192,7 +193,7 @@ describe("no permission prompt without a tap", () => {
     await thisDeviceEndpoint();
     await loadPushView();
     pushView({
-      support: "supported", key: { kind: "key", key: KEY },
+      support: "supported", key: { kind: "key", key: KEY, prompt: false },
       permission: "default", subscribed: false, registered: false,
     });
     await disablePush();
@@ -363,7 +364,17 @@ describe("no permission prompt without a tap", () => {
     expect(offenders.filter((f) => /serviceWorker\s*\.\s*register\s*\(/.test(f.text)).map((f) => f.rel)).toEqual([]);
     expect(offenders.filter((f) => /\benablePush\s*\(/.test(f.text)).map((f) => f.rel)).toEqual([
       "app/people/components/NotificationsSection.tsx",
+      // OB-8: the chat sheet. Its Turn on tap calls it as the first thing it does.
+      "components/PushPromptSheet.tsx",
     ]);
+
+    const sheet = code(read("components/PushPromptSheet.tsx"));
+    const tap = sheet.indexOf("function onTurnOn(");
+    expect(tap).toBeGreaterThan(-1);
+    expect([...sheet.matchAll(/\benablePush\s*\(/g)]).toHaveLength(1);
+    // No await stands before the call inside the tap handler.
+    const body = sheet.slice(tap, sheet.indexOf("enablePush(", tap));
+    expect(body).not.toMatch(/\bawait\b/);
 
     const section = code(read("app/people/components/NotificationsSection.tsx"));
     const calls = [...section.matchAll(/\benablePush\s*\(/g)];
@@ -531,7 +542,7 @@ describe("iOS and the other browsers", () => {
   });
 
   it("the section draws the steps on iOS, a toggle elsewhere, and nothing when dark", () => {
-    const key = { kind: "key" as const, key: KEY };
+    const key = { kind: "key" as const, key: KEY, prompt: false };
     const v = (over: Partial<Parameters<typeof pushView>[0]>) =>
       pushView({
         support: "supported", key, permission: "default",
@@ -793,5 +804,32 @@ describe("the test push", () => {
     expect(testMessage(429, null).message).toContain("already on its way");
     expect(testMessage(503, null).message).toContain("not set up");
     expect(testMessage(502, null).ok).toBe(false);
+  });
+});
+
+// ── OB-8: a phone, and the prompt flag ──────────────────────────────────────
+
+describe("isPhone", () => {
+  const base = { userAgent: "Mozilla/5.0 (X11; Linux x86_64)", platform: "Linux x86_64", maxTouchPoints: 0, coarsePointer: false, width: 1280 };
+  it("is true for an iPhone, an iPad and an Android device", () => {
+    expect(isPhone({ ...base, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", width: 1280 })).toBe(true);
+    expect(isPhone({ ...base, platform: "MacIntel", maxTouchPoints: 5 })).toBe(true);
+    expect(isPhone({ ...base, userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8)", width: 1280 })).toBe(true);
+  });
+  it("is true for a coarse pointer under 768 px only", () => {
+    expect(isPhone({ ...base, coarsePointer: true, width: 767 })).toBe(true);
+    expect(isPhone({ ...base, coarsePointer: true, width: 768 })).toBe(false);
+    expect(isPhone({ ...base, coarsePointer: false, width: 390 })).toBe(false);
+  });
+  it("is false for a desktop", () => {
+    expect(isPhone({ ...base, userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", platform: "Win32" })).toBe(false);
+    expect(isPhone({ ...base, platform: "MacIntel", maxTouchPoints: 0 })).toBe(false);
+  });
+});
+
+describe("fetchPublicKey carries prompt", () => {
+  it.each([[true, true], [false, false], [undefined, false], ["yes", false]])("prompt %s reads %s", async (sent, want) => {
+    fakeBrowser({ fetchImpl: async () => Response.json({ public_key: KEY, prompt: sent }) });
+    expect(await fetchPublicKey()).toEqual({ kind: "key", key: KEY, prompt: want });
   });
 });

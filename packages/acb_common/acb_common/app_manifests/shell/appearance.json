@@ -1,0 +1,35 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "appearance",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "appearance",
+        "label": "Change how Metorite looks",
+        "position": 200,
+        "words": [
+          "appearance",
+          "theme",
+          "dark",
+          "light",
+          "colour",
+          "color",
+          "density",
+          "accent",
+          "sidebar"
+        ],
+        "icon": "Palette",
+        "app": "/settings/appearance",
+        "href": "/settings/appearance",
+        "meaning": "change the theme, dark or light mode, density or accent",
+        "feature": null
+      }
+    ],
+    "nav": [
+      {
+        "href": "/settings/appearance"
+      }
+    ]
+  }
+}

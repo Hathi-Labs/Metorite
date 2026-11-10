@@ -1,5 +1,9 @@
 # Demo seed: Kite & Co. Interiors
 
+> **The one-command way:** `bash scripts/dev_up.sh` starts the whole stack and
+> runs this seed for you (`project-docs/specs/engineering_practice.md` §1.2).
+> The manual steps below stay for a screenshot session on fixed ports.
+
 This folder fills a LOCAL Metorite stack with a made-up company, so that you
 can take marketing screenshots. Nothing here touches production.
 

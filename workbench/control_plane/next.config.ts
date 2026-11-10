@@ -13,7 +13,24 @@ const CONNECT_FRAME_HEADERS = [
   { key: "X-Frame-Options", value: "DENY" },
 ];
 
+/**
+ * AI Studio A1 + E1 (`ai_studio.md` §14): one library at `/studio`. The old
+ * panes redirect there. `/build/apps` is an EXACT source, so the run page
+ * (`/build/apps/:slug`) and the Workshop (`/build/apps/:slug/edit`) are not
+ * redirected. `/api/workflows/**` is not touched either.
+ * Fence: `src/lib/studioRedirects.test.ts`.
+ */
+export const STUDIO_REDIRECTS = [
+  { source: "/workflows", destination: "/studio", permanent: true },
+  { source: "/workflows/:id", destination: "/studio/workflows/:id", permanent: true },
+  { source: "/build/apps", destination: "/studio", permanent: true },
+  { source: "/build/agents", destination: "/studio", permanent: true },
+];
+
 const nextConfig: NextConfig = {
+  async redirects() {
+    return STUDIO_REDIRECTS;
+  },
   async headers() {
     return [{ source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS }];
   },

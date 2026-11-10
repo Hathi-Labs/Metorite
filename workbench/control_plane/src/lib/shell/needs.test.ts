@@ -23,9 +23,14 @@ import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import {
   CARRIER_WAIT_MS,
   KIND_ORDER,
+  NEEDS_APP_HREF,
   NEEDS_CACHE,
+  NEEDS_SOURCE_APP,
   carryNeeds,
+  countsByApp,
   fetchNeeds,
+  floorApps,
+  needsByHref,
   needsKey,
   readFeed,
   runAct,
@@ -122,7 +127,51 @@ describe("readFeed", () => {
   });
 
   it("puts approvals right after the overdue rows", () => {
-    expect(KIND_ORDER).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+    expect(KIND_ORDER.slice(2, 7)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+  });
+
+  // WS-66 RM-2b. Mutation: take a reminder kind out of KIND_ORDER and the bell
+  // row below is dropped by `isItem`, so this fails.
+  it("puts the fired reminder kinds first, the unconfirmed last, and keeps a reminder row", () => {
+    expect(KIND_ORDER.slice(0, 2)).toEqual(["reminder_due", "reminder_check"]);
+    expect(KIND_ORDER.at(-1)).toBe("reminder_unconfirmed");
+    const due = item({
+      id: "reminders:r1",
+      app: "calendar",
+      kind: "reminder_due",
+      href: "/chat?do=new-chat&reminder=r1",
+      act: null,
+      act_ref: null,
+    });
+    const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 1 } });
+    expect(feed.items).toEqual([due]);
+    expect(NEEDS_APP_HREF.calendar).toBe("/calendar");
+  });
+
+  // Owner, 2026-11-03: the reminders that need the member count on the
+  // Calendar row. Mutation: hold `reminders` out of `countsByApp` again, and
+  // the first two assertions fail.
+  it("counts the reminders that need the member on the Calendar row", () => {
+    const due = item({ id: "reminders:r1", app: "calendar", kind: "reminder_due", act: null, act_ref: null });
+    const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 4 } });
+    expect(countsByApp(feed, feed.items, false)).toEqual({ calendar: 4 });
+    expect(needsByHref(countsByApp(feed, feed.items, false))).toEqual({ "/calendar": 4 });
+  });
+
+  it("marks a capped reminders count as a floor, and a failed source as no count", () => {
+    const due = item({ id: "reminders:r1", app: "calendar", kind: "reminder_due", act: null, act_ref: null });
+    const capped = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 15 }, capped: ["reminders"] });
+    expect([...floorApps(capped, false)]).toEqual(["calendar"]);
+    const failed = readFeed({ count: 0, items: [], sources: { reminders: "failed" }, totals: {} });
+    expect(countsByApp(failed, failed.items, false)).toEqual({});
+    expect(floorApps(failed, false).size).toBe(0);
+  });
+
+  it("maps every source id to its app in ONE place, and the sidebar still counts by source", () => {
+    expect(NEEDS_SOURCE_APP.reminders).toBe("calendar");
+    const row = item({});
+    const feed = readFeed({ count: 1, items: [row], sources: { tasks: "ok", reminders: "failed" }, totals: { tasks: 3 } });
+    expect(countsByApp(feed, feed.items, false)).toEqual({ tasks: 3 });
   });
 });
 

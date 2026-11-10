@@ -331,7 +331,15 @@ async def _run_batch(
     activities and the cursor stamp together when the block exits.
     """
     account_id = str(account.id)
-    if await is_mirror_mode(db, org):
+    # CRM-Z10b: the mode is read FOR SHARE, in the transaction of the stamp.
+    # The switch to Native takes the row FOR UPDATE and rewinds the
+    # watermark. So a Mirror cycle that read `mirror` stamps BEFORE the
+    # rewind, and a cycle that waited reads `native` and the rewound cursor.
+    mirror = await is_mirror_mode(db, org, lock=True)
+    # The cursor again, under the lock: the switch may have rewound it since
+    # the caller read it. A stale watermark would skip the rewound mail.
+    cursor = await _read_cursor(db, account_id) or cursor
+    if mirror:
         # Mirror mode (CRM-Z6): Zoho owns new leads, so create none. Advance
         # the watermark, or every cycle re-reads the same batch.
         candidates, _next = await _load_candidates(db, account_id, cursor)

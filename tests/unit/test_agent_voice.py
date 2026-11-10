@@ -49,8 +49,11 @@ AGENTS: tuple[tuple[str, str, str], ...] = (
     ("agent-email-assistant", "email-assistant", "native"),
     ("agent-orchestrator", "orchestrator", "native"),
     ("agent-projects", "projects-assistant", "native"),
+    ("agent-studio-builder", "studio-builder", "native"),
     ("agent-task-manager", "task-manager", "copilot"),
     ("agent-whatsapp-assistant", "whatsapp-assistant", "native"),
+    # WS-67 OA-9a: built with no job, which never raises (a refusal is at run).
+    ("agent-worker", "worker", "native"),
 )
 
 #: The ceilings, in the run-context tokenizer that ``test_tool_schema_diet``

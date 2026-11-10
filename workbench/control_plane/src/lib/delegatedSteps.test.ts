@@ -88,7 +88,7 @@ describe("the saved turn keeps the same shape", () => {
 
   it("route.ts folds a specialist tool's steps and their arguments", () => {
     const route = src("src/app/api/agent/chat/route.ts");
-    expect(route).toContain('|| isSpecialistTool(name, subAgent.name)');
+    expect(route).toContain("takeHandoff(name, subAgent)");
     expect(route).toMatch(/status: "running", args: stArgs/);
     expect(route).toMatch(/type: "sub_agent_tool_start".*args: stArgs/);
   });

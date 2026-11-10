@@ -35,7 +35,9 @@ import {
   MANUAL_TOGGLE_QUIET_MS,
   attachStickToBottom,
   distanceFromBottom,
+  isNearBottom,
   nearAfterScroll,
+  showJumpToBottom,
 } from "@/lib/stickToBottom";
 
 /** A scroll box and a ResizeObserver the test drives by hand. */
@@ -161,5 +163,18 @@ describe("the chat attaches it", () => {
     // A fold by hand can leave the bottom with no scroll event, so the
     // observer keeps the scroll-to-bottom button in step (review round 1).
     expect(src).toMatch(/setNearBottom: \(near\) => \{[\s\S]{0,240}setShowScrollBtn\(/);
+  });
+});
+
+describe("showJumpToBottom (task #111, item 3)", () => {
+  it("shows for a member 150 px above the bottom of a short transcript", () => {
+    // Content only 150 px taller than the viewport. The old test needed 200.
+    const el = { scrollTop: 0, scrollHeight: 650, clientHeight: 500 };
+    expect(isNearBottom(el)).toBe(false);
+    expect(showJumpToBottom(isNearBottom(el))).toBe(true);
+  });
+  it("hides at the bottom", () => {
+    const el = { scrollTop: 150, scrollHeight: 650, clientHeight: 500 };
+    expect(showJumpToBottom(isNearBottom(el))).toBe(false);
   });
 });

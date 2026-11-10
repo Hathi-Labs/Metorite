@@ -123,7 +123,7 @@ describe("the tables", () => {
 
   it("draws one table for each target entity, with one row for each lead field", () => {
     const out = html(SERVED);
-    expect(out).toContain(">Field mapping</h2>");
+    expect(out).toContain(">When a lead converts</h2>");
     for (const { label } of MAP_ENTITIES) expect(out).toContain(`aria-label="Lead to ${label}"`);
     expect(MAP_ENTITIES.map((e) => e.entity)).toEqual(["contact", "company", "deal"]);
     expect(tableRows(SERVED, "deal").map((r) => r.field.key)).toEqual(["region", "budget"]);

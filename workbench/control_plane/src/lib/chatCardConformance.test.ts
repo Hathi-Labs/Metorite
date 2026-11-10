@@ -58,6 +58,12 @@ function code(src: string): string {
 const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/ElicitationCard.tsx": { seam: true },
   "components/ConfirmationCard.tsx": { seam: true },
+  // MCP-P1b-1: the one card of an app request. Integrations mounts it, and
+  // the chat mounts it through StudioToolCards (STU-B2c-2c).
+  "components/AppRequestCard.tsx": { seam: true },
+  // STU-B2c-2c: the approval card of a Studio record change. It draws
+  // AppRequestCard, and its own RollupHeader when the read fails.
+  "components/studio/StudioToolCards.tsx": { seam: true },
   "components/ChatErrorCard.tsx": { seam: true },
   "components/ToolCardShell.tsx": { seam: true },
   "components/GenerativeUINode.tsx": { seam: true },
@@ -68,6 +74,7 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/email/EmailToolCards.tsx": { seam: true },
   "components/ConfirmationQueue.tsx": { exempt: "it draws ConfirmationCard, one at a time, and no row of its own" },
   "components/ReplyCardForm.tsx": { exempt: "the body of a reply card, under the confirmation card's RollupHeader" },
+  "components/NewMailCardForm.tsx": { exempt: "the body of a new-mail card (§18.10), under the confirmation card's RollupHeader" },
   "components/ArtifactCard.tsx": { exempt: "a file card is one row: its name, its size and its buttons. Nothing folds" },
   "components/crm/CrmEvidence.tsx": { exempt: "a read's body, drawn inside its step of the trail, which is its title" },
   "components/Readout.tsx": { exempt: "the body of a read card, under the card's own header" },
@@ -224,6 +231,58 @@ describe("rule 2b: each Email card draws the shared header (follow-up of #945)",
 });
 
 /**
+ * A receipt opens folded (owner directive, 2026-10-29, task 1003). The card
+ * that reports a write already done passes `receipt`, so `rollupOpen` shuts
+ * it. A card that waits, or that reads, never does. A scan of source cannot
+ * see a card added to a new file: add it here.
+ */
+/** The opening tag of each `<RollupCard`, with its props. An arrow `=>` in a prop is not the end. */
+function openTags(src: string): string[] {
+  return [...src.matchAll(/<RollupCard\b(?:=>|[^>])*>/g)].map((m) => m[0]);
+}
+
+describe("receipts: a write receipt is marked, and a card that waits is not", () => {
+  const RECEIPTS: Record<string, string[]> = {
+    "components/profile/ProfileToolCards.tsx": ["ProfileResultCard"],
+    "components/tasks/TaskToolCards.tsx": ["ActionResultCard"],
+    "components/projects/ProjectToolCards.tsx": ["ActionResultCard", "BatchReceiptCard"],
+    "components/email/EmailToolCards.tsx": [
+      "RuleResultCard", "SettingsUpdatedCard", "LabelUpdateCard", "ManageInboxCard", "ActionResultCard",
+    ],
+  };
+  const NOT_RECEIPTS = ["DraftResultCard", "NoActionCard", "EmailListCard", "EmailGroupsCard", "EmailPreviewCard"];
+
+  for (const [file, cards] of Object.entries(RECEIPTS)) {
+    for (const card of cards) {
+      it(`${file} ${card} passes receipt`, () => {
+        const body = fnBody(code(read(file)), card);
+        expect(body, `${card} moved: point this scan at it`).not.toBe("");
+        const tags = openTags(body).join("\n");
+        expect(tags, card).toMatch(/\breceipt\b/);
+        expect(tags, card).not.toMatch(/\bpending=/);
+      });
+    }
+  }
+
+  it("no card that waits or reads passes receipt", () => {
+    const src = code(read("components/email/EmailToolCards.tsx"));
+    for (const card of NOT_RECEIPTS) {
+      const body = fnBody(src, card);
+      if (body) expect(body, card).not.toMatch(/\breceipt\b/);
+    }
+  });
+
+  it("every RollupCard that sets pending leaves receipt out", () => {
+    for (const file of Object.keys(RECEIPTS)) {
+      const src = code(read(file));
+      for (const tag of openTags(src)) {
+        if (/\bpending=/.test(tag)) expect(tag, file).not.toMatch(/\breceipt\b/);
+      }
+    }
+  });
+});
+
+/**
  * Raw controls a chat card file may still draw, and why. A number that goes
  * down must be lowered here in the same change.
  */
@@ -274,10 +333,16 @@ describe("a template with its own head draws it as the card's one header", () =>
     chart: "ChartCard",
     // A report the agent makes (2026-10-16): its body is ReportView.
     report: "ReportTemplate",
+    // A reminder that a tap opened (WS-66 RM-4).
+    reminderCard: "ReminderCard",
   };
 
+  // WS-BUD BUD-1: the hello draws no head at all, so nothing draws twice. It
+  // is in OWN_HEAD_TEMPLATES only so the frame adds no generic header.
+  const HEADLESS_TEMPLATES: ReadonlySet<string> = new Set(["buddyHello"]);
+
   it("names every chat template", () => {
-    expect([...OWN_HEAD_TEMPLATES].sort()).toEqual(Object.keys(NAMES).sort());
+    expect([...OWN_HEAD_TEMPLATES].filter((n) => !HEADLESS_TEMPLATES.has(n)).sort()).toEqual(Object.keys(NAMES).sort());
   });
 
   it("every template in the registry draws its own head, so no title draws twice", () => {
@@ -313,5 +378,24 @@ describe("a new question is a new card (review of #945, P1)", () => {
     expect(cards.length).toBe(2);
     expect(chat).toMatch(/<ElicitationCard\s+key=\{elicitation\.requestId \?\? "questions"\}/);
     expect(chat).toMatch(/<ElicitationCard\s+key=\{userInput\.requestId\}/);
+  });
+});
+
+describe("a card inside a card keeps a visible border (task 1651)", () => {
+  // The glass frame (`G_FRAME`) sets `border-transparent!`, which beats the
+  // inline hairline. A table drawn inside a report took that frame and drew
+  // only its corners. A card that nests takes `G_NESTED`. Node-env vitest
+  // renders no layout, so this reads the source. The browser twin is the
+  // visual review of a report card with a table.
+  const templates = read("components/genUITemplates.tsx");
+  it("G_NESTED names a visible border and never a transparent one", () => {
+    const line = templates.match(/const G_NESTED = "([^"]*)"/)?.[1];
+    expect(line, "G_NESTED moved").toBeTruthy();
+    expect(line).toContain("glass:border-border!");
+    expect(line).not.toContain("transparent");
+  });
+  it("the report card and the report view draw their tables as nested", () => {
+    expect(templates).toMatch(/<DataGrid key=\{i\} nested=\{fold != null\}/);
+    expect(templates).toContain("<DataGrid data={mapped.data} nested />");
   });
 });

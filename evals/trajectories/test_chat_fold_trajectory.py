@@ -102,6 +102,11 @@ def test_sub_agent_timeline_attaches_to_delegate_tool():
     ]
 
 
+# The four-hand-off turn and the parity check of the fold rule with
+# ``lib/chatStream.ts`` live in ``tests/unit/test_chat_fold_handoffs.py``.
+# pr-check runs ``tests/unit/``, and it does not run this folder.
+
+
 def test_todos_and_custom_events_persist():
     todos = [{"id": "1", "title": "Plan", "status": "completed"}]
     events = [

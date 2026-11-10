@@ -244,6 +244,21 @@ async def _route_incoming_turn(
     )
 
 
+async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
+    """Hand a steer's ``card_draft`` to the email module (§18.11 step 2).
+
+    The tenant and the member are the session's (*user*), never the body's.
+    ``keep_card_draft`` checks the snapshot against the card's own record, and
+    the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
+    the steer."""
+    try:
+        from gateway.routes.email.automation.redraft import keep_card_draft
+
+        await keep_card_draft(user, thread_id, raw)
+    except Exception as exc:  # a snapshot never stops a steer
+        _log.warning("agent.card_draft_failed", error=type(exc).__name__)
+
+
 def _followup_refused(thread_id: str, reason: str) -> Response:
     """The 202 of a steer follow-up that starts no run. The chat drops its
     placeholder on it, as it does for a steer."""
@@ -357,6 +372,13 @@ def _run_kind_for_source(source: str) -> str:
 _TAKEN_STEERS: "ContextVar[list[dict[str, Any]] | None]" = ContextVar(
     "agent_taken_steers", default=None,
 )
+
+#: WS-63 PZ-31: True when the member typed this request's message, so a
+#: steer of it may ground a profile write. The route sets False for a card
+#: answer and a Continue turn. The default is False, so a caller that does
+#: not set it stores a steer that grounds nothing. A context variable, for
+#: the same reason as :data:`_TAKEN_STEERS`.
+_STEER_TYPED: ContextVar[bool] = ContextVar("agent_steer_typed", default=False)
 
 
 async def _apply_turn_decision(
@@ -486,7 +508,11 @@ async def _apply_turn_decision(
         )
 
     text = str(req.payload.get("message") or req.payload.get("user_query") or "")
-    signal = await send_steer(thread_id, actor, text, run_id=req.run_id)
+    # The author is the session's member (`actor`), never a body field. The
+    # flag says the member typed `text` (PZ-31, `_STEER_TYPED`).
+    signal = await send_steer(
+        thread_id, actor, text, run_id=req.run_id, typed=_STEER_TYPED.get() is True,
+    )
 
     # ── A steer that NO process heard (incident 2026-10-09) ──────────────────
     # The owner may still have a heartbeat (it is in its graceful stop) while
@@ -678,18 +704,27 @@ _AGENT_REGISTRY: list[dict] = [
     },
     {
         "name": "app-builder",
+        # Owner, 2026-11-07 (task 1909): the chat gave a Studio build to this
+        # agent. The description now keeps every new app away from it. The
+        # tool stays, so the base count of the chat and the pack budget do
+        # not move (test_projects_packs.py pins them).
         "description": (
-            "App Workshop builder — turns chat into small internal web apps "
-            "(Custom Apps). Each Workshop session is bound to its app's "
-            "workspace; the agent edits index.html and the app.json manifest "
-            "and keeps the preview renderable after every round."
+            "Legacy App Workshop editor. Use it ONLY when the member names an "
+            "existing App Workshop app (an index.html app) and asks to change "
+            "that app. NEVER use it to build a new app, tracker, board, form "
+            "or tool: AI Studio builds those with the studio tools "
+            "(studio_plan, studio_draft, studio_save)."
         ),
-        "tags": ["apps", "builder", "workshop"],
+        "tags": ["workshop", "legacy"],
         "status": "live",
-        # Copilot-SDK engine: the builder needs native file/shell tools to
-        # edit the app workspace. BYOK-routed through the gateway tiers (no
-        # GitHub quota dependency).
-        "agent_runtime": "github-copilot",
+        # WS-43h (D84, maf_coding_engine.md §7.8): "maf", so the OBJECT that
+        # the factory builds decides the path at every executor site. With
+        # `app_builder:<org>` in MAF_CODING_SCOPE the factory builds a MAF
+        # harness agent, and the run takes the native path. Every other org
+        # gets the GitHubCopilotAgent, whose `_default_options` still sends
+        # it down the Copilot path, as before. The label alone sent a MAF
+        # object down the Copilot path, where it fails.
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-app-builder",
         "integrations": [],
         "optional_integrations": [],
@@ -806,6 +841,46 @@ _AGENT_REGISTRY: list[dict] = [
     },
 ]
 
+# Agents the platform runs for itself, and no person or model picks (WS-67
+# OA-9a, one_assistant_context.md §4.5 narrowing 5). They are in NO list that
+# a picker, a specialist tool, the workflow catalog or a route reads: not in
+# `_AGENT_REGISTRY`, not in `_KNOWN_AGENTS`. Only the executor reads this list,
+# in the lookups that load an agent by name (`_run_sub_agent_streaming`,
+# `_run_agent_inner`), and it reads it FIRST, so a dynamic agent that is
+# named like one cannot take its place. `worker` runs one job of
+# `spawn_subagents` and refuses to run with no job
+# (`subagent_contract.worker_refusal`). Fence: tests/unit/test_subagent_worker.py.
+_INTERNAL_AGENTS: list[dict] = [
+    {
+        "name": "worker",
+        "description": "Runs one read-only job of spawn_subagents and ends with items.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-worker",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+]
+
+# The owners of a tool pack that never run as an agent (STU-G1, ai_studio.md
+# section 6.2). An owner here only gives its tools to the pack of the one
+# assistant (D99, D125). Like the list above, it is in NO list that a picker,
+# a specialist tool, the registry block, the workflow catalog or a route reads.
+# The executor does not read it either, so no lookup by name can run one. Only
+# the pack loader reads it, for the folder of the owner
+# (`_tool_injection._import_pack_owner`). A hand-off to an owner here, and a
+# run of one, is refused in every run (`tool_packs.pack_only_refusal`).
+# Fence: tests/unit/test_tool_packs_registry.py, sections 8 and 9.
+_PACK_OWNER_AGENTS: list[dict] = [
+    {
+        "name": "studio-builder",
+        "description": "Owns the studio tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-studio-builder",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Dynamic (user-registered) agent persistence — Postgres-backed.
@@ -879,6 +954,12 @@ def _load_dynamic_agents() -> list[dict]:
         from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
+        # A session with no tenant bound sees no rows (RLS) and cannot insert
+        # (the organization_id default casts '' to uuid and fails). Read the
+        # file and stop: the DB path only ever errored here, once per call.
+        if not _tenant_is_bound():
+            return _read_agents_file()
+
         # ── Always sync agents.json → DB for missing agents ─────────────
         _sync_file_into_db()
 
@@ -921,6 +1002,31 @@ def _load_dynamic_agents() -> list[dict]:
         return _migrate_from_file()
     except Exception:  # noqa: BLE001
         return _migrate_from_file()
+
+
+def _tenant_is_bound() -> bool:
+    """True when the session binds ``app.tenant_id`` to a non-empty value."""
+    from acb_graph import get_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with get_session() as s:
+        return bool(
+            s.execute(
+                text("SELECT NULLIF(current_setting('app.tenant_id', true), '')")
+            ).scalar()
+        )
+
+
+def _read_agents_file() -> list[dict]:
+    """Return the stripped agents.json entries, or [] when absent or bad."""
+    try:
+        path = _get_agents_file()
+        if not path.exists():
+            return []
+        agents: list[dict] = json.loads(path.read_text(encoding="utf-8"))
+        return [_strip_agent_strings(a) for a in agents]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _sync_file_into_db() -> None:
@@ -1635,8 +1741,8 @@ async def list_agents(
     # A COPY of each entry. The loop below writes each declared runtime into
     # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
     # write into the shared dict changed the label of the process on the first
-    # GET /agent (WS-43n review): task-manager and app-builder declare "maf"
-    # in config.json and are labelled "github-copilot" here, on purpose.
+    # GET /agent (WS-43n review): task-manager declares "maf" in config.json
+    # and is labelled "github-copilot" here, on purpose.
     static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
     # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for
@@ -1943,6 +2049,17 @@ async def register_agent(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Agent name must be 2-50 lowercase letters, digits, or hyphens (no leading/trailing hyphens).",
+        )
+
+    # WS-67 OA-9b hardening: the name of an internal agent is reserved. A
+    # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
+    # STU-G1: the name of a pack-only owner is reserved too, so no registered
+    # agent shows in a list under the name of an owner that never runs.
+    reserved = {a["name"] for a in (*_INTERNAL_AGENTS, *_PACK_OWNER_AGENTS)}
+    if req.name.strip().lower() in reserved:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Agent name {req.name!r} is reserved for the platform.",
         )
 
     dynamic = _load_dynamic_agents()
@@ -2462,11 +2579,17 @@ class PromptToSave(BaseModel):
     content: str
     timestamp_ms: int
     custom_events: list[Any] = []
+    #: WS-63 D-PZ-37: True only when the member typed the turn in the
+    #: message box (the request's mark). The row keeps it in
+    #: ``chat_message.member_typed``, and only a True row is the member's
+    #: own words for the summary job.
+    member_typed: bool = False
 
 
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
     actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
+    typed: bool = False,
 ) -> PromptToSave | None:
     """The turn to save at run start, or ``None`` when the server saves nothing.
 
@@ -2485,6 +2608,10 @@ def prompt_to_save(
     writes too. Its earlier turns carry the browser clock, so a server clock
     could sort this turn above the reply before it. With no stamp, the server
     clock is used.
+
+    *typed* is the request's mark (WS-63 D-PZ-37): True only when the member
+    typed the turn in the message box. A card answer is never typed, so the
+    mark of a card answer is False.
     """
     import time
 
@@ -2515,6 +2642,7 @@ def prompt_to_save(
         marker.append(card)
     return PromptToSave(
         message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
+        member_typed=typed is True and card_answer is None,
     )
 
 
@@ -2534,7 +2662,12 @@ def _write_prompt_row(
 
     It is best effort, as the mint is. On a failure it logs
     ``agent.prompt_save_failed`` and the run goes on, because the browser save
-    still writes the turn.
+    still writes the turn. That row then has no mark, so it counts for
+    nothing (D-PZ-37).
+
+    It is the one writer of ``chat_message.member_typed`` (WS-63 D-PZ-37):
+    the mark of the request, True or False. The browser save names no mark,
+    so it cannot change this one.
     """
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
@@ -2547,6 +2680,7 @@ def _write_prompt_row(
                 custom_events=list(prompt.custom_events),
             )],
             actor_email=member, agent_name=agent_name,
+            member_typed=prompt.member_typed is True,
             organization_id=organization_id,
         )
         return not declined
@@ -2663,7 +2797,7 @@ async def _extract_run_memory(
                 name=f"agent:{agent_name}:{member[:20]}",
                 content=message[:500],
                 source_description=f"agent_{agent_name}",
-                group_id=member,
+                # KG-9: the bound tenant names the episode's group.
             )
         except Exception:  # an episode must never kill the relay
             _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
@@ -2769,29 +2903,50 @@ async def run_agent_stream_endpoint(
     # The display of a card answer that went as a new message. It is for the
     # saved turn only, and never reaches the executor.
     _card_answer = req.payload.pop("card_answer", None)
+    # §18.11: the member's own version of an open new-mail card, sent with a
+    # message during the run. Popped HERE, so it never reaches the executor.
+    # Only a STEER keeps it (`_keep_card_draft` below), and the email module
+    # checks it against the card's own record.
+    _card_draft = req.payload.pop("card_draft", None)
     # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
     # so the payload never carries it on. Cleaned against the packs that name
     # an app, bound for the run below, and never read for a tenant or a member.
     _surface = req.payload.pop("surface", None)
+    # H-337: the session names the member, never the body. The claim goes
+    # HERE, before the saved turn and the turn route read the payload. It
+    # goes always, so a room run keeps its `room:` memory id.
+    _drop_identity_claims(req.payload, user)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    # WS-63 D-PZ-37 (the owner, 2026-11-02): the ONE positive mark of a
+    # message that the member typed in the message box. Only the composer of
+    # the chat sends it, and only JSON `true` counts. A tapped pill, a
+    # choice, a card action, a feed starter and the Fix prompt send none.
+    # Popped HERE, so it never reaches the executor. It can make words count
+    # only for the member's own writes in their own session, so a client
+    # that sends it gets nothing more.
+    _typed_mark = req.payload.pop("typed", None) is True and _card_answer is None
+    _sent_words = str(req.payload.get("message") or req.payload.get("user_query") or "")
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
     # words are read HERE, before a Continue note, a replayed steer or the
     # supersede note changes `message`.
     _prompt = prompt_to_save(
         thread_id=req.thread_id, message_id=_new_user_id,
-        text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
+        text=_sent_words,
         timestamp=req.payload.pop("user_message_ts", None),
         actor=actor_email, room=room, supersedes=_supersedes,
-        card_answer=_card_answer,
+        card_answer=_card_answer, typed=_typed_mark,
     )
     # WS-63 PZ-6a fix round 2 (P1-a): the member's TYPED words, the only
     # words that may ground a profile write (`assistant_profile.member_typed`).
     # Read HERE, before the Continue note, a replayed steer or the supersede
     # note changes `message`. A card answer sent as a message holds the
     # card's text, which the model wrote, so it grounds nothing.
-    _typed = "" if _card_answer is not None else str(
-        req.payload.get("message") or req.payload.get("user_query") or "")
+    # D-PZ-37: a turn with no mark binds "" too. Its words open only the
+    # confirm card of a profile write (`_sent_text` below), never a save.
+    # PZ-31: the member's own typed steers that the run reads are typed words
+    # too. `count_member_steers` in `_serve` below adds them, apart from this.
+    _typed = _sent_words if _typed_mark else ""
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
         from gateway.chat_supersede import (  # noqa: PLC0415
@@ -2837,6 +2992,9 @@ async def run_agent_stream_endpoint(
     _resume = bool(req.payload.pop("resume", None))
     if _resume:
         _typed = ""  # a Continue turn: the member typed nothing (PZ-6a)
+        _typed_mark = False  # and its row is not typed (D-PZ-37)
+        _prompt = None if _prompt is None else _prompt.model_copy(
+            update={"member_typed": False})
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
@@ -2857,7 +3015,9 @@ async def run_agent_stream_endpoint(
         if _gate is not None:
             return _gate
         req.payload["message"] = ""
-        _typed = ""  # the replayed steers are not this turn's typed words
+        # This request carries no words. The member's own typed steers that
+        # the ENGAGE seam replays count through `count_member_steers` (PZ-31).
+        _typed = ""
         _decision = _FuDecision(_FuRoute.ENGAGE, "steer_followup")
     else:
         _incoming_text = str(
@@ -2919,6 +3079,25 @@ async def run_agent_stream_endpoint(
 
     _taken_steers: list[dict[str, Any]] = []
     _TAKEN_STEERS.set(_taken_steers)
+    # PZ-31: a steer of this request is typed only when the member typed it.
+    # A card answer holds the card's text, and a Continue turn the server's.
+    # D-PZ-37: the same mark as the turn. A steer with no mark is not typed,
+    # so a pill tapped during a run grounds nothing.
+    _STEER_TYPED.set(_typed_mark and _card_answer is None and not _resume)
+    # D-PZ-37: the words that the member sent in this turn, typed or tapped.
+    # A tap grounds no profile write, and it may only ask the confirm card of
+    # one (`profile_tools._ground`). The tool-pack chooser reads them too
+    # (`assistant_profile.sent_words`), so a tapped pill about a mail still
+    # loads the email pack. A Continue, a card answer, a steer follow-up and
+    # a paste send none, so they never get that card (PZ-32 repair 1).
+    _sent_text = (_sent_words
+                  if _card_answer is None and not _resume and not _followup else "")
+    # §18.11 step 2: a steer of the web chat keeps the member's version of an
+    # open new-mail card BEFORE the steer goes out, so the tool that the
+    # steer wakes finds it. This door is the web chat's: no WhatsApp turn
+    # reaches it. Any other route drops it.
+    if _card_draft is not None and _decision.route.name == "STEER":
+        await _keep_card_draft(user, req.thread_id or "", _card_draft)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -2984,6 +3163,8 @@ async def run_agent_stream_endpoint(
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:
@@ -3126,6 +3307,12 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
             holds_mail=_holds_mail,
+            # A run that a new run cancelled folds late. By then the new run
+            # has reset the thread's stream, so the replay holds the NEW run's
+            # events. Without this guard the old run wrote them again under
+            # its own message id: one reply, two rows (task 1533, bug B3).
+            # Fence: tests/unit/test_chat_fold_other_run.py.
+            expect_run_id=run_id,
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -3240,6 +3427,12 @@ async def run_agent_stream_endpoint(
         # from the server's room and never the body. A room of one that
         # other members can read (visibility org or people) is not solo.
         solo_room=room_is_solo(room),
+        # PZ-39: the ids of this turn's own rows, so the greeting gap leaves
+        # them out. The request supplies both ids (`user_message_id` and
+        # `assistant_message_id`). A client can only skip rows of its own
+        # chat, so the worst case is one extra greeting for this member. The
+        # read stays bound to the run's org, member and session.
+        turn_row_ids=(_persist_message_id, _new_user_id),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
@@ -3248,7 +3441,10 @@ async def run_agent_stream_endpoint(
     # nothing, so nothing about single-player behaviour changes.
     _floor = list(room.members) if (room is not None and room.is_shared) else None
 
-    from acb_common.assistant_profile import member_typed  # noqa: PLC0415
+    from acb_common.assistant_profile import (  # noqa: PLC0415
+        count_member_steers,
+        member_typed,
+    )
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
 
     async def _serve():
@@ -3257,8 +3453,13 @@ async def run_agent_stream_endpoint(
             # WS-63 PZ-6a fix round 2: the typed words reach the run through
             # this ONE binding. The drain task that `run_detached` starts
             # copies the context here, so the run reads them, and nothing
-            # else does.
-            with member_typed(_typed), surface_scope(_surface):
+            # else does. D-PZ-37: `sent` is the sent words. They open only
+            # the confirm card, and they feed the tool-pack chooser.
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
+                # PZ-31: the session's member is the run member. Their own
+                # typed steers that ENGAGE took count now, and a tool result
+                # that carries one later adds it (`steer.decorate_tool_result`).
+                count_member_steers(_actor, _taken_steers)
                 async for chunk in _serve_run(timing):
                     yield chunk
         finally:
@@ -3337,6 +3538,10 @@ async def run_agent_stream_endpoint(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            # The run this response follows. The Next translator binds its
+            # reader to it, so a cancelled send never adopts the newer run's
+            # RUN_STARTED (task 1533, B3). Fence: test_run_started_producers.py.
+            "X-Run-Id": run_id,
         },
     )
 
@@ -3868,6 +4073,47 @@ def _session_member(user: Any) -> str | None:
     return email if "@" in email else None
 
 
+#: The body keys that name a person. ``executor._payload_user`` reads them.
+#: A source scan in the fence fails when ``executor.py`` reads, by a constant
+#: key through the name ``event_payload``, a known person key that this list
+#: does not hold. It sees no other module and no key outside its own list.
+_IDENTITY_CLAIMS = ("user_email", "user_id")
+
+
+def _drop_identity_claims(
+    payload: dict[str, Any], user: Any, *, keep_own: bool = False,
+) -> None:
+    """Remove the body's claim of the run's member, in place. H-337.
+
+    🔴 **The session names the member, never the body.** The executor binds
+    the memory id and the acting user of the gateway-calling tools from
+    ``user_email`` or ``user_id`` (``executor._bind_run_identity``). So a
+    body claim could rebind them to another member, in a solo chat too.
+    ``_run_member`` lets the session win for billing only.
+
+    A service caller has no person (``_session_member`` is None). Its claim
+    is the only identity it has, so the claim stays.
+
+    ``keep_own=True`` keeps a claim that names the session's member, in any
+    letter case, under the same key. The session's own address replaces the
+    body's text, so a padded or other-case copy never becomes the memory id
+    or the instance key. The stream route removes each claim, because a room
+    run keeps the ``room:`` id that the route sets. Fence:
+    ``tests/unit/test_chat_payload_identity_claims.py``.
+    """
+    member = _session_member(user)
+    if member is None:
+        return
+    for key in _IDENTITY_CLAIMS:
+        if key not in payload:
+            continue
+        claim = str(payload.get(key) or "").strip()
+        if keep_own and claim.lower() == member.lower():
+            payload[key] = member
+            continue
+        payload.pop(key, None)
+
+
 @router.post("/run", response_model=AgentRunResponse)
 async def run_agent_sync(
     req: AgentRunRequest,
@@ -3894,6 +4140,9 @@ async def run_agent_sync(
         await _refuse_if_another_run_is_active(
             req.thread_id, (getattr(user, "email", "") or "").strip(),
         )
+    # H-337: a claim that names another member goes. An API caller's own
+    # claim stays, because this route sets no memory id of its own.
+    _drop_identity_claims(req.payload, user, keep_own=True)
     run_id = req.run_id or str(uuid.uuid4())
 
     try:
@@ -3961,6 +4210,8 @@ async def run_agent_async(
         await _refuse_if_another_run_is_active(
             req.thread_id, (getattr(user, "email", "") or "").strip(),
         )
+    # H-337: the same rule as `run_agent_sync`.
+    _drop_identity_claims(req.payload, user, keep_own=True)
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
@@ -3996,6 +4247,26 @@ def _member_graph_session(user: UserContext) -> Any:
     from acb_graph import tenant_session  # noqa: PLC0415
 
     return tenant_session(getattr(user, "organization_id", None))
+
+
+def _mutation_audit(user: UserContext, event: Any) -> None:
+    """Record one mutation-queue decision in the reviewer's tenant (task 2221).
+
+    The approve, reject and re-mutate rows name the reviewer, the agent, the
+    commit and the PR. This stamps ``user.organization_id``, the tenant that
+    ``get_current_user`` resolved from the identity and that
+    ``_member_graph_session`` wrote the ``pending_commit`` row in. It never
+    reads a request field (R5). With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_mutation_queue_audit_org_r8.py`` (R8).
+    """
+    import acb_audit
+
+    org = getattr(user, "organization_id", None)
+    event.organization_id = str(org) if org else None
+    if acb_audit.refuse_tenantless(event):
+        return
+    acb_audit.record(event)
 
 
 @router.get("/run/{run_id}/status")
@@ -4247,7 +4518,7 @@ async def approve_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4382,7 +4653,8 @@ async def approve_pending_commit(
                         },
                     )
                     sess.commit()
-                record(
+                _mutation_audit(
+                    user,
                     AuditEvent(
                         actor=f"human:{reviewer}",
                         action="mutation_monorepo_pr_opened",
@@ -4485,7 +4757,8 @@ async def approve_pending_commit(
             # Non-fatal — the primary commit is already approved
             _log.warning("mutation.cascade_failed", error=str(_cascade_exc))
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_approved",
@@ -4531,7 +4804,7 @@ async def reject_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4579,7 +4852,8 @@ async def reject_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_rejected",
@@ -4626,7 +4900,7 @@ async def remutate_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4674,7 +4948,8 @@ async def remutate_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_remutate_requested",
@@ -5094,6 +5369,21 @@ def verify_webhook_signature(source: str, body: bytes, presented: str | None) ->
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
 
 
+def _webhook_run_payload(
+    source: str, event_type: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    """The run payload of a signed webhook. A webhook run has no member. H-165.
+
+    🔴 The HMAC proves the sender holds the shared secret. It does not prove
+    a person. The executor binds the run's member from ``user_email`` or
+    ``user_id``, so the sender's claim of one would name the member without
+    proof. This function removes both keys. The trust level of a webhook run
+    is memberless (H-152). Fence: ``tests/unit/test_webhook_run_memberless.py``.
+    """
+    clean = {k: v for k, v in payload.items() if k not in _IDENTITY_CLAIMS}
+    return {**clean, "source": source, "event_type": event_type}
+
+
 @router.post("/webhook/{source}", status_code=status.HTTP_202_ACCEPTED)
 async def receive_webhook(
     source: str,
@@ -5183,7 +5473,7 @@ async def receive_webhook(
         try:
             await run_agent(
                 agent_name,
-                {"source": source, "event_type": event.event_type, **event.payload},
+                _webhook_run_payload(source, event.event_type, event.payload),
                 run_id=run_id,
             )
         except Exception as exc:  # noqa: BLE001

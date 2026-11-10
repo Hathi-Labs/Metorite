@@ -52,6 +52,7 @@ from agent_edge import gateway_client
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -113,6 +114,10 @@ def _drop_database(admin_url, name: str) -> None:
     maint.dispose()
 
 
+#: A project id on the left-out list of one seeded connection (EA-17b).
+LEFT_OUT_ID = "00000000-0000-4000-8000-0000000000a1"
+
+
 class _Seeder:
     """Admin writes with the tenant GUC set, as in test_mcp_edge_protocol.py."""
 
@@ -155,18 +160,21 @@ class _Seeder:
             " CAST(:r AS uuid)) RETURNING user_id", u=str(app_user), r=str(role))
 
     def connection(self, member: str, *, revoked: bool = False,
-                   expired: bool = False) -> tuple[str, str]:
+                   expired: bool = False,
+                   left_out: tuple[str, ...] = ()) -> tuple[str, str]:
         """A connection and one access token for it: ``(id, raw token)``."""
         cid = str(self.one(
             "INSERT INTO agent_connection (organization_id, member_email,"
             " client_id, client_name, client_origin, scopes, pinned_projects,"
-            " include_personal, expires_at, revoked_at) VALUES"
+            " include_personal, expires_at, revoked_at, left_out_projects) VALUES"
             " (CAST(:o AS uuid), :m, :client, 'Client', :origin,"
             " ARRAY['projects:read'], CAST('{}' AS uuid[]), false,"
             " now() + CAST(:life AS interval),"
-            " CASE WHEN :revoked THEN now() ELSE NULL END) RETURNING id",
+            " CASE WHEN :revoked THEN now() ELSE NULL END,"
+            " CAST(:left_out AS uuid[])) RETURNING id",
             o=self.org, m=member, client=CLIENT, origin=ORIGIN,
-            life="-1 hour" if expired else "1 day", revoked=revoked))
+            life="-1 hour" if expired else "1 day", revoked=revoked,
+            left_out="{" + ",".join(left_out) + "}"))
         raw = agent_tokens.new_token()
         self.one(
             "INSERT INTO agent_token (organization_id, connection_id, kind,"
@@ -221,18 +229,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_agentconns"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(_GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            _exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "
@@ -264,7 +263,7 @@ def world():
     w = SimpleNamespace(admin=eng, a=a, b=b, org_a=org_a, org_b=org_b, c={}, tok={})
     for name, seeder, member, kw in (
         ("mine", a, MEMBER, {}),
-        ("mine2", a, MEMBER, {}),
+        ("mine2", a, MEMBER, {"left_out": (LEFT_OUT_ID,)}),
         ("mine_revoked", a, MEMBER, {"revoked": True}),
         ("mine_expired", a, MEMBER, {"expired": True}),
         ("other", a, OTHER, {}),
@@ -309,9 +308,10 @@ def live(monkeypatch, world):
             invalidate_access()
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def audits(monkeypatch) -> list[Any]:
-    """Each audit event the routes record, in order (A8)."""
+    """Each audit event the routes record, in order (A8). Autouse, so no
+    revoke of this file sends an event to a shared database."""
     seen: list[Any] = []
     monkeypatch.setattr(acb_audit, "record", seen.append)
     return seen
@@ -404,11 +404,28 @@ class TestTheMembersList:
         row = next(r for r in rows if r["id"] == live.c["mine"])
         assert set(row) == {
             "id", "member_email", "client_name", "client_origin", "scopes",
-            "pinned_projects", "include_personal", "created_at", "last_used_at",
-            "expires_at"}
+            "pinned_projects", "left_out_projects", "include_personal",
+            "created_at", "last_used_at", "expires_at",
+            # EA-17c-1 (D-EA-13): what the agent asked for, and the scopes
+            # that the live tokens carry.
+            "requested_scopes", "ceiling_scopes",
+            # EA-19c (spec §10.9): the kind of the credential, and the
+            # address and the mark of a box.
+            "credential", "last_seen_addr", "addr_changed_at"}
+        assert row["credential"] == "oauth"
+        assert row["last_seen_addr"] is None and row["addr_changed_at"] is None
+        assert row["left_out_projects"] == []
         assert row["client_origin"] == ORIGIN
         assert row["scopes"] == ["projects:read"]
         assert row["include_personal"] is False
+        assert row["requested_scopes"] is None, "a seeded row from before EA-17a"
+        assert row["ceiling_scopes"] == ["projects:read"]
+
+    async def test_a_row_carries_its_left_out_list(self, live):
+        # EA-17b: a screen must not claim more reach than the agent has.
+        rows = (await _as(live, MEMBER, "GET", MEMBER_LIST)).json()["connections"]
+        row = next(r for r in rows if r["id"] == live.c["mine2"])
+        assert row["left_out_projects"] == [LEFT_OUT_ID]
 
     async def test_the_suite_runs_as_a_role_that_cannot_bypass_rls(self, live):
         engine = create_engine(make_url(live.app_dsn), future=True)
@@ -604,7 +621,8 @@ class TestTheStore:
 
     async def test_a_malformed_id_revokes_nothing(self, live):
         async def go() -> bool:
-            return await agent_tokens.revoke_connection_scoped(live.org_a, "nope")
+            return await agent_tokens.revoke_connection_scoped(
+                live.org_a, "nope", reason=agent_tokens.REVOKE_ADMIN)
         assert await _in_scope(live, go) is False
 
     async def test_an_empty_member_filter_is_a_caller_bug(self, live):

@@ -195,16 +195,16 @@ best practice:
   eval harnesses, observability, sandboxing). Consult it when designing or
   reviewing harness features; cite the practice you're applying or
   deliberately rejecting in the spec/PR.
-- Our gap analysis + work queue: project-docs/specs/harness_hardening_2026-07.md
+- Our gap analysis + work queue: project-docs/research/harness_hardening_2026-07.md
   (HH-1..8). Check it before starting harness work — the gap may already be
   queued, in-progress, or explicitly deferred with rationale.
-- Competitor reference implementations: project-docs/specs/competitive_hardening_2026-07.md
-  (CH-1..9, sourced from COMPETITIVE_COMPARISON.md) — proven patterns from Hermes
+- Competitor reference implementations: project-docs/research/competitive_hardening_2026-07.md
+  (CH-1..9, sourced from project-docs/research/COMPETITIVE_COMPARISON.md) — proven patterns from Hermes
   Agent (fail-closed approval, container sandbox flags, self-improving Curator,
   typed sub-agent messaging) and OpenClaw (durable job queue, hub-and-spoke
   channels; and its CVEs as the cautionary case). Consult it for "what good looks
   like" when hardening security, plumbing, or multi-agent coordination.
-- Multiplayer prior art: project-docs/specs/multiplayer_prior_art_qm_2026-08.md
+- Multiplayer prior art: project-docs/research/multiplayer_prior_art_qm_2026-08.md
   (QM-0..7, sourced from github.com/yc-software/qm) — a shipped multiplayer agent
   harness that independently reproduced our least-cleared-viewer rule. Consult it
   before building room concurrency (it folds a second turn into the live run as a
@@ -240,7 +240,14 @@ the lock until WS-43 removes its last use (D84).
 - Commit review cadence -- after every batch of ~5 commits (or any major feature/fix
   wave) on main, run a review pass over the changed files: check comments for accuracy
   and staleness, cross-references in docs, logic/type-hint correctness, and check
-  that the deploy run's `Unit tests (a signal on a push, a gate on a release)` job is green. When a review is complete, mark it:
+  that the batch that holds your merge passed. That is the `deploy` push run whose
+  `Unit tests (a signal on a push, a gate on a release)` job started after your
+  merge, and whose summary names your PR. Your own push run can show that job as
+  cancelled before it started, because another run took your merge into its batch.
+  That run can be older or newer than yours. A cancelled job
+  that ran for 90 minutes, or that has the annotation "The job has exceeded the
+  maximum execution time", is a hung batch. Treat it as red. If the job is red,
+  fix forward or revert at once (D-2026-10-16). When a review is complete, mark it:
   `git tag review/YYYY-MM-DD && git push --tags`
   Check whether a review is currently due:
   `git log $(git describe --tags --match "review/*" --abbrev=0 2>/dev/null || echo "")..HEAD --oneline`

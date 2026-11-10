@@ -169,6 +169,7 @@ export default function Timeline({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={2}
+            data-guide="crm.add-note"
             aria-label={kind === "task" ? "The task" : "What happened"}
             placeholder={
               kind === "task" ? "What needs doing?" : "What happened?"

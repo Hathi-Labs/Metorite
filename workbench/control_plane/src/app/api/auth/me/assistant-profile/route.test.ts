@@ -169,6 +169,23 @@ describe("/api/auth/me/assistant-profile", () => {
     expect(asked).toHaveLength(0);
   });
 
+  // PZ-20a. Mutation: forward the query, and the "member" case fails.
+  it("GET /block forwards to its path with no query (PZ-20a)", async () => {
+    stub(() => new Response(JSON.stringify({ enabled: true, text: "x" }), { status: 200 }));
+    const block = await import("./block/route");
+    const res = await block.GET(req("/block?member=b@example.com", "GET"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enabled: true, text: "x" });
+    expect(asked[0].url).toBe(`${GW}/block`);
+    expect(asked[0].init?.method).toBe("GET");
+    stub(() => new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 }));
+    expect((await block.GET(req("/block", "GET"))).status).toBe(503);
+    signedIn = false;
+    stub(() => new Response("{}", { status: 200 }));
+    expect((await block.GET(req("/block", "GET"))).status).toBe(401);
+    expect(asked).toHaveLength(0);
+  });
+
   // PZ-9. Mutation: drop the header pass-through in the relay, and the
   // filename check fails. Forward the raw query, and the "evil" case fails.
   it("GET /export forwards the format and passes the download headers through", async () => {
@@ -224,4 +241,68 @@ describe("/api/auth/me/assistant-profile", () => {
       expect(asked).toEqual([]);
     },
   );
+});
+
+describe("/api/auth/me/assistant-profile/summaries (PZ-35)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    signedIn = true;
+  });
+
+  it("GET lists, and passes a 503 through (never an empty list)", async () => {
+    const { GET } = await import("./summaries/route");
+    stub(() => new Response(JSON.stringify({ summaries: [], more: false }), { status: 200 }));
+    expect((await GET(req("/summaries", "GET"))).status).toBe(200);
+    expect(asked[0].url).toBe(`${GW}/summaries`);
+    expect(asked[0].init?.method).toBe("GET");
+    stub(() => new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 }));
+    expect((await GET(req("/summaries", "GET"))).status).toBe(503);
+  });
+
+  it("DELETE on the list deletes all, and DELETE on an id deletes one", async () => {
+    stub(() => new Response(null, { status: 204 }));
+    const all = await import("./summaries/route");
+    expect((await all.DELETE(req("/summaries", "DELETE"))).status).toBe(204);
+    expect(asked[0].url).toBe(`${GW}/summaries`);
+    const one = await import("./summaries/[id]/route");
+    expect((await one.DELETE(req("/summaries/s1", "DELETE"), ctx("s1"))).status).toBe(204);
+    expect(asked[1].url).toBe(`${GW}/summaries/s1`);
+    expect(asked[1].init?.method).toBe("DELETE");
+  });
+
+  it("a 404 of the gateway (a chat of another member) passes through", async () => {
+    stub(() => new Response(JSON.stringify({ detail: "Not found" }), { status: 404 }));
+    const one = await import("./summaries/[id]/route");
+    expect((await one.DELETE(req("/summaries/s9", "DELETE"), ctx("s9"))).status).toBe(404);
+  });
+
+  it.each(["..", ".", "a b/1", "%2E%2E", ""])(
+    "an id of the wrong shape (%j) is a 404 and reaches no gateway",
+    async (bad) => {
+      stub(() => new Response(null, { status: 204 }));
+      const one = await import("./summaries/[id]/route");
+      expect((await one.DELETE(req("/summaries/x", "DELETE"), ctx(bad))).status).toBe(404);
+      expect(asked).toEqual([]);
+    },
+  );
+
+  it("a chat id with a colon passes, encoded, and `..` and `/` stay refused", async () => {
+    stub(() => new Response(null, { status: 204 }));
+    const one = await import("./summaries/[id]/route");
+    expect((await one.DELETE(req("/summaries/x", "DELETE"), ctx("orchestrator:run-1"))).status).toBe(204);
+    expect(asked[0].url).toBe(`${GW}/summaries/orchestrator%3Arun-1`);
+    asked.length = 0;
+    for (const bad of ["..", "a/b", "a:../b", "%2E%2E"]) {
+      expect((await one.DELETE(req("/summaries/x", "DELETE"), ctx(bad))).status).toBe(404);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it("a signed-out caller reaches no gateway", async () => {
+    signedIn = false;
+    stub(() => new Response(null, { status: 204 }));
+    const all = await import("./summaries/route");
+    expect((await all.GET(req("/summaries", "GET"))).status).toBe(401);
+    expect(asked).toEqual([]);
+  });
 });

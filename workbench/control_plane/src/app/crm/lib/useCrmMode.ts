@@ -205,9 +205,10 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
 }
 
 /**
- * The body of `GET /crm/mode`, in Mirror mode only. One read and one cache
- * key serve the labels and the overlays, so the two never disagree about the
- * shape under the key. A failure gives `null`, and the CRM draws as before.
+ * The body of `GET /crm/mode`. One read and one cache key serve the labels,
+ * the overlays and the entity states, so they never disagree about the shape
+ * under the key. A failure, such as the 403 or 404 of a member, gives `null`,
+ * and the CRM draws as before.
  */
 function useModeRead(enabled: boolean): { body: CrmModeBody | null; loading: boolean } {
   const res = useCachedResource<CrmModeBody | null>(
@@ -219,6 +220,27 @@ function useModeRead(enabled: boolean): { body: CrmModeBody | null; loading: boo
 
 function useModeBody(enabled: boolean): CrmModeBody | null {
   return useModeRead(enabled).body;
+}
+
+/**
+ * CRM-Z10b: true when a Native CRM came from Zoho through the switch
+ * (`cutover_done` of `GET /crm/mode`). The cutover card reads the status of
+ * the switch only then. A Native CRM that never switched sends no status
+ * read, so it gets no 404 on each focus (verifier finding F3). It is the
+ * same one read as the labels, so it costs no request.
+ */
+export function useCutoverDone(enabled: boolean): boolean {
+  return useModeBody(enabled)?.cutover_done === true;
+}
+
+/**
+ * CRM-M3a: true when an admin of this Native CRM may create a pipeline
+ * (`pipeline_create` of `GET /crm/mode`, behind `CRM_PIPELINES_ORGS`). It is
+ * the same one read as the labels, so it costs no request. The route checks
+ * the flag again, so a stale true gets a 404 and never a pipeline.
+ */
+export function usePipelineCreate(enabled: boolean): boolean {
+  return useModeBody(enabled)?.pipeline_create === true;
 }
 
 export type CoreStatesState = {
@@ -239,14 +261,53 @@ export function useCoreStates(enabled: boolean): CoreStatesState {
 }
 
 /**
- * The source's names of the core entities (CRM-Q17a-2 item 7), from
- * `GET /crm/mode`. Only Mirror mode reads it. A failure, a Native CRM and an
- * org off `CRM_FILL_RANK_ORGS` each give `null`, and the CRM keeps its own
- * names. A label that fails to load must not stop the CRM.
+ * The names of the core entities, from `GET /crm/mode`. In Mirror mode they
+ * are the source's names (CRM-Q17a-2 item 7). In Native mode they are the
+ * names that an admin stored (CRM-Z10g). A failure, a CRM with no stored
+ * name and a Mirror org off `CRM_FILL_RANK_ORGS` each give `null`, and the
+ * CRM keeps its own names. A label that fails to load must not stop the CRM.
  */
 export function useSourceLabels(enabled: boolean): SourceLabels | null {
   const body = useModeBody(enabled);
+  return labelsOfBody(body);
+}
+
+function labelsOfBody(body: CrmModeBody | null | undefined): SourceLabels | null {
   return body?.labels && typeof body.labels === "object" ? body.labels : null;
+}
+
+export type RecordNamesState = {
+  /** The stored names, or `null` when the CRM stores none. */
+  labels: SourceLabels | null;
+  /** True until the first answer. */
+  loading: boolean;
+  /** The message of the last failed read, or null. */
+  error: string | null;
+  /** True once a read has answered, so `labels` is the stored value. */
+  known: boolean;
+  refresh: () => void;
+};
+
+/**
+ * The stored names, for the "Record names" card of an admin (CRM-Z10g).
+ *
+ * ⚠️ Its own cache key, and a read that THROWS on a failure. The page's read
+ * turns a failure into "no names", which is right for a heading and wrong
+ * here: the card would show empty boxes, and a Save would then clear the
+ * names that an admin stored. `invalidate("crm:")` wakes both reads.
+ */
+export function useRecordNames(enabled: boolean): RecordNamesState {
+  const res = useCachedResource<SourceLabels | null>(
+    enabled ? "crm:record-names" : null,
+    () => api.getCrmMode().then(labelsOfBody),
+  );
+  return {
+    labels: res.data ?? null,
+    loading: enabled && res.loading,
+    error: res.error,
+    known: res.data !== undefined,
+    refresh: res.refresh,
+  };
 }
 
 /**
@@ -287,11 +348,28 @@ export type PipelinesState = {
  * The deal pipelines (CRM-Q3). Every failure reads as "no pipelines": the CRM
  * then has one implicit pipeline, no picker, and no `pipeline_id` on a request.
  * A board that fails to open because the picker's list failed is worse.
+ *
+ * A create (`api.createPipeline`, CRM-M3a) wakes this read through
+ * `invalidate("crm:")`, so the board shows the switcher with no reload.
  */
 export function usePipelines(enabled: boolean): PipelinesState {
   const res = useCachedResource<DealPipeline[] | null>(
     enabled ? KEY_PIPELINES : null,
     () => api.listPipelines().catch(() => null),
+  );
+  return { pipelines: res.data ?? null, loading: enabled && res.loading };
+}
+
+/**
+ * The lead pipelines (WS-CRM CRM-M4a). Every failure reads as "no lead
+ * pipelines": the Lead statuses card then shows the one default list, as
+ * before. A create (`api.createPipeline`) wakes this read through
+ * `invalidate("crm:")`.
+ */
+export function useLeadPipelines(enabled: boolean): PipelinesState {
+  const res = useCachedResource<DealPipeline[] | null>(
+    enabled ? `${KEY_PIPELINES}:lead` : null,
+    () => api.listLeadPipelines().catch(() => null),
   );
   return { pipelines: res.data ?? null, loading: enabled && res.loading };
 }

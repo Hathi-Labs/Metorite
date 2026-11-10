@@ -253,8 +253,10 @@ def _typed_words() -> str:
     """The member's typed words of THIS turn, from the run boundary, or "".
 
     ``assistant_profile.typed_words``: the chat route binds it before a
-    Continue note, a replayed steer or a supersede note changes the message,
-    and a paste of a mail binds "". Never a tool argument."""
+    Continue note or a supersede note changes the message, and a paste of a
+    mail binds "". Since PZ-31, the member's own typed steers count too. A
+    card answer, a Continue and another member's steer do not. Never a tool
+    argument."""
     try:
         from acb_common.assistant_profile import typed_words
 

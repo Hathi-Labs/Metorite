@@ -1,5 +1,11 @@
 # Staging and the daily release — a second deployment that takes every merge
 
+**Status update, 2026-10-31:** staging is retired (D144). The daily release and the dispatch stay.
+
+**Status update, 2026-11-05:** the home box starts the daily release (D178, CIV-13, built). Its timer dispatches `deploy.yml` with `nightly=true` at 21:30 UTC. GitHub's cron is the backup (§4.1a).
+
+**Status update, 2026-11-07:** production releases three times a day, at 05:30, 13:30 and 21:30 UTC (D194, CIV-21, built). That is 11:00, 19:00 and 03:00 IST. Each slot has its own cron, timer line and window (§4.1b). The text below that says "once a day" is the record of the first clock.
+
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).
@@ -30,7 +36,7 @@ disagree, the parent spec wins until the owner records a decision.
 | 0.1 | `main` took **480 merges** from 2026-10-01 to 2026-10-15. That is about **32 a day**, and **57** on 2026-10-09 | `git log origin/main --first-parent --since=2026-10-01 --oneline \| wc -l` |
 | 0.2 | **Every merge is a production deploy.** `deploy.yml` runs on each push to `main`, and `publish-release` moves `release` on each green run | `.github/workflows/deploy.yml` (the `on:` block and the `publish-release` job) |
 | 0.3 | **48 new tenant migrations** landed in the same 15 days. Each one reached production data on the day it merged, with no rehearsal on production-shaped rows | `git diff --name-only --diff-filter=A <sha at 2026-10-01> origin/main -- infra/postgres` |
-| 0.4 | **A deploy restart ends every live agent run**, because the runs execute inside `acb-gateway` | `HANDOFF.md` H-293 · `specs/chat_run_continuity.md` §5 |
+| 0.4 | **A deploy restart ends every live agent run that outlasts the 60 s drain**, because the runs execute inside `acb-gateway` | `specs/chat_run_continuity.md` §5 (D-1, deferred 2026-10-29) |
 | 0.5 | **The gateway cold start takes 15 to 23 seconds.** Caddy holds a request for 30 seconds, and after that a member sees "Metorite is updating" | `deploy/hostinger/caddy/Caddyfile` (the H-60 comment) |
 | 0.6 | **A deploy with a pending migration takes a full `pg_dump`** of the production database. That load helped drain the free-plan database on 2026-10-07 | the incident record behind `#707` |
 | 0.7 | The pull script already reads the ref it applies from an environment variable, `RELEASE_REF`. A staging box needs no new script, only `RELEASE_REF=staging` | `scripts/vps_pull.sh` line 42 |
@@ -147,6 +153,72 @@ migrations it applied, and the `/version` SHA it read back. If the owner wants a
 use 10:30 IST and accept one restart in working hours. This is the owner's call
 (§7, decision S-B).
 
+### 4.1a A late run waits a day
+
+*Added 2026-10-29.* GitHub starts a scheduled run late. From 2026-10-22 to
+2026-10-29, the 21:30 UTC run started 1.9 to 3.6 hours late, and later on most
+nights. The other schedules of this repo started 4.5 to 7 hours late. So the
+restart landed between 23:49 and 01:33 UTC, not at 21:30.
+
+That time was safe by luck. In the 21 days to 2026-10-29, members sent no chat
+message and started no agent run from 22:00 to 02:00 UTC (03:30 to 07:30 IST).
+At 08:00 IST, members are back, and a restart shows them "Gateway error 502".
+
+**The rule.** A schedule run moves `release` only when it reaches the
+`release-window` job between **21:00 and 02:00 UTC** (02:30 to 07:30 IST). That
+job runs after the tests, so its clock is the clock of the restart, about 5
+minutes later. Outside the window, production stays on its current release, and
+the next night ships the tip of `main`. The run shows a "Release waits a day"
+warning. After 30 hours, the `vps-health.yml` delivery check reports it.
+
+- A dispatch never waits, as with `RELEASE_HOLD` (§4.3). A person's rerun of a
+  schedule run (`run_attempt` 2 or more) never waits either.
+- This rule does not move the release hour. The hour stays the owner's (S-B). If
+  GitHub makes the run wait on many nights, the owner can move the cron earlier.
+  Then move `OPEN_MIN` in the same change, or an on-time run waits every night.
+  The fence fails when the cron is outside the window.
+- Fence: `tests/unit/test_daily_release.py`. It runs the job's own script with a
+  stubbed clock at each edge of the window.
+
+**The box starts the release** *(D178, CIV-13, 2026-11-05)*. GitHub kept starting
+the cron 3.5 to 5.5 hours late, so the window often closed first. A user timer on
+the home box now runs `scripts/home_server/nightly_release.sh` at 21:30 UTC. It
+dispatches `deploy.yml` with `nightly=true`. The cron stays as the backup.
+
+- A **nightly run** is a schedule run or a nightly dispatch. Each obeys
+  `RELEASE_HOLD` and the window. A nightly dispatch cannot skip the tests.
+- **A night ships once.** A nightly run does not publish when another nightly
+  run published since 21:00 UTC. A rerun skips that check. When the API gives
+  no answer, the run ships and warns.
+- Two nightly runs can race, and the race is benign. The same sha is a no-op
+  push, and `deploy-production` serialises the deploys.
+- `ci_velocity.md` §CIV-13 owns the detail.
+
+### 4.1b Three slots a day
+
+*Added 2026-11-07 (D194, CIV-21).* The owner moved production from one release
+a day to three. The slots are **05:30, 13:30 and 21:30 UTC** (11:00, 19:00 and
+03:00 IST). D194 supersedes the one hour of §4.1 and the "once a day" of D145.
+
+- `deploy.yml` has one cron for each slot. The home box's timer has one
+  `OnCalendar` line for each slot.
+- **Each slot has a window.** A window opens 30 min before its slot: 21:00 to
+  02:00, 05:00 to 10:00 and 13:00 to 18:00 UTC. The windows do not overlap. A
+  nightly run that reaches the release outside each window waits for the next
+  slot, and the run shows a "Release waits for the next slot" warning.
+- **A slot ships once.** A nightly run does not publish when another nightly
+  run published since the window of the current slot opened. That is the
+  latest of 05:00, 13:00 and 21:00 UTC that is not after now.
+- The box script dispatches only from 21:00 to 01:00, 05:00 to 09:00 and 13:00
+  to 17:00 UTC.
+- The names stay: the input `nightly`, the step id `once` and the unit
+  `metorite-nightly-release`. A plain dispatch and `RELEASE_HOLD` do not
+  change.
+- Fence: `tests/unit/test_daily_release.py` and
+  `tests/unit/test_nightly_release_box.py`. They fail when a slot loses its
+  cron, its window or its timer line, or when two windows overlap.
+- `ci_velocity.md` §CIV-21 owns the detail.
+
 ### 4.2 What the promotion picks
 
 The `release-promote` workflow takes the **newest commit on `staging` that meets all
@@ -175,7 +247,10 @@ demo. The workflow reports "held" and moves nothing. Clear it to resume.
 
 ### 4.4 Hotfixes take the same road, faster
 
-There is no second lane (parent spec §2.1). A hotfix is a PR to `main` like any
+There is no second lane (parent spec §2.1). Today a hotfix is a person's PLAIN
+dispatch of `deploy.yml` (no `nightly`). No hold and no window stop it, and
+`skip_tests` is its one way past the tests (D178). The text below is the
+proposed `release-promote` design. A hotfix is a PR to `main` like any
 other. It deploys to staging within minutes. Then a person runs `release-promote`
 by hand, with that SHA and a written reason. The run still requires conditions 1,
 2 and 4. It waives only the soak floor, and it writes the reason into the run
@@ -342,8 +417,10 @@ The owner said "go ahead with the development" on 2026-10-16. Phase 1 uses the
 |---|---|---|
 | `deploy.yml`, a push | lint, then the unit tests as a signal, then `publish-staging`. No deploy | `tests/unit/test_daily_release.py` |
 | `deploy.yml`, the schedule | lint, then the unit tests as a **gate**, then `publish-release`, then the deploy of that exact commit | same |
-| `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. `skip_tests` is the one way past the tests | same |
-| `RELEASE_HOLD=1` | a repository variable. The schedule moves nothing, and a `Release held` job says so. A dispatch still runs | same |
+| `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. On a plain dispatch, `skip_tests` is the one way past the tests. A `nightly` dispatch (D178) is a nightly run, and it cannot skip them | same |
+| `RELEASE_HOLD=1` | a repository variable. A nightly run (the schedule or a `nightly` dispatch) moves nothing, and a `Release held` job says so. A plain dispatch still runs | same |
+| `release-window` (2026-10-29) | a nightly run that reaches the release outside the window of each slot moves nothing, and says so (§4.1a, §4.1b). Since D178, it also holds a nightly run when another one published in that slot. A plain dispatch still runs | same |
+| `scripts/home_server/nightly_release.sh` (D178) | the home box's timer dispatches `deploy.yml` with `nightly=true` at 05:30, 13:30 and 21:30 UTC (D194). It refuses outside 21:00 to 01:00, 05:00 to 09:00 and 13:00 to 17:00 UTC | `tests/unit/test_nightly_release_box.py` |
 | `vps_apply.sh` | deploys `DEPLOY_REF` when a caller names it, else `origin/release`. It refuses a commit that is not on `main` | `tests/unit/test_deploy_target_ref.py` |
 | `vps-health.yml`, `delivery` | compares the box with `release`. It fails when `main` holds a commit that has waited 30 hours for a release | `test_daily_release.py` |
 
@@ -464,7 +541,7 @@ Each part below has its fence.
 
 | Part | Where | What it does | Fence |
 |---|---|---|---|
-| The reduction | `infra/staging/minimise.sql` | On a restore of production, keeps the organizations in `keep_slugs`, deletes every row of every other one, keeps an identity only for a kept member, and blanks each credential. It refuses on an unknown slug, on an unclassified table, and on a credential left behind | `test_staging_minimise_r8.py` |
+| The reduction | `infra/staging/minimise.sql` | On a restore of production, keeps the organizations in `keep_slugs`, deletes every row of every other one, keeps an identity only for a kept member, and blanks each credential. Since LD-8c (2026-10-31) it also empties `push_subscriptions`, blanks the plugin auth and the hashes of the WhatsApp codes, and closes each open WhatsApp act. It refuses on an unknown slug, on an unclassified table, and on a credential left behind | `test_staging_minimise_r8.py` |
 | The export | `scripts/staging_export.sh`, called by `backup_db.sh --verify-restore` | Runs the reduction in the nightly verify container on the production box, then dumps it with the roles, the extensions, production's feature switches and checksums. Off while `STAGING_EXPORT_SLUGS` is unset. Its failure never fails the backup | `test_staging_export.py` |
 | The rebuild | `scripts/staging_refresh.sh`, `acb-staging-refresh.timer` at 03:30 UTC | Pulls the export, checks it, rebuilds the Postgres 17 database, gives the gateway the non-owner `acb_app` role, copies the switches with every outbound one held off, and deploys the `staging` ref | `test_staging_box.py` |
 | The box | `deploy/hostinger/bootstrap_staging.sh` | Firewall first, the packages, the `acb` user, Node 20.20.2 private to `acb`, the checkout, the env files with fresh secrets, the database, and the first rebuild | `test_staging_box.py` |
@@ -530,8 +607,9 @@ and no agent on it can read customer data.
 
 ## 8. What this does not fix
 
-- **A daily restart still ends the live agent runs at that moment.** The fix is to
-  run agents in their own service (H-293, decision D-1 of `chat_run_continuity.md`).
+- **A daily restart can still end a run that lasts past the 60 s drain.** The fix
+  is to run agents in their own service (decision D-1 of `chat_run_continuity.md`).
+  On 2026-10-29, no stop in 8 days had cut a run, so D-1 waits (§5 there).
   The daily clock cuts the count from about 32 a day to 1, at the quietest hour.
 - **A staging box that nobody opens soaks nothing.** The four smoke checks are the
   floor. The real soak is staff using `dev.metorite.com` during the day, which is
@@ -578,5 +656,5 @@ gh api repos/Hathi-Labs/Metorite/environments --jq '.environments[].name'
 - `specs/deploy_delivery_path.md` — WS-25, the pull timer and `release`
 - `specs/customer_console.md` — §4 the AI Router · §6 the sign-in resolve
 - `specs/chat_run_continuity.md` — §5 D-1, agent runs in their own service
-- `HANDOFF.md` — H-38 (D-D), H-293 (agent runs and deploys)
+- `HANDOFF.md` — H-38 (D-D)
 - `deploy/hostinger/README.md` — the box plans and `bootstrap.sh`

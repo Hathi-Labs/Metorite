@@ -101,10 +101,13 @@ from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
 from gateway.routes.crm.core import (
+    DEAL_PIPELINE_SQL,
+    STAGE_RESTAMP_BATCH,
     compute_lead_name,
     delete_from_source,
     delete_module_records_from_source,
     merge_status_from_source,
+    restamp_deal_stage_from_source,
     savepoint,
     set_deal_contacts_from_source,
     set_pipeline_stages_from_source,
@@ -229,12 +232,36 @@ SHORT_BY_KEY = "short_by"
 #: an activity entity that the read counted so far, by parent module.
 FULL_READ_KEY = "full_read"
 READ_DROPS_KEY = "read_drops"
+#: Task #1096: the full read that the label check of ``_mirror_statuses`` asks
+#: for. In the state of :data:`FIELD_RULES_ROW` the key lists the entities that
+#: wait for the read. In the cursor of an entity it marks the read while it
+#: runs. This read does not share the ``reread`` list. A read of that list can
+#: owe contact roles, and a label read owes them only for a deal that changed.
+LABEL_REREAD_KEY = "label_reread"
+#: Task #1117: the restart of a stopped read, in the cursor of its entity. The
+#: label check of ``_mirror_statuses`` writes it in the transaction of the
+#: rename, when the read of that entity is ``in_progress``. The pages of that
+#: read used the old row names. So a read for a rule or a label read starts
+#: again from page 1, also in a later run whose check does not fire. The next
+#: page of the entity writes a new state, through :func:`cursor_state` or the
+#: state of the last page, so the key goes. A read with no such mark goes on,
+#: and the label read follows.
+LABEL_RESTART_KEY = "label_restart"
 #: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
 #: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
 #: two. The engine counts it as ``failed`` and keeps the cursor. It also sets
 #: this key to 1 in the counts of the entity, so Sync health can say that
 #: the sync of that entity is paused until those records change.
 TIE_TOO_WIDE_CODE = "tie_too_wide"
+#: CRM-Z10b round 6: the delete check of a walk (``_drop_stale``) refused, and
+#: the walk read fewer records than Zoho holds (``empty_walk``, or
+#: ``short_walk``). The READ is not complete, so the switch from Zoho waits.
+#: Set to 1 in the counts of the entity, as :data:`TIE_TOO_WIDE_CODE` is.
+WALK_SHORT_FLAG = "walk_short"
+#: CRM-Z10b round 6: the delete check refused after a complete read
+#: (``count_unknown`` or ``large_delete``). It kept rows that Zoho may have
+#: deleted, which D133 accepts, so the switch does not wait for it.
+DELETE_KEPT_FLAG = "delete_kept"
 
 #: The cursor row of the field rules (CRM-Q7a). Its state holds the rules the
 #: sync applied, and the entities that wait for a full read because a rule on
@@ -576,6 +603,16 @@ class RunHandle:
     #: CRM-Q16: the count keys that this run reads, and no other. ``None`` is
     #: a normal run. A key here is read also when it is held.
     only: frozenset[str] | None = None
+    #: CRM-Z10b: the final sync of the switch from Zoho. It reads each generic
+    #: module whatever :data:`MODULE_READ_EVERY` says, and an offset-paged one
+    #: in full. The row says so in ``counts[RUN_FINAL_KEY]``.
+    final: bool = False
+    #: CRM-Z10b round 5: the keys that the admin left out of the switch. The
+    #: final sync treats them as held, so it neither reads nor walks them.
+    final_skip: frozenset[str] = frozenset()
+    #: CRM-Z10b round 5: the final sync's own budget (:func:`final_budget`).
+    #: ``execute`` takes it when the caller passes no ``credit_budget``.
+    credit_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -628,16 +665,28 @@ def _enabled(org: str) -> bool:
     return flags.mirror_sync_enabled() and flags.crm_mirror_allowed(org)
 
 
-async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
+async def acquire(
+    org: str, *, only: frozenset[str] | None = None, final: bool = False,
+    leave_out: frozenset[str] = frozenset(),
+) -> RunHandle:
     """Take the run lock for ``org`` and plan the run.
 
     ``only`` limits the run to those count keys (CRM-Q16, "sync it on its
     own"). The caller checks the keys first.
 
+    ``final`` is the final sync of the switch from Zoho (CRM-Z10b). It reads
+    each generic module with no wait of :data:`MODULE_READ_EVERY`, and it
+    writes :data:`RUN_FINAL_KEY`, which phase 2 of the switch needs. It has
+    its own budget (:func:`final_budget`, round 5). ``leave_out`` names the
+    keys that the admin left out of the switch: the final sync treats them as
+    held, so it neither reads nor walks them (round 5).
+
     Raises :class:`NotConnected` with no live connection and
     :class:`SyncRunning` when a run holds the lock. It makes no provider call.
     """
     now = _now()
+    skip = frozenset(leave_out) if final else frozenset()
+    budget: int | None = None
     async with tenant_session(org) as db:
         connection = await store.get(db, org, PROVIDER, OWNING_APP)
         if connection is None or connection.status != store.STATUS_CONNECTED:
@@ -650,20 +699,88 @@ async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
         last_ok = await runs.last_success_at(db, org)
         entries = await holds.read(db, org)
-        kind, reconcile = plan(cursors, now, last_ok, holds.held_keys(entries))
+        held = holds.held_keys(entries) | skip
+        kind, reconcile = plan(cursors, now, last_ok, held)
+        if final:
+            budget = await final_budget(db, org)
+        if final:
+            # CRM-Z10b round 4: an offset-paged core entity has no cursor to
+            # move, so only its walk reads it. The final sync runs the 24 h
+            # walk of each such entity now.
+            walks = _final_walks(cursors, held)
+            if walks and kind == runs.KIND_INCREMENTAL:
+                kind = runs.KIND_RECONCILE
+            reconcile = reconcile | walks
         saved_counts: dict[str, Any] = {}
         saved_estimate: dict[str, Any] | None = None
         if kind == runs.KIND_IMPORT:
             saved_counts, saved_estimate = await runs.resumable_import(db, org)
         counts = _merge_counts(saved_counts)
+        if only is not None:
+            # The row says which keys this run reads (CRM-Z10b). Each page
+            # writes ``counts`` again, and the key stays with it.
+            counts[RUN_ONLY_KEY] = {key: 1 for key in sorted(only)}
+        if final:
+            # ``planned_ms``: the time of this plan by the gateway's clock. A
+            # read that ENDS in this run stamps a later ``checked_at`` by the
+            # same clock, so phase 2 compares two stamps of one clock.
+            counts[RUN_FINAL_KEY] = {
+                "final": 1, "planned_ms": _ms(now), "budget": int(budget or 0),
+            }
         run_id = await runs.start(
             db, org, connection.id, kind, counts=counts, estimate=saved_estimate,
         )
     return RunHandle(
         org=org, run_id=run_id, kind=kind, connection_id=connection.id,
         reconcile=reconcile, cursors=cursors, counts=counts, estimate=saved_estimate,
-        scopes=tuple(connection.scopes or ()), holds=entries, only=only,
+        scopes=tuple(connection.scopes or ()), holds=entries, only=only, final=final,
+        final_skip=skip, credit_budget=budget,
     )
+
+
+#: The credits that the final syncs of the switch spent in the last 24 hours.
+_FINAL_SPENT_SQL = (
+    "SELECT COALESCE(sum(credits_used), 0) FROM crm_sync_runs "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND started_at > now() - interval '24 hours' "
+    "AND counts -> 'run_final' IS NOT NULL"
+)
+
+
+async def final_budget(db: Any, org: str) -> int:
+    """The final sync's own budget (CRM-Z10b round 5): one day's share of
+    the edition (:func:`daily_budget`), less what the final syncs of the last
+    24 hours spent. So the switch spends up to one day's share once in 24
+    hours, whatever the scheduled runs spent. Without it, an org whose paced
+    runs spend the whole daily budget would start each final sync with no
+    credit, and it could never switch.
+
+    ⚠️ :data:`CREDITS_FLOOR` still stops the run on what Zoho reports, so a
+    final sync never drains the org's Zoho account (``_Ctx.call``).
+    """
+    profile = await profiles.latest(db, org)
+    spent = int((await db.execute(text(_FINAL_SPENT_SQL), {"org": org})).scalar() or 0)
+    return max(daily_budget(profile.profile if profile else None) - spent, 0)
+
+
+def _final_walks(cursors: dict[str, CursorRow], held: frozenset[str]) -> frozenset[str]:
+    """The core entities that the final sync of the switch walks now: each one
+    that pages by offset, has finished its first import, and is not held or
+    unavailable (CRM-Z10b round 4)."""
+    walks: set[str] = set()
+    for entity in ENTITY_ORDER:
+        row = cursors.get(changed_module(entity))
+        if row is None or row.initial_done_at is None or count_key(entity) in held:
+            continue
+        state = row.state or {}
+        if state.get("offset_paged") and not state.get("unavailable"):
+            walks.add(entity)
+    return frozenset(walks)
+
+
+def _ms(moment: datetime) -> int:
+    """Milliseconds since the epoch, for a number in ``counts``."""
+    return int(moment.timestamp() * 1000)
 
 
 class _Ctx:
@@ -686,8 +803,11 @@ class _Ctx:
         #: CRM-Q16: the hold entries, the keys held now, and the keys of an
         #: "on its own" run.
         self.holds: dict[str, dict[str, Any]] = dict(handle.holds)
-        self.held: frozenset[str] = holds.held_keys(self.holds)
+        # CRM-Z10b round 5: the keys left out of the switch count as held.
+        self.held: frozenset[str] = holds.held_keys(self.holds) | handle.final_skip
         self.only = handle.only
+        #: CRM-Z10b: the final sync of the switch reads every generic module.
+        self.final = handle.final
         #: CRM-Q16: the provider count by COUNT KEY, from ``_estimate``. The
         #: estimate itself is by slug, and ``activities`` there includes tasks.
         self.key_counts: dict[str, int] | None = None
@@ -726,6 +846,11 @@ class _Ctx:
         #: and the entities that a rejected or stale rule makes read in full.
         self.rules: dict[str, dict[str, str]] = {}
         self.rule_rereads: set[str] = set()
+        #: The entities on the label list, and those whose check fired in
+        #: this run (task #1096, :data:`LABEL_REREAD_KEY`). The cursor keeps
+        #: the restart for a later run (:data:`LABEL_RESTART_KEY`).
+        self.label_rereads: set[str] = set()
+        self.label_fired: set[str] = set()
         #: The approved rules that ``_field_rules`` handled, and the ids that
         #: discovery made stale in this run. ``map_record`` applies the first
         #: list minus the second, and never a rule approved during the run.
@@ -894,6 +1019,18 @@ NO_PARENT_MODULE = "(none)"
 #: not an entity either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a
 #: test pins the two. Sync health sums it over the runs of the last 7 days.
 ACTIVITY_RECOVERED_KEY = "activity_recovered"
+#: The counts key of an "on its own" run (CRM-Q16): ``{count key: 1}`` for each
+#: key that the run reads, and no key for a normal run. The run row says
+#: nothing else about it, and the core keys of a one-module run count zero
+#: as a normal run with no change does. The switch from Zoho (CRM-Z10b) reads
+#: it, so phase 2 never takes such a run as the final sync. It is no entity
+#: either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a test pins it.
+RUN_ONLY_KEY = "run_only"
+#: The counts key of the final sync of the switch from Zoho (CRM-Z10b):
+#: ``{"final": 1}``, and no key for any other run. Phase 2 of the switch takes
+#: only such a run. It is no entity either (``routes/crm/sync.py``
+#: ``NOT_ENTITY_KEYS``), and a test pins it with :data:`RUN_ONLY_KEY`.
+RUN_FINAL_KEY = "run_final"
 
 _LOCAL_ID_SQL = (
     "SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
@@ -988,7 +1125,8 @@ _STATUS_ID_SQL = "SELECT id FROM {table} WHERE name = :name"
 
 # The picklist read is the one step that keeps the source values current
 # (CRM-C3, §20.6 items 7 to 9). It matches a row by the Zoho id of the value
-# first, then by name.
+# first, then by name. The name is the Zoho label (``display_value``), which
+# is the name that a record carries (task #1096).
 _STATUS_BY_EXT_SQL = "SELECT id, name FROM {table} WHERE ext_id = :ext"
 _STATUS_BY_NAME_SQL = "SELECT id, ext_id FROM {table} WHERE name = :name"
 _PICKLIST_INSERT_SQL = (
@@ -1022,10 +1160,14 @@ _FORECAST_SQL = (
 #: A pipeline stage that names ``won`` or ``lost`` gives its row that type, also
 #: a row that exists already. The insert above never changes an existing row,
 #: so without this a stage first seen as ``open`` stayed open for good.
+#: A stage with a Zoho id finds its row by that id when a row holds it, else
+#: by name (task #1096). A row can hold an old name until the picklist read.
 _STAGE_TYPE_SQL = (
     "UPDATE crm_deal_statuses SET type = :type "
-    "WHERE organization_id = CAST(:org AS uuid) AND name = :name "
-    "AND type IS DISTINCT FROM :type"
+    "WHERE organization_id = CAST(:org AS uuid) AND type IS DISTINCT FROM :type "
+    "AND CASE WHEN EXISTS (SELECT 1 FROM crm_deal_statuses x WHERE "
+    "x.organization_id = CAST(:org AS uuid) AND x.ext_id = CAST(:ext AS text)) "
+    "THEN ext_id = CAST(:ext AS text) ELSE name = :name END"
 )
 #: The stage types a pipeline can state. A stage with no type keeps its row.
 STAGE_TYPES = ("won", "lost")
@@ -1051,9 +1193,22 @@ def stage_types(pipelines: list[dict[str, Any]]) -> dict[str, str]:
 
 
 async def _apply_stage_types(db: Any, org: str, pipelines: list[dict[str, Any]]) -> None:
-    """Give each mirrored stage the type its pipeline names (won or lost)."""
+    """Give each mirrored stage the type its pipeline names (won or lost).
+
+    A stage that carries the Zoho id of its value finds its row by that id
+    first (task #1096). A profile from before that change has no id, so its
+    stages find their rows by name, as before.
+    """
+    ids: dict[str, str] = {}
+    for pipeline in pipelines:
+        for stage in (pipeline.get("stages") or []) if isinstance(pipeline, dict) else []:
+            if isinstance(stage, dict) and stage.get("ext_id") and isinstance(stage.get("name"), str):
+                ids.setdefault(stage["name"], str(stage["ext_id"]))
     for name, kind in stage_types(pipelines).items():
-        await db.execute(text(_STAGE_TYPE_SQL), {"org": org, "name": name, "type": kind})
+        await db.execute(
+            text(_STAGE_TYPE_SQL),
+            {"org": org, "name": name, "type": kind, "ext": ids.get(name)},
+        )
 
 
 async def _ensure_status(
@@ -1102,11 +1257,18 @@ async def _source_status(
     When the name belongs to ANOTHER row than the id row:
 
     * that row has no Zoho id (a record pull made it before this read): the
-      fenced door ``core.merge_status_from_source`` folds it into the id row;
+      fenced door ``core.merge_status_from_source`` folds it into the id row.
+      This also heals an org that the old name rule split (task #1096). That
+      rule named the id row by ``actual_value``, so each record that carried
+      the label made a second row with no Zoho id. The label is now the name,
+      so the next picklist read folds each such row into its id row;
     * that row holds the id of another value that Zoho still lists: two
-      values traded names, so it moves aside until its own value names it;
+      values traded names, so it moves aside until its own value names it.
+      Its records can belong to this value, and
+      :func:`_mirror_statuses` queues one full read for that case;
     * that row holds an id that Zoho no longer lists: it moves aside too, and
-      the gone rule marks it. Its deals keep it.
+      the gone rule marks it. Its deals keep it, until the full read of
+      :func:`_label_collision` moves each record that carries this label.
 
     No savepoint here catches a failure. A failed merge fails the picklist
     step, and the run logs it.
@@ -1184,12 +1346,23 @@ def _picklist_type(item: dict[str, Any], name: str) -> str:
 def _picklist_values(
     ctx: _Ctx, definition: dict[str, Any],
 ) -> list[_PicklistValue]:
-    """The values of one picklist definition, in Zoho order."""
+    """The values of one picklist definition, in Zoho order.
+
+    The name of a value is its LABEL (``display_value``), and
+    ``actual_value`` is the fallback (WS-53 task #1096, ``crm_platform.md``
+    §20.6 item 7). A Zoho admin who renames a value changes the label only.
+    ``actual_value`` keeps the first name. A record carries the label in
+    ``Stage`` and ``Lead_Status``, so a row named by ``actual_value`` gave a
+    second row for each renamed value. The order stays ``sequence_number``.
+    """
     items = [i for i in definition.get("pick_list_values") or [] if isinstance(i, dict)]
     items.sort(key=lambda i: int(i.get("sequence_number") or 0))
     values: list[_PicklistValue] = []
     for position, item in enumerate(items):
-        name = str(item.get("actual_value") or item.get("display_value") or "").strip()
+        name = (
+            str(item.get("display_value") or "").strip()
+            or str(item.get("actual_value") or "").strip()
+        )
         if not name or name == "-None-":
             continue
         raw_prob = item.get("probability")
@@ -1203,6 +1376,44 @@ def _picklist_values(
     return values
 
 
+#: Each status row with a Zoho id, for the label check of :func:`_mirror_statuses`.
+_STATUS_EXT_ROWS_SQL = "SELECT ext_id, name FROM {table} WHERE ext_id IS NOT NULL"
+
+
+def _label_collision(
+    values: list[_PicklistValue], rows: list[Any], listed: frozenset[str],
+) -> bool:
+    """True when a row holds the label of ANOTHER listed value, and the picklist
+    read will give that label to a different row (task #1096).
+
+    A record pull finds its row by the label that the record carries. So each
+    record of that other value went onto the wrong row. The rename of the
+    picklist read cannot move them, because a row keeps its records.
+
+    * A row of a listed value counts.
+    * A row of a retired value counts when a holder of the label has its own
+      row. :func:`_source_status` then parks the retired row, and the records
+      of the holder stay in a parked lane. With no such row, the new value
+      adopts the retired row with its records, so no read is due.
+    * A row that holds its own label does not count, also when a second value
+      shares that label. No read can tell those records apart.
+
+    The picklist read renames each counted row, so the next check finds none.
+    """
+    owners: dict[str, set[str]] = {}
+    for value in values:
+        if value.ext_id:
+            owners.setdefault(value.name, set()).add(value.ext_id)
+    own_rows = {str(row.ext_id) for row in rows}
+    for row in rows:
+        ext, holders = str(row.ext_id), owners.get(str(row.name))
+        if holders is None or ext in holders:
+            continue
+        if ext in listed or holders & own_rows:
+            return True
+    return False
+
+
 async def _mirror_statuses(
     ctx: _Ctx, db: Any, entity: str, definitions: list[dict[str, Any]],
 ) -> None:
@@ -1212,6 +1423,21 @@ async def _mirror_statuses(
     the definition was read. A run that could not read it marks nothing. A
     row with no Zoho id (a stage that only a pipeline lists, and
     ``UNKNOWN_STATUS``) is never marked. A list with no Zoho id marks nothing.
+
+    Before it writes, the step looks for a row that holds the label of
+    another listed value (:func:`_label_collision`). The old name rule made
+    such a row when one label was the ``actual_value`` of another value. A
+    Zoho edit that trades two labels makes one too, and so does a label that
+    a retired value held. Then the step puts the entity on the label list
+    (:data:`LABEL_REREAD_KEY`), in this transaction, for ONE full read. That
+    read maps each record by its label again, after this step named each
+    row by its label. A repaired org has no such row, so the next read
+    queues nothing.
+
+    A read of the entity that stopped used the old row names. So the step
+    also writes the restart into its cursor (:data:`LABEL_RESTART_KEY`), in
+    this transaction. A run that stops before the next page of that read
+    keeps it, and the next run starts the read from page 1 (task #1117).
     """
     api_name, table = _STATUS_FIELDS[entity]
     for definition in definitions:
@@ -1219,6 +1445,8 @@ async def _mirror_statuses(
             continue
         values = _picklist_values(ctx, definition)
         listed = frozenset(v.ext_id for v in values if v.ext_id)
+        rows = (await db.execute(text(_STATUS_EXT_ROWS_SQL.format(table=table)))).fetchall()
+        collided = _label_collision(values, list(rows), listed)
         for value in values:
             async with savepoint(db):
                 await _source_status(db, table, value, listed)
@@ -1226,6 +1454,11 @@ async def _mirror_statuses(
             await db.execute(
                 text(_STATUS_GONE_SQL.format(table=table)), {"listed": sorted(listed)},
             )
+        if collided:
+            await _save_label_rereads(ctx, db, ctx.label_rereads | {entity})
+            await _mark_label_restart(ctx, db, entity)
+            ctx.label_fired.add(entity)
+            _log.info("crm.sync.status_label_collision entity=%s", entity)
 
 
 @dataclass
@@ -1239,7 +1472,8 @@ class _PipelineIndex:
 
 _PIPELINE_INDEX_SQL = (
     "SELECT id, name, ext_id, is_default FROM crm_pipelines "
-    "WHERE ext_source = :src ORDER BY position, created_at, id"
+    # CRM-M4a: Zoho mirrors the deal pipelines only.
+    f"WHERE ext_source = :src AND {DEAL_PIPELINE_SQL} ORDER BY position, created_at, id"
 )
 
 
@@ -1781,21 +2015,34 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic and not parent_only
-    rereading = generic and _module_reread(ctx, row)
-    if generic and not rereading and _module_read_recently(ctx, row):
+    rereading = generic and (_module_reread(ctx, row) or _final_reread(ctx, row))
+    # CRM-Z10b: the final sync of the switch reads each module, also one that
+    # it read less than MODULE_READ_EVERY ago. An edit of that hour is in it.
+    if generic and not rereading and not ctx.final and _module_read_recently(ctx, row):
         return
     # A rejected or stale field rule on a fixed column (CRM-Q7a): one full read
     # writes the fixed map's value again. It stamps nothing and deletes
     # nothing, like the CRM-Q5 lead read below.
     rule_wanted = not generic and not parent_only and entity in ctx.rule_rereads
+    # The full read that the label check asks for (task #1096).
+    label_wanted = not generic and not parent_only and entity in ctx.label_rereads
     if (
         row.initial_done_at is not None and saved.get("offset_paged") and not walking
-        and not rereading and not rule_wanted
+        and not rereading and not rule_wanted and not label_wanted
         and not (generic and saved.get("in_progress"))
     ):
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    if (
+        resumed and ctx.final and row.initial_done_at is not None
+        and (rereading or (walking and saved.get("offset_paged")))
+    ):
+        # CRM-Z10b round 4: a read by offset that stopped (a module's re-read,
+        # or a core entity's walk) goes on from its saved page in a normal
+        # run. An edit on an earlier page would then miss the final sync, so
+        # the final sync reads from page 1 again.
+        resumed = False
     # The module was off and is asked again (CRM-Q15). When this read ENDS, its
     # children are read in full once, so their links fill in. A read that runs
     # over several runs carries the mark in its cursor, and queues only at its
@@ -1807,10 +2054,26 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A full read for a rule starts fresh, or goes on with its own mark. A
     # read that was already under way when the rule changed does not count.
     rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
+    label_reread = (label_wanted and not resumed) or (
+        resumed and bool(saved.get(LABEL_REREAD_KEY))
+    )
     backfill = (
         entity == "lead" and row.initial_done_at is not None
         and not saved.get("converted_both") and not resumed and not parent_only
     )
+    # The check fired in this run, or in a run that stopped before the next
+    # page of this read (task #1117, ``LABEL_RESTART_KEY``).
+    label_restart = entity in ctx.label_fired or bool(saved.get(LABEL_RESTART_KEY))
+    if resumed and label_restart and (rule_reread or label_reread):
+        # Task #1096: the pages of this read used the old row names, and its
+        # last page would clear the entity. So it starts over from page 1. It
+        # still counts for each rule, and ``recovering`` keeps its mark.
+        resumed, rule_reread, label_reread = False, rule_reread or rule_wanted, True
+    # A label read moves ``status_id`` and changes no contact role, so it queues
+    # a role call only for a deal that changed. A read for a rule, a walk and a
+    # read after a hold still queue each deal (task #1096).
+    label_only = label_reread and not (rule_reread or stamping or recovering)
+    role_floor = row.last_pulled_at
     hidden = bool(saved.get("offset_paged")) if resumed else False
     walk_start = ctx.started
     walk_count = 0
@@ -1841,7 +2104,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking or backfill or rereading or rule_reread else row.last_pulled_at
+        since = (
+            None if walking or backfill or rereading or rule_reread or label_reread
+            else row.last_pulled_at
+        )
         ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
@@ -1859,13 +2125,15 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # The mark of a full read for a field rule (CRM-Q7a). It is kept only while
     # the read runs, so a stop resumes it as that read.
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
+    if label_reread:
+        progress_marks = {**progress_marks, LABEL_REREAD_KEY: True}
     if recovering:
         progress_marks = {**progress_marks, "recovering": True}
     # CRM-Q24: a full read lists every record, not the changes since a cursor.
     # Its last page writes ``short_by``, and for an activity entity the drops
     # of the whole read. A read over several runs carries its mark.
     full = (
-        stamping or rereading or rule_reread or backfill
+        stamping or rereading or rule_reread or label_reread or backfill
         or (resumed and bool(saved.get(FULL_READ_KEY)))
     )
     if full:
@@ -1920,7 +2188,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     )
                 failed_map = _merge_failed(failed_map, landed, bad)
                 if entity == "deal" and landed:
-                    await _queue_roles(ctx, db, landed)
+                    roles = (
+                        _changed_ids(page.records, landed, role_floor)
+                        if label_only else landed
+                    )
+                    if roles:
+                        await _queue_roles(ctx, db, roles)
                 if not last_page and page.next_cursor is not None:
                     extra: dict[str, Any] = {}
                     if stamping:
@@ -1981,8 +2254,11 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             "retry_from": _iso(_pin(failed_map)),
                             "prev_walk_start": _iso(next_prev),
                             **marks,
-                            # The hourly cadence of a generic module (CRM-Q6a).
-                            **({"checked_at": _iso(ctx.started)} if generic else {}),
+                            # The end of a read, for each entity: the hourly
+                            # cadence of a generic module (CRM-Q6a), and the
+                            # proof that phase 2 of the switch needs (CRM-Z10b
+                            # round 4: a read ended in the final sync).
+                            "checked_at": _iso(ctx.started),
                             # The kept activities of CRM-Q23b. Activities only.
                             **_recover_state(ctx, entity),
                             **short,
@@ -1999,6 +2275,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
+                if last_page and label_reread:
+                    await _save_label_rereads(ctx, db, ctx.label_rereads - {entity})
                 if last_page and recovering:
                     await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
@@ -2025,6 +2303,17 @@ def _module_reread(ctx: _Ctx, row: CursorRow) -> bool:
         return False
     done = row.last_reconciled_at
     return done is None or ctx.started - done >= RECONCILE_EVERY
+
+
+def _final_reread(ctx: _Ctx, row: CursorRow) -> bool:
+    """True when the final sync of the switch (CRM-Z10b) must read an
+    offset-paged module in full: it has no cursor to move, so only a full
+    read sees its changes. This costs about one full read of the module.
+    A read of it that stopped starts again from page 1 (round 4)."""
+    state = row.state or {}
+    return (
+        ctx.final and row.initial_done_at is not None and bool(state.get("offset_paged"))
+    )
 
 
 def _module_read_recently(ctx: _Ctx, row: CursorRow) -> bool:
@@ -2229,7 +2518,9 @@ async def _drop_stale(
     Offset paging can skip a row when the provider changes under the walk, so a
     row goes only when its stamp is older than the start of the previous complete
     walk. A refusal keeps the rows and their stamps, logs ``reconcile_refused``
-    with the figures and counts in ``refused``. It returns False for a refusal,
+    with the figures and counts in ``refused``. It also flags the entity:
+    :data:`WALK_SHORT_FLAG` when the walk read fewer records than Zoho holds,
+    else :data:`DELETE_KEPT_FLAG` (CRM-Z10b round 6). It returns False for a refusal,
     and the caller then keeps its old previous-walk time. A record that failed
     to write is never deleted.
     """
@@ -2262,6 +2553,10 @@ async def _drop_stale(
         reason = "large_delete"
     if reason:
         ctx.bump(entity, "refused")
+        # CRM-Z10b round 6: the causes count apart. A walk that read fewer
+        # records than Zoho holds is not a complete read, and the switch
+        # waits for it. A refusal after a complete read only kept rows.
+        ctx.flag(entity, WALK_SHORT_FLAG if _walk_short(local, walked, known) else DELETE_KEPT_FLAG)
         _log.warning(
             "crm.sync.reconcile_refused entity=%s reason=%s walked=%s known=%s "
             "local=%s stale=%s", entity, reason, walked, known, local, len(stale),
@@ -2271,6 +2566,17 @@ async def _drop_stale(
         removed = await delete_from_source(db, table, EXT_SOURCE, sorted(stale))
         ctx.bump(entity, "deleted", removed)
     return True
+
+
+def _walk_short(local: int, walked: int, known: int | None) -> bool:
+    """True when a walk read fewer records than Zoho holds (CRM-Z10b round 6):
+    it read none while rows exist here (``empty_walk``), or fewer than the
+    count of Zoho (``short_walk``). With no count, an empty walk is short
+    too. A ``count_unknown`` walk that read records, and a ``large_delete``,
+    follow a complete read."""
+    empty = bool(local) and walked == 0
+    short = known is not None and walked < known
+    return empty or short
 
 
 async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
@@ -2573,6 +2879,31 @@ async def _relink_leads(ctx: _Ctx) -> None:
         ctx.counts["converted_leads"]["unlinked"] = int(row.n if row is not None else 0)
 
 
+#: Batches of one run for the stage-time repair (CRM-U14). Batch size is
+#: ``core.STAGE_RESTAMP_BATCH``, so a run repairs at most 10,000 deals and the
+#: next run goes on.
+_RESTAMP_BATCHES = 20
+
+
+async def _restamp_stages(ctx: _Ctx) -> None:
+    """Copy Zoho's stage time onto the deals stored before the mapping took it.
+
+    Idempotent and bounded: the door selects only the rows that differ, and the
+    step stops after :data:`_RESTAMP_BATCHES` batches. Each batch is one page.
+    """
+    after: str | None = None
+    for _ in range(_RESTAMP_BATCHES):
+        async with ctx.page() as db:
+            batch = await restamp_deal_stage_from_source(
+                db, EXT_SOURCE, organization_id=ctx.org, after_id=after,
+            )
+        if batch.skipped_bad:
+            _log.warning("crm.sync.stage_restamp_skipped_bad count=%s", batch.skipped_bad)
+        after = batch.last_id
+        if batch.scanned < STAGE_RESTAMP_BATCH:
+            return
+
+
 async def _roles_pending(ctx: _Ctx) -> list[str]:
     if ctx.roles_pending is None:
         state = _row(ctx, ROLES_MODULE).state or {}
@@ -2598,6 +2929,22 @@ async def _save_roles_pending(ctx: _Ctx, db: Any) -> None:
                     old.initial_done_at or _now(), old.last_reconciled_at)
     await _save_cursor(ctx, db, row, "ok")
     ctx.cursors[ROLES_MODULE] = row
+
+
+def _changed_ids(
+    records: tuple[SourceRecord, ...], landed: set[str], floor: datetime | None,
+) -> set[str]:
+    """The landed records that an incremental read from *floor* would list.
+
+    A label read moves the cursor past them, so no later read lists them. A
+    record that hides ``Modified_Time`` is not one: only a walk reads it.
+    """
+    found: set[str] = set()
+    for record in records:
+        stamp = _parse(record.fields.get("Modified_Time"))
+        if record.ext_id in landed and stamp is not None and (floor is None or stamp >= floor):
+            found.add(record.ext_id)
+    return found
 
 
 async def _queue_roles(ctx: _Ctx, db: Any, landed: set[str]) -> None:
@@ -2732,6 +3079,36 @@ async def _write_roles(
     ctx.step("deal_contacts", "deleted", removed)
 
 
+async def _pipeline_stage_status(db: Any, stage: dict[str, Any]) -> str:
+    """The status row of one pipeline stage (task #1096).
+
+    1. The row whose Zoho id is the ``ext_id`` of the stage, when the stage
+       has one and such a row exists. A map entry of a Zoho pipeline carries
+       the id of its Stage picklist value. So the stage finds its row even in
+       a run that did not read the picklist, where the row can still have an
+       old name.
+    2. Else the row with the name (the Zoho label), through
+       :func:`_ensure_status`. A stage that no row has is appended.
+
+    The step adds a row and a membership only. It never renames a row, and it
+    never moves the order or the probability of a row (§20.6 item 7).
+    """
+    ext = stage.get("ext_id")
+    category = stage.get("forecast_category")
+    if ext:
+        row = (await db.execute(
+            text(_STATUS_BY_EXT_SQL.format(table=DEAL_STATUSES)), {"ext": str(ext)},
+        )).first()
+        if row is not None:
+            if category:
+                await db.execute(text(_FORECAST_SQL), {"id": str(row.id), "category": category})
+            return str(row.id)
+    return await _ensure_status(
+        db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
+        forecast_category=category,
+    )
+
+
 async def _mirror_pipelines(
     ctx: _Ctx, db: Any, rows: list[dict[str, Any]],
 ) -> None:
@@ -2741,6 +3118,16 @@ async def _mirror_pipelines(
     pipelines share is one row with two memberships. A stage the picklist did
     not list is appended. A pipeline that Zoho no longer lists is deleted here,
     and its deals keep their row with a NULL pipeline.
+
+    Each stage finds its row by its Zoho id first, then by its label
+    (:func:`_pipeline_stage_status`). Most runs that mirror the pipelines read
+    the picklist first (:func:`_execute`), so a label row with no Zoho id is
+    already folded into its id row. Some runs do not read it first. The
+    picklist read can fail. An early discovery of CRM-Q10 stores a new
+    profile, so discovery is no longer due. An incremental run then skips the
+    picklist read, and :func:`_mirror_deferred_pipelines` mirrors the stored
+    profile. In each such run the id match still puts the membership on the id
+    row. The next picklist read folds the label row.
     """
     seen: list[str] = []
     for position, row in enumerate(rows):
@@ -2755,10 +3142,7 @@ async def _mirror_pipelines(
             })
             members: list[tuple[str, int]] = []
             for stage in row.get("stages") or []:
-                status_id = await _ensure_status(
-                    db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
-                    forecast_category=stage.get("forecast_category"),
-                )
+                status_id = await _pipeline_stage_status(db, stage)
                 if all(status_id != existing for existing, _ in members):
                     members.append((status_id, len(members)))
             await set_pipeline_stages_from_source(db, str(pipeline.id), members)
@@ -2896,7 +3280,9 @@ async def _discover(ctx: _Ctx) -> None:
 
 
 #: The Zoho pipelines that this org already mirrors (CRM-Q10).
-_ZOHO_PIPELINES_SQL = "SELECT count(*) FROM crm_pipelines WHERE ext_source = :src"
+_ZOHO_PIPELINES_SQL = (
+    f"SELECT count(*) FROM crm_pipelines WHERE ext_source = :src AND {DEAL_PIPELINE_SQL}"
+)
 
 
 async def _mirror_deferred_pipelines(ctx: _Ctx) -> None:
@@ -3065,6 +3451,7 @@ async def _execute(ctx: _Ctx) -> None:
             await _deleted_pass(ctx, entity)
     await _relink_leads(ctx)
     await _deal_roles(ctx)
+    await _restamp_stages(ctx)
     await _module_records(ctx)
     await _recover_activities(ctx)
     # CRM-Q17a-1 (§18.9.3): the fill rank, after the module step, at most once
@@ -3078,10 +3465,14 @@ async def _execute(ctx: _Ctx) -> None:
 def _rules_row(
     ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
 ) -> CursorRow:
-    """The rules cursor row with a new state."""
+    """The rules cursor row with a new state. The label list rides along."""
     old = _row(ctx, FIELD_RULES_ROW)
+    state = field_rules.state_of(applied, reread)
+    labels = (old.state or {}).get(LABEL_REREAD_KEY)
+    if labels:
+        state[LABEL_REREAD_KEY] = labels
     return CursorRow(
-        FIELD_RULES_ROW, old.last_pulled_at, field_rules.state_of(applied, reread),
+        FIELD_RULES_ROW, old.last_pulled_at, state,
         old.initial_done_at or _now(), old.last_reconciled_at,
     )
 
@@ -3164,6 +3555,7 @@ async def _field_rules(ctx: _Ctx) -> None:
                 break
         _log.info("crm.sync.field_rule_backfilled rule=%s written=%s", rule.id, filled)
     ctx.rule_rereads = reread
+    ctx.label_rereads = {str(e) for e in state.get(LABEL_REREAD_KEY) or ()}
     ctx.handled_rules = list(approved)
 
 
@@ -3204,6 +3596,45 @@ async def _add_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
     ctx.rule_rereads |= entities
+
+
+async def _save_label_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
+    """Write the label list in the rules cursor row, in the caller's transaction
+    (:data:`LABEL_REREAD_KEY`). The check of ``_mirror_statuses`` adds to it, and
+    the last page of a read with the label mark takes its entity off it."""
+    old = _row(ctx, FIELD_RULES_ROW)
+    state = {k: v for k, v in (old.state or {}).items() if k != LABEL_REREAD_KEY}
+    if entities:
+        state[LABEL_REREAD_KEY] = sorted(entities)
+    saved = CursorRow(
+        FIELD_RULES_ROW, old.last_pulled_at, state,
+        old.initial_done_at or _now(), old.last_reconciled_at,
+    )
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[FIELD_RULES_ROW] = saved
+    ctx.label_rereads = set(entities)
+
+
+async def _mark_label_restart(ctx: _Ctx, db: Any, entity: str) -> None:
+    """Write :data:`LABEL_RESTART_KEY` into the cursor of *entity*, in the
+    caller's transaction, when a read of it stopped (``in_progress``). Every
+    other key of the state stays, so the read keeps its marks (task #1117).
+    A cursor that is not in progress gets no key, because its next read
+    starts from page 1. A held cursor (``held_skipped``) keeps its status.
+
+    The row also goes into ``ctx.cursors``. A later step of this run that
+    writes the cursor from that map (:func:`_mark_held_skipped`) then keeps
+    the key."""
+    old = _row(ctx, changed_module(entity))
+    state = old.state or {}
+    if not state.get("in_progress") or state.get(LABEL_RESTART_KEY):
+        return
+    row = CursorRow(
+        old.module, old.last_pulled_at, {**state, LABEL_RESTART_KEY: True},
+        old.initial_done_at, old.last_reconciled_at,
+    )
+    await _save_cursor(ctx, db, row, "held" if state.get("held_skipped") else "partial")
+    ctx.cursors[old.module] = row
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:
@@ -3623,8 +4054,13 @@ async def execute(
 
     It never raises for a failure of the run. It writes the failure to the row
     as a status and a safe code. ``credit_budget`` overrides the default
-    budget, for a test.
+    budget, for a test. With none, a final sync takes its own budget
+    (``handle.credit_budget``, CRM-Z10b round 5). A budget that is not the
+    default skips only the discovery allowance. :data:`CREDITS_FLOOR` holds
+    for every run.
     """
+    if credit_budget is None:
+        credit_budget = handle.credit_budget  # the final sync's own (round 5)
     ctx = _Ctx(handle, should_stop=should_stop, credit_budget=credit_budget)
     status, error = runs.STATUS_OK, None
     try:

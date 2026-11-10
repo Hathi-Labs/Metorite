@@ -28,6 +28,20 @@ describe("surfaceOfPane", () => {
     expect(surfaceOfPane({ href: "/projects/board?x=1" })).toBe("projects");
   });
 
+  it("gives the app slug of the Projects, Tasks and Calendar panes", () => {
+    // WS-67 OA-8b: the three apps read one task store, and the server loads the
+    // Projects core pack for each slug. Mutation: map "tasks" or "calendar" to
+    // "projects" here -> the slug the server expects never arrives -> red.
+    for (const slug of ["projects", "tasks", "calendar"]) {
+      const pane = PANES.find((p) => p.href === `/${slug}`);
+      expect(pane).toBeTruthy();
+      expect(surfaceOfPane(pane)).toBe(slug);
+      expect(surfaceField(surfaceOfPane(pane))).toEqual({ surface: slug });
+    }
+    expect(surfaceOfPane({ href: "/tasks?filter=today" })).toBe("tasks");
+    expect(surfaceOfPane({ href: "/calendar/week" })).toBe("calendar");
+  });
+
   it("gives nothing off every app", () => {
     // Mutation: send "" or "/" for a page that belongs to no app -> red.
     expect(surfaceOfPane(null)).toBeNull();

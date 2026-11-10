@@ -3,6 +3,7 @@ import {
   barWidth,
   byWeight,
   dwellSummary,
+  plusLabel,
   funnelWidths,
   hasFunnel,
   hasOwners,
@@ -51,12 +52,28 @@ const PROPOSAL = status({
 
 const PIPELINE: PipelineReport = {
   stages: [
-    { status: QUALIFICATION, count: 12, amount: 600000, weighted: 60000 },
-    { status: PROPOSAL, count: 4, amount: 800000, weighted: 400000 },
+    {
+      status: QUALIFICATION,
+      count: 12,
+      currency: "INR",
+      amount: 600000,
+      weighted: 60000,
+      others: [],
+    },
+    {
+      status: PROPOSAL,
+      count: 4,
+      currency: "INR",
+      amount: 800000,
+      weighted: 400000,
+      others: [{ currency: "USD", amount: 2500, weighted: 900 }],
+    },
   ],
   count: 16,
+  currency: "INR",
   amount: 1400000,
   weighted: 460000,
+  others: [{ currency: "USD", amount: 2500, weighted: 900 }],
 };
 
 const FUNNEL: FunnelReport = {
@@ -89,8 +106,10 @@ const WIN_LOSS: WinLossReport = {
   won: 2,
   lost: 1,
   win_rate: 66.7,
+  currency: "INR",
   won_amount: 800000,
   lost_amount: 100000,
+  others: [],
   average_cycle_days: 30,
   closed_without_date: 0,
   lost_reasons: [],
@@ -101,8 +120,10 @@ const OWNERS: OwnerLeaderboard = {
     {
       owner_email: "priya@fracktal.in",
       open_deals: 2,
+      currency: "INR",
       weighted: 210000,
       won_amount: 0,
+      others: [],
     },
   ],
   window_days: 90,
@@ -249,14 +270,30 @@ describe("undatedNotice", () => {
 
 // ── Emptiness ─────────────────────────────────────────────────────────────
 
+describe("plusLabel", () => {
+  it("names each other currency with its own code, and nothing when there is none", () => {
+    expect(plusLabel(PIPELINE.others, (o) => o.amount)).toContain("2,500");
+    expect(plusLabel(PIPELINE.others, (o) => o.amount)).toMatch(/^plus .*\$/);
+    expect(plusLabel([], () => 0)).toBe("");
+    expect(plusLabel(undefined, () => 0)).toBe("");
+  });
+});
+
 describe("the has* guards", () => {
   it("distinguish a loaded-but-empty CRM from an unloaded one", () => {
     // An empty CRM renders "nothing yet", not a grid of zeros — the same
     // courtesy the board's empty lanes get, in the other direction.
     expect(hasPipeline(PIPELINE)).toBe(true);
-    expect(hasPipeline({ stages: [], count: 0, amount: 0, weighted: 0 })).toBe(
-      false
-    );
+    expect(
+      hasPipeline({
+        stages: [],
+        count: 0,
+        currency: "INR",
+        amount: 0,
+        weighted: 0,
+        others: [],
+      })
+    ).toBe(false);
     expect(hasPipeline(null)).toBe(false);
 
     expect(hasFunnel(FUNNEL)).toBe(true);

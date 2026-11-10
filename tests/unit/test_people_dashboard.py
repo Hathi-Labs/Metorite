@@ -519,6 +519,7 @@ class FakeVis:
 
     def __init__(self, unrestricted: bool = True):
         self.unrestricted = unrestricted
+        self.email = "boss@fracktal.in"
         self.params = ({"vis_org": "org-1"} if unrestricted else
                        {"vis_email": "boss@fracktal.in", "vis_groups": [],
                         "vis_org": "org-1"})

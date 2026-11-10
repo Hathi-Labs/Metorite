@@ -234,7 +234,8 @@ test.describe("the chat pane of the Email app shows the confirmation card", () =
     const card = page.locator("[data-confirmation-card]");
     await expect(card).toHaveCount(1);
     await card.getByRole("button", { name: "Reject" }).click();
-    await expect.poll(() => answers(page)).toHaveLength(1);
+    // A Reject waits 5 s for Undo (#916), so the POST lands after the window.
+    await expect.poll(() => answers(page), { timeout: 15_000 }).toHaveLength(1);
     expect((await answers(page))[0]).toMatchObject({ answer: "REJECT" });
     await expect(card).toHaveCount(0);
     await expect(page.getByText("Cancelled — nothing changed in the mailbox.").first()).toBeVisible({ timeout: 15_000 });

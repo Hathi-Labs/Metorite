@@ -64,9 +64,11 @@ from gateway.routes.projects.analytics import (
 from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
+    reader_day_start,
     resolve_visibility,
     router,
 )
+from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
 from gateway.routes.projects.report_scope import (
     filter_person_rows,
     reportable_people,
@@ -133,10 +135,10 @@ def capacity_totals_sql(open_where: str) -> str:
         f"       coalesce(sum(t.estimate_mins), 0) AS mins,"
         f"       count(*) FILTER (WHERE t.estimate_mins IS NULL) AS unestimated,"
         f"       count(*) FILTER ("
-        f"         WHERE t.due_at IS NOT NULL AND t.due_at < now()"
+        f"         WHERE t.due_at IS NOT NULL AND {overdue_sql()}"
         f"       ) AS overdue,"
         f"       count(*) FILTER (WHERE s.category = :started_cat) AS in_progress,"
-        f"       min(t.due_at) FILTER (WHERE t.due_at >= now()) AS next_due"
+        f"       min(t.due_at) FILTER (WHERE {not_overdue_sql()}) AS next_due"
         f"  FROM pm_tasks t"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  JOIN pm_task_assignees a ON a.task_id = t.id"
@@ -270,8 +272,10 @@ async def capacity_body(
     scope_sql = await scope_clause(db, vis, project_id, include_subtree)
     scope_sql = with_subject(scope_sql, subject_people)
     scope_where = load_open_where(scope_sql, vis)
+    day_from = await reader_day_start(db, vis.email)
     scope_params = {
         **load_params(vis, project_id), **subject_params(subject_people),
+        "day_start": day_from,
     }
     load_rows = (
         await db.execute(text(load_sql(scope_where)), scope_params)
@@ -314,6 +318,7 @@ async def capacity_body(
             **load_params(vis, None),
             "holders": people_emails,
             "started_cat": STARTED_CATEGORY,
+            "day_start": day_from,
         }
         totals = {
             str(r.who): r
@@ -325,6 +330,7 @@ async def capacity_body(
         # the pill and includes the horizon's last day (`dated_until`).
         dated_params = {**all_params, "until": dated_until(today, days)}
         dated_params.pop("started_cat")
+        dated_params.pop("day_start")
         for row in (
             await db.execute(text(capacity_dated_sql(all_where)), dated_params)
         ).fetchall():

@@ -74,6 +74,9 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     "load_design_system", "load_artifact_kit",
     # a file shows as a web download card, and an upload is a web upload
     "write_artifact", "share_artifact", "read_attachment",
+    # WS-VOX VOX-3: it reads a web upload of this chat, and a WhatsApp chat
+    # gets no media until WAC-5.
+    "analyze_image",
     # a background run posts its answer into the web chat thread
     "call_agent_background",
     # the web chat's PDF card. WhatsApp sends the same PDF as a file through
@@ -82,6 +85,8 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     # WS-62 CF-3: the web chat moves the page. A phone on WhatsApp has no
     # page to move (owner rule 2026-10-10: a channel strips delivery tools).
     "show_in_app",
+    # WS-OB GD-7: a guide runs on the web page. find_guide stays on both channels.
+    "show_guide",
 })
 
 #: The WhatsApp form of each web delivery tool (WS-47 parity, 2026-10-19).
@@ -102,11 +107,14 @@ WHATSAPP_FORMS: dict[str, str] = {
     "write_artifact": "none: no file card. A PDF goes as whatsapp_ui kind document",
     "share_artifact": "whatsapp_ui kind link to a page of app.metorite.com",
     "read_attachment": "none: the bot reads text and taps only. Media is WAC-5",
+    "analyze_image": "none: media is WAC-5",
     "call_agent_background": "none: one reply a message. A long job sends whatsapp_ui "
                              "kind working first",
     "make_document": "whatsapp_ui kind document, the same PDF (WAC-12)",
     "show_in_app": "none: WhatsApp has no page to open. The assistant says where the "
                    "record is in words, or sends whatsapp_ui kind link",
+    "show_guide": "none: WhatsApp has no page to guide on. The assistant says the steps "
+                  "from find_guide in words",
 }
 
 #: The most elements one reply sends. More reads as spam on a phone.

@@ -36,8 +36,8 @@ const GATEWAY_PATH = "/settings/branding";
 
 /** One image: comfortably above the gateway's 128 KB raw ceiling, once base64-inflated. */
 const MAX_IMAGE_CHARS = 256 * 1024;
-/** The body: two images (the logo and its dark-mode version) and a style. */
-const MAX_BODY_BYTES = 2 * MAX_IMAGE_CHARS + 4 * 1024;
+/** The body: three images (the logo, its dark-mode version, its square mark) and a style. */
+const MAX_BODY_BYTES = 3 * MAX_IMAGE_CHARS + 4 * 1024;
 const DARK_STYLES = new Set(["same", "white", "plate", "own"]);
 
 /** Empty branding — what the shell renders our own mark from. */
@@ -118,11 +118,25 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
   if (typeof darkStyle !== "string" || !DARK_STYLES.has(darkStyle)) {
     return NextResponse.json({ detail: "That dark-mode style is not one Metorite knows." }, { status: 400 });
   }
-  if (logoBase64.length > MAX_IMAGE_CHARS || (logoDarkBase64?.length ?? 0) > MAX_IMAGE_CHARS) {
+  // The square mark (owner, 2026-11-01): optional, checked for shape here and
+  // for its image at the gateway.
+  const logoMarkBase64 = fields.logoMarkBase64 ?? null;
+  if (logoMarkBase64 !== null && (typeof logoMarkBase64 !== "string" || logoMarkBase64.length === 0)) {
+    return NextResponse.json({ detail: "The square mark was not readable." }, { status: 400 });
+  }
+  if (
+    logoBase64.length > MAX_IMAGE_CHARS ||
+    (logoDarkBase64?.length ?? 0) > MAX_IMAGE_CHARS ||
+    (logoMarkBase64?.length ?? 0) > MAX_IMAGE_CHARS
+  ) {
     return NextResponse.json({ detail: "That image is too large." }, { status: 413 });
   }
 
-  return forward("PUT", JSON.stringify({ logoBase64, logoDarkBase64, darkStyle }));
+  // The mark goes on only when sent, so an upload without one is unchanged.
+  return forward(
+    "PUT",
+    JSON.stringify({ logoBase64, logoDarkBase64, darkStyle, ...(logoMarkBase64 ? { logoMarkBase64 } : {}) }),
+  );
 }
 
 export async function DELETE(): Promise<NextResponse> {

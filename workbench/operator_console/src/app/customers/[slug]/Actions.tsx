@@ -33,9 +33,9 @@ import { renameBlocked } from "@/lib/orgRename";
 // 409, the double-grant 409, an illegal lifecycle transition 409) — this UI
 // relays whatever it answers rather than pre-judging it.
 
-type Result = { ok: boolean; text: string } | null;
+export type Result = { ok: boolean; text: string } | null;
 
-async function post(path: string, body: unknown): Promise<Result> {
+export async function post(path: string, body: unknown): Promise<Result> {
   // ⚠️ This helper must not THROW. Every caller sets a busy flag before the
   // await and clears it after — a rejected fetch used to skip the clear and
   // leave the button on "…ing…" forever, with no message. A network drop is
@@ -59,7 +59,7 @@ async function post(path: string, body: unknown): Promise<Result> {
 // A refusal is relayed VERBATIM (the Console is the authority); the framing
 // line just tells the operator whose voice the raw text is in. `who` is for
 // the member remove and delete only, where the gateway can refuse too.
-function ResultLine({
+export function ResultLine({
   result,
   who = "The Console",
 }: {

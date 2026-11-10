@@ -14,8 +14,10 @@ proxy setting and no ``.netrc`` entry can add a credential either.
 
 **What a request may reach.** A ``GET`` whose route template is in
 ``agent_oauth.MCP_ROUTES``, or a write whose pair is in
-``agent_oauth.MCP_WRITE_ROUTES``. The client checks the pair before it sends,
-and branch 0 checks it again.
+``agent_oauth.MCP_WRITE_ROUTES``. MCP-P1a adds the door pairs of the app
+manifests (``agent_oauth.door_route``, AD-4): :func:`send_call` sends the
+call that ``app_manifests.build_call`` made, and nothing else. The client
+checks the pair before it sends, and branch 0 checks it again.
 
 **Where it goes.** ``agent_edge_gateway_url``, the loopback address of the
 gateway (default ``http://127.0.0.1:8080``). A test points that URL at the
@@ -26,6 +28,13 @@ gateway app through ``httpx.ASGITransport`` with :func:`use_transport`
 limit lives in ``tools``. One read is longer (EA-12b, spec §12.1): the long
 poll of ``get_agent_run`` passes ``timeout_s``, its ``wait_s`` plus 10
 seconds.
+
+**A binary read (IMG-3, ``projects_ai_chat.md`` §30.4).** :func:`get` with
+``max_bytes`` reads the body as bytes, and parses no JSON. It streams the
+body and stops once it holds ``max_bytes + 1`` bytes, so the edge never
+buffers more than the cap and one chunk. :attr:`Answer.content` then holds
+at most ``max_bytes + 1`` bytes. More than ``max_bytes`` means "too long".
+It reads the body of a 2xx answer only.
 
 This module maps no answer. It returns the status and the parsed body, and
 ``agent_edge.tools`` maps each one to a tool result (§9.6, EA3-16).
@@ -39,12 +48,12 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from acb_auth import agent_oauth, agent_signing
 from acb_auth.agent_tokens import TokenLookup
-from acb_common import get_logger, get_settings
+from acb_common import app_manifests, get_logger, get_settings
 
 _log = get_logger("agent_edge.gateway_client")
 
@@ -82,10 +91,20 @@ class RouteRefused(ValueError):
 
 @dataclass(frozen=True)
 class Answer:
-    """The gateway's status code and its parsed JSON body (``None`` if none)."""
+    """The gateway's status code and its parsed JSON body (``None`` if none).
+
+    IMG-3: a binary read (:func:`get` with ``max_bytes``) parses no JSON. Its
+    ``body`` is ``None``, ``content`` holds the bytes (at most the cap and one
+    byte), and ``content_type`` holds the header. A tool never decides a type
+    from that header."""
 
     status: int
     body: Any
+    content: bytes = b""
+    content_type: str | None = None
+    #: MCP-G10. The whole seconds of the ``Retry-After`` header, when the
+    #: gateway sent a valid one. At least 1 and at most 3600.
+    retry_after: int | None = None
 
 
 @contextlib.contextmanager
@@ -100,13 +119,26 @@ def use_transport(transport: httpx.AsyncBaseTransport | None) -> Iterator[None]:
 
 
 def _path(template: str, path_params: Mapping[str, str], method: str = _GET) -> str:
-    if (method, template) not in agent_oauth.MCP_ROUTES:
+    """The concrete path of an allowed pair, or raise :class:`RouteRefused`.
+
+    The pair is in ``MCP_ROUTES``, with a write in ``MCP_WRITE_ROUTES``, or it
+    is a door pair of the manifests (MCP-P1a, AD-4). Each path parameter is
+    an id, or it matches the pattern that ``agent_oauth.path_shapes`` gives
+    for that pair.
+    """
+    pair = (method, template)
+    door = agent_oauth.door_route(pair)
+    if pair not in agent_oauth.MCP_ROUTES and door is None:
         raise RouteRefused(f"{method} {template} is not in MCP_ROUTES")
-    if method != _GET and (method, template) not in agent_oauth.MCP_WRITE_ROUTES:
+    if (method != _GET and door is None
+            and pair not in agent_oauth.MCP_WRITE_ROUTES):
         raise RouteRefused(f"{method} {template} is not in MCP_WRITE_ROUTES")
+    shapes = agent_oauth.path_shapes(method, template)
     path = template
     for name, value in path_params.items():
-        if not _ID.fullmatch(value):
+        shape = shapes.get(name)
+        if not isinstance(value, str) or not (
+                re.fullmatch(shape, value) if shape is not None else _ID.fullmatch(value)):
             raise RouteRefused(f"{name} is not an id")
         path = path.replace("{" + name + "}", value)
     if "{" in path:
@@ -122,7 +154,10 @@ def actor_via(caller: TokenLookup) -> str:
     of this client by it (EA-15b). One function, so the two cannot differ.
     """
     return agent_oauth.actor_via_for(
-        caller.client_origin, client_id=caller.connection_client_id)
+        caller.client_origin, client_id=caller.connection_client_id,
+        # EA-19b: a box connection stamps `mcp:box:<slug>-<8 hex>`.
+        credential=caller.credential, connection_id=caller.connection_id,
+        client_name=caller.client_name)
 
 
 def signed_request_headers(
@@ -157,6 +192,7 @@ async def get(
     query: Sequence[tuple[str, str]] = (),
     timeout_s: float | None = None,
     session: str | None = None,
+    max_bytes: int | None = None,
 ) -> Answer:
     """One signed ``GET`` to the gateway, or raise :class:`GatewayUnreachable`.
 
@@ -165,7 +201,12 @@ async def get(
     gateway refuses a repeated key. *timeout_s* is the limit of this request,
     and ``None`` is :data:`REQUEST_TIMEOUT_S`. Only the long poll of
     ``get_agent_run`` sets it (EA-12b).
+
+    IMG-3: *max_bytes* asks for the binary read of the module text. ``None``
+    is the JSON read.
     """
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes is not a size")
     path = _path(template, path_params or {})
     pairs = [(str(k), str(v)) for k, v in query]
     try:
@@ -178,7 +219,7 @@ async def get(
         _log.warning("agent_edge.gateway_request_unbuildable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
-    return await _send(_GET, url, headers, b"", template, timeout_s)
+    return await _send(_GET, url, headers, b"", template, timeout_s, max_bytes)
 
 
 async def write(
@@ -221,13 +262,97 @@ async def write(
     return await _send(method, url, headers, body, template)
 
 
+async def send_call(
+    key: str,
+    caller: TokenLookup,
+    call: app_manifests.Call,
+    *,
+    session: str | None = None,
+) -> Answer:
+    """One signed door call (MCP-P1a, spec §19.3), or raise
+    :class:`GatewayUnreachable` or :class:`RouteRefused`.
+
+    *call* is the answer of ``app_manifests.build_call``, the one builder,
+    and this function sends its bytes as they are. The pair must be a door
+    pair (``agent_oauth.door_route``). The path is built again from the
+    template, so a call whose path does not match its template never goes
+    out. A write carries a fresh nonce, a JSON ``Content-Type`` and
+    ``If-Match`` when the call has a version.
+    """
+    pair = (call.method, call.template)
+    if agent_oauth.door_route(pair) is None:
+        raise RouteRefused(f"{call.method} {call.template} is not a door pair")
+    names = app_manifests.path_params(call.template)
+    values = _values_of(call.template, call.path, names)
+    if values is None or _path(call.template, values, call.method) != call.path:
+        raise RouteRefused("the path does not match the template")
+    if call.if_match is not None and not _VERSION.fullmatch(call.if_match):
+        raise RouteRefused("the version is not a timestamp")
+    write = call.method != _GET
+    if not write and call.body:
+        raise RouteRefused("a read sends no body")
+    try:
+        headers = signed_request_headers(
+            key, caller, call.path, list(call.query), method=call.method,
+            body=call.body, session=session)
+        if write:
+            headers["Content-Type"] = "application/json"
+        if call.if_match is not None:
+            headers["If-Match"] = call.if_match
+        url = _url(call.path, list(call.query))
+    except Exception as exc:  # nothing here may become a 500
+        _log.warning("agent_edge.gateway_request_unbuildable", route=call.template,
+                     error=type(exc).__name__)
+        raise GatewayUnreachable(call.template) from None
+    return await _send(call.method, url, headers, call.body, call.template)
+
+
+def _values_of(template: str, path: str, names: Sequence[str]) -> dict[str, str] | None:
+    """The value of each path parameter of *path* under *template*, or
+    ``None`` when the path has another shape. A value holds no ``/``."""
+    pattern = re.escape(template)
+    for name in names:
+        if not name.isidentifier():
+            return None
+        pattern = pattern.replace(re.escape("{" + name + "}"), f"(?P<{name}>[^/]+)")
+    found = re.fullmatch(pattern, path)
+    if found is None:
+        return None
+    return {name: found.group(name) for name in names}
+
+
 def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """The URL of a request. The signed string holds the plain *path*, and
+    the gateway checks it against the decoded path of the ASGI scope. So the
+    URL carries the path percent-encoded (IMG-3: a space in a file name). An
+    id, a template word and ``/`` stay as they are."""
     base = str(get_settings().agent_edge_gateway_url).rstrip("/")
-    return base + path + (f"?{urlencode(pairs)}" if pairs else "")
+    return base + quote(path, safe="/") + (f"?{urlencode(pairs)}" if pairs else "")
+
+
+async def _capped_bytes(response: httpx.Response, max_bytes: int) -> bytes:
+    """At most ``max_bytes + 1`` bytes of the body of *response* (IMG-3). The
+    read stops at that length, so a longer body is never held whole."""
+    held = bytearray()
+    async for chunk in response.aiter_bytes():
+        held += chunk
+        if len(held) > max_bytes:
+            del held[max_bytes + 1:]
+            break
+    return bytes(held)
+
+
+def _retry_after(raw: str | None) -> int | None:
+    """The seconds of a ``Retry-After`` header (MCP-G10), or ``None`` for no
+    header or a value that is not whole seconds. A date form is not used."""
+    if raw is None or not raw.strip().isdigit():
+        return None
+    return min(max(int(raw.strip()), 1), 3600)
 
 
 async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
-                template: str, timeout_s: float | None = None) -> Answer:
+                template: str, timeout_s: float | None = None,
+                max_bytes: int | None = None) -> Answer:
     # Read at call time, so a test that patches the module constant holds.
     limit = REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
     try:
@@ -240,6 +365,14 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
             follow_redirects=False,
             trust_env=False,
         ) as client:
+            if method == _GET and max_bytes is not None:
+                # IMG-3: the binary read. The stream closes when the block
+                # ends, so the rest of a long body is never read.
+                async with client.stream(_GET, url, headers=dict(headers)) as streamed:
+                    content = (await _capped_bytes(streamed, max_bytes)
+                               if 200 <= streamed.status_code < 300 else b"")
+                return Answer(status=streamed.status_code, body=None, content=content,
+                              content_type=streamed.headers.get("content-type"))
             if method == _GET:
                 response = await client.get(url, headers=dict(headers))
             else:
@@ -258,7 +391,8 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
         parsed = response.json() if response.content else None
     except ValueError:
         parsed = None
-    return Answer(status=response.status_code, body=parsed)
+    return Answer(status=response.status_code, body=parsed,
+                  retry_after=_retry_after(response.headers.get("retry-after")))
 
 
 __all__ = [
@@ -269,6 +403,7 @@ __all__ = [
     "RouteRefused",
     "actor_via",
     "get",
+    "send_call",
     "signed_request_headers",
     "use_transport",
     "write",

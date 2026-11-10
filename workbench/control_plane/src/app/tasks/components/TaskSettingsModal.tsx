@@ -1,6 +1,7 @@
 "use client";
 
 import Modal from "@/components/ui/Modal";
+import Switch from "@/components/ui/Switch";
 import Icon from "@/components/Icon";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTaskStore } from "../lib/taskStore";
@@ -281,24 +282,11 @@ function ColumnsEditor() {
             <span className="text-sm font-medium text-foreground">
               {c.label}
             </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={on}
-              aria-label={`Show ${c.label} column`}
-              onClick={() => setColumnVisible(c.key, !on)}
-              className={[
-                "tech-transition relative inline-flex h-5 w-9 shrink-0 items-center rounded-full",
-                on ? "bg-primary" : "bg-secondary",
-              ].join(" ")}
-            >
-              <span
-                className={[
-                  "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
-                  on ? "translate-x-[18px]" : "translate-x-[2px]",
-                ].join(" ")}
-              />
-            </button>
+            <Switch
+              checked={on}
+              onChange={(next) => setColumnVisible(c.key, next)}
+              label={`Show ${c.label} column`}
+            />
           </div>
         );
       })}
@@ -325,24 +313,7 @@ function Toggle({
           {description}
         </p>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={title}
-        onClick={() => onChange(!checked)}
-        className={[
-          "tech-transition relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full",
-          checked ? "bg-primary" : "bg-secondary",
-        ].join(" ")}
-      >
-        <span
-          className={[
-            "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
-            checked ? "translate-x-[18px]" : "translate-x-[2px]",
-          ].join(" ")}
-        />
-      </button>
+      <Switch checked={checked} onChange={onChange} label={title} className="mt-0.5" />
     </div>
   );
 }

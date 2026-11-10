@@ -242,6 +242,27 @@ async def test_another_organization_neither_reads_nor_writes_the_prefs(db, app_e
     assert dict(_stored(db, email))[db.org_a] == {"corrections": [_LINE]}
 
 
+async def test_hide_push_details_is_one_members_own(db) -> None:
+    """WS-66 RE-9a: member B in the same org, and the same address in org B,
+    read nothing of member A's ``hide_push_details``."""
+    a_email, b_email = _address(), _address()
+    db.made.extend([a_email, b_email])
+    a, b = _member(a_email), _member(b_email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        saved = await _put(db.org_a, a, "hide_push_details", True)
+        assert saved == {"hide_push_details": True}
+        assert await _get(db.org_a, a) == {"hide_push_details": True}
+        # Another member of the same org reads nothing.
+        assert await _get(db.org_a, b) == {}
+        # The same address in org B reads nothing.
+        assert await _get(db.org_b, a) == {}
+        # A second key keeps the flag.
+        both = await _put(db.org_a, a, "mutes", ["overdue"])
+    assert both == {"hide_push_details": True, "mutes": ["overdue"]}
+    assert _stored(db, b_email) == []
+    assert dict(_stored(db, a_email)) == {db.org_a: both}
+
+
 def test_an_unbound_write_is_refused(db, app_engine) -> None:  # noqa: F811
     from gateway.routes.shell.prefs import _MERGE_PREFS, _NEW_PREFS
     from gateway.routes.tasks.settings import upsert_settings_sql
@@ -267,3 +288,158 @@ def test_the_column_is_nullable_jsonb_with_no_default(db) -> None:
             "WHERE table_name = 'user_settings' AND column_name = 'my_day_prefs'"
         )).one()
     assert tuple(row) == ("jsonb", "YES", None)
+
+
+async def test_push_prompt_is_one_members_own(db) -> None:
+    """WS-OB OB-8: member B in the same org, and the same address in org B,
+    read nothing of member A's ``push_prompt``. A write keeps the other keys."""
+    a_email, b_email = _address(), _address()
+    db.made.extend([a_email, b_email])
+    a, b = _member(a_email), _member(b_email)
+    state = {"never": True, "last_shown_at": "2026-10-30T09:00:00+00:00"}
+    async with tenant_engine_scope(_app_dsn(db)):
+        saved = await _put(db.org_a, a, "push_prompt", state)
+        assert saved == {"push_prompt": state}
+        assert await _get(db.org_a, a) == {"push_prompt": state}
+        assert await _get(db.org_a, b) == {}
+        assert await _get(db.org_b, a) == {}
+        both = await _put(db.org_a, a, "mutes", ["overdue"])
+        # A second write of the key replaces the whole object.
+        again = await _put(db.org_a, a, "push_prompt", {"never": False})
+    assert both == {"push_prompt": state, "mutes": ["overdue"]}
+    assert again == {"push_prompt": {"never": False}, "mutes": ["overdue"]}
+    assert _stored(db, b_email) == []
+
+
+async def _muted(org: str, email: str) -> frozenset[str]:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import muted_rules
+
+    async with tenant_session(org) as session:
+        return await muted_rules(session, email)
+
+
+async def test_muted_rules_unions_case_variants_and_isolates_tenants(db) -> None:
+    """BR-5: the mute holds under any spelling of the address, only in the
+    bound tenant, and a value that is not an array reads as no mute."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        for org, email, val in ((db.org_a, low, '["agent_asks"]'),
+                                (db.org_a, mixed, '["source_sync_failed", "gone"]'),
+                                (db.org_b, low, '["approval_waiting"]')):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+                "VALUES (:u, CAST(:o AS uuid), "
+                "jsonb_build_object('rule_mutes', CAST(:v AS jsonb)))"),
+                {"u": email, "o": org, "v": val})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _muted(db.org_a, low) == {"agent_asks", "source_sync_failed"}
+        assert await _muted(db.org_b, low) == {"approval_waiting"}
+        assert await _muted(db.org_a, "nobody@md2d.test") == frozenset()
+
+
+async def test_muted_rules_ignores_a_value_that_is_not_an_array(db) -> None:
+    email = _address()
+    db.made.append(email)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "CAST('{\"rule_mutes\": \"agent_asks\"}' AS jsonb))"),
+            {"u": email, "o": db.org_a})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _muted(db.org_a, email) == frozenset()
+
+
+async def _block_notify(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import block_notify
+
+    async with tenant_session(org) as session:
+        return await block_notify(session, email)
+
+
+def _mixed(address: str) -> str:
+    return address.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+
+
+async def test_block_notify_fails_closed_over_spellings_and_isolates_tenants(db) -> None:
+    """BR-5 slice 2b-2: the read FAILS CLOSED. The switch is on only when
+    each spelling of the address that holds the key holds ``true``. A member
+    who turned it on as ``Ravi.K@`` and off as ``ravi.k@`` gets no interrupt.
+    A value that is not ``true``, or no row, is off. Only the bound tenant
+    counts."""
+    split = _address()
+    on = _address()
+    off = _address()
+    db.made.extend([split, _mixed(split), on, _mixed(on), off])
+    with db.admin_engine.begin() as c:
+        for org, email, val in ((db.org_a, split, "false"),
+                                (db.org_a, _mixed(split), "true"),
+                                (db.org_a, _mixed(on), "true"),
+                                (db.org_b, on, "false"),
+                                (db.org_a, off, '"true"')):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+                "VALUES (:u, CAST(:o AS uuid), "
+                "jsonb_build_object('block_notify', CAST(:v AS jsonb)))"),
+                {"u": email, "o": org, "v": val})
+        # A spelling row with no block_notify key does not vote.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), CAST('{}' AS jsonb))"),
+            {"u": on, "o": db.org_a})
+    async with tenant_engine_scope(_app_dsn(db)):
+        # A true row and a false row disagree: off, under each spelling.
+        assert await _block_notify(db.org_a, split) is False
+        assert await _block_notify(db.org_a, _mixed(split)) is False
+        # Only true rows hold the key: on, under each spelling.
+        assert await _block_notify(db.org_a, on) is True
+        assert await _block_notify(db.org_a, _mixed(on)) is True
+        # The false row of org B does not reach org A, nor the reverse.
+        assert await _block_notify(db.org_b, on) is False
+        # A JSON string "true" is not true.
+        assert await _block_notify(db.org_a, off) is False
+        # No row: off.
+        assert await _block_notify(db.org_a, "nobody@md2d.test") is False
+
+
+async def _hidden(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import hide_push_details
+
+    async with tenant_session(org) as session:
+        return await hide_push_details(session, email)
+
+
+async def test_hide_can_be_turned_off_under_the_other_spelling(db) -> None:
+    """Task 1209: on as one spelling, off as the other, and the read says
+    false. The PUT writes every spelling of the address, in the bound tenant
+    only. The other keys of those rows stay."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        # A row of the other organization, under the same address: untouched.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "jsonb_build_object('hide_push_details', true))"),
+            {"u": low, "o": db.org_b})
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, _member(mixed), "hide_push_details", True)
+        await _put(db.org_a, _member(low), "mutes", ["overdue"])
+        assert await _hidden(db.org_a, low) is True
+        # Off as the OTHER spelling than the one that turned it on.
+        saved = await _put(db.org_a, _member(low), "hide_push_details", False)
+        assert saved["hide_push_details"] is False
+        assert await _hidden(db.org_a, low) is False
+        assert await _hidden(db.org_a, mixed) is False
+        # The tenant wall: the row of org B still hides.
+        assert await _hidden(db.org_b, low) is True
+    rows = dict(_stored(db, mixed))
+    assert rows[db.org_a]["hide_push_details"] is False

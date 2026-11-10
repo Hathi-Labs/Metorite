@@ -96,13 +96,27 @@ function isTyping(target: EventTarget | null): boolean {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
 }
 
+/**
+ * Glass (D143, GL-3): each shell control floats as its own glass circle, as
+ * Aroh's `GlassButton` does. The bell and the activity control wear the same
+ * classes inside their own files. Classic matches none of these classes.
+ */
+const GLASS_ROUND = "glass:glass-chrome glass:glass-press glass:rounded-full";
+
 export function ShellFrame({
   children,
   bar = true,
+  row = true,
   lead,
 }: {
   children: ReactNode;
   bar?: boolean;
+  /**
+   * Draw the bar's row. Off (owner, 2026-11-01), the frame keeps its keys and
+   * its one field, which sits at the foot of the page (`AskBar`), and the
+   * sidebar's head holds the bell, the activity and the assistant.
+   */
+  row?: boolean;
   /**
    * The bar's first zone: the sidebar's fold control and the organization's
    * logo, when the bar spans the whole width (owner, 2026-10-09). The shell
@@ -205,7 +219,7 @@ export function ShellFrame({
   return (
     <>
       {/* The phone draws no row: its Menu drawer opens the same bar (§9). */}
-      {bar ? (
+      {bar && row ? (
         <ShellBarRow
           here={here}
           onOpen={() => openWith("")}
@@ -249,7 +263,7 @@ function useShortcutLabel(): string {
  * press will do (owner, 2026-10-14: "I'm not sure when to expect the sidebar
  * or the full screen").
  */
-function ShellAssistantButton() {
+export function ShellAssistantButton() {
   const st = useAssistant();
   const key = useBarKeyLabel().replace("K", "J");
   const label = st.open ? `Close ${ASSISTANT_NAME} (${key})` : `Open ${ASSISTANT_NAME} (${key})`;
@@ -263,6 +277,7 @@ function ShellAssistantButton() {
       title={label}
       aria-pressed={st.open}
       onClick={() => (st.open ? closeAssistant() : openAssistant())}
+      className={GLASS_ROUND}
     />
   );
 }
@@ -300,7 +315,7 @@ export function ShellBarRow({
   return (
     <header
       data-shell-bar
-      className={`flex h-11 shrink-0 items-center gap-3 border-b border-border bg-card ${lead ? "pr-2" : "px-2"}`}
+      className={`flex h-11 shrink-0 items-center gap-3 border-b border-border bg-card glass:border-b-0 glass:bg-transparent ${lead ? "pr-2" : "px-2"}`}
     >
       {lead}
       {/* An empty zone on purpose: it centres the command bar. No app
@@ -316,7 +331,7 @@ export function ShellBarRow({
         onClick={onOpen}
         aria-haspopup="dialog"
         aria-label={`Search or ask anything (${shortcut})`}
-        className="flex h-8 w-full max-w-xl shrink items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-[13px] text-muted-foreground tech-transition hover:border-primary/40 hover:text-foreground"
+        className="flex h-8 w-full max-w-xl shrink items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-[13px] text-muted-foreground tech-transition hover:border-primary/40 hover:text-foreground glass:rounded-full glass:border-transparent glass:glass-chrome glass:glass-press glass:text-subhead"
       >
         <Icon name="Sparkles" size={15} className="shrink-0 text-primary" />
         <span className="min-w-0 flex-1 truncate">Search or ask anything</span>

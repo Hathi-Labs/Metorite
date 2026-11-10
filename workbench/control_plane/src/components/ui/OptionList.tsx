@@ -161,7 +161,7 @@ export function OptionList({
                   onPick(index);
                 }}
                 onMouseEnter={() => onHover?.(index)}
-                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-foreground ${
+                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-foreground glass:rounded-lg ${
                   current ? "bg-muted" : "hover:bg-muted/60"
                 }`}
               >

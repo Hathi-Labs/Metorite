@@ -141,11 +141,24 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def db():
+    """The console database, with its ladder applied by this file.
+
+    ⚠️ Do not rely on an earlier file to build the schema. When the shard cut
+    moves, this file can run first in its shard, and then `organization` does
+    not exist (pr-check shard 4/6 on PR 1708, 2026-11-05). The ladder is
+    re-runnable (`test_ci_replays_the_console_ladder_more_than_once`).
+    """
     from sqlalchemy import create_engine
 
-    return create_engine(_URL, future=True)
+    from tests.unit._customer_console_ladder import apply_ladder
+
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        apply_ladder(conn)
+    yield eng
+    eng.dispose()
 
 
 @pytest.fixture()

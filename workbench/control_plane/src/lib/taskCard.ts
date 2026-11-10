@@ -333,7 +333,44 @@ export function initials(name: string): string {
 }
 
 /**
- * Past its due date AND still open.
+ * Whole days from my today to the local day of `iso`: 0 is today, 1 is
+ * tomorrow, -1 is yesterday. Null when there is no date.
+ *
+ * A due date is a day, and the stored instant only carries it (RX-5, owner
+ * directive 2026-11-01). So this compares local dates and never reads the
+ * hour. The zone is the browser's, and the browser stores that zone in
+ * `user_settings.timezone`, the zone of the server half
+ * (`gateway/routes/projects/due_day.py`).
+ */
+export function dueDays(iso: string | undefined | null, nowMs = Date.now()): number | null {
+  if (!iso) return null;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  const now = new Date(nowMs);
+  const day = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.round((day(at) - day(now)) / 86_400_000);
+}
+
+/**
+ * A due date in words, with no clock: "today", "tomorrow", "yesterday",
+ * "2d ago", "in 3d". Past a week it reads as `relativeTime` reads.
+ */
+export function dueLabel(iso: string | undefined | null, nowMs = Date.now()): string {
+  const days = dueDays(iso, nowMs);
+  if (days === null) return "";
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  if (Math.abs(days) < 7) return days < 0 ? `${-days}d ago` : `in ${days}d`;
+  return relativeTime(iso, nowMs);
+}
+
+/**
+ * Past its due DAY and still open.
+ *
+ * The first half is RX-5: a task due today stays due today until that day ends
+ * for me, whatever hour the row holds. The gateway's one rule is the same test
+ * (`due_day.is_overdue`, and `due_day.overdue_sql` in every count and filter).
  *
  * The second half is the whole point. A finished task with a last-Tuesday due
  * date is not overdue, and colouring it red forever is how a board teaches
@@ -345,10 +382,9 @@ export function isOverdue(
   completedAt?: string | null,
   nowMs = Date.now(),
 ): boolean {
-  if (!dueAt || completedAt) return false;
-  const due = new Date(dueAt).getTime();
-  if (Number.isNaN(due)) return false;
-  return due < nowMs;
+  if (completedAt) return false;
+  const days = dueDays(dueAt, nowMs);
+  return days !== null && days < 0;
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -422,7 +458,7 @@ export function taskMeta(facts: TaskFacts, nowMs = Date.now()): MetaChip[] {
     });
   }
 
-  const due = relativeTime(facts.dueAt, nowMs);
+  const due = dueLabel(facts.dueAt, nowMs);
   if (due) {
     const late = isOverdue(facts.dueAt, facts.completedAt, nowMs);
     chips.push({

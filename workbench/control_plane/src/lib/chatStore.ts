@@ -90,6 +90,10 @@ export interface ChatMessage {
    *  `role: "user"` covers every human in the thread, not just the reader.
    *  Absent on pre-authorship rows, which render exactly as they always did. */
   authorKind?: "human" | "agent" | "system";
+  /** The member who started the run that wrote this agent turn, as the
+   *  server stored it. Absent on a live turn and on an older row. The
+   *  "used your profile" mark draws only for this member (PZ-20b). */
+  runMemberEmail?: string;
   /** The reader is not cleared to see this turn; `content` is a notice, not the
    *  original text. Render it as a boundary holding, never as an error. */
   redacted?: boolean;
@@ -144,6 +148,9 @@ export interface SessionStreamState {
   pendingSends: string[];
   /** The held sends that are a Continue: they go out with `resume`. */
   pendingResume: string[];
+  /** The held sends that the member typed in the message box: they go out
+   *  with the typed mark (WS-63 D-PZ-37, `lib/typedMark.ts`). */
+  pendingTyped?: string[];
   /** This tab steered the live run. Once the run ends, the chat asks the
    *  server once for a follow-up turn, which answers any steer the run never
    *  read (`lib/chatSteer.ts`). A Stop clears it. */
@@ -151,6 +158,12 @@ export interface SessionStreamState {
   /** Counts the Stops of this thread. A steer answer that comes back after a
    *  Stop owes no follow-up (round 2 of the review of #920). */
   stopEpoch?: number;
+  /** A Stop waits for the server's answer (UXD-4). The Stop button shows
+   *  that it is working, and the run stays live in the UI until then. */
+  stopping?: boolean;
+  /** Why the last Stop did not stop the run. Shown beside the button; the
+   *  next Stop tries again (UXD-4). */
+  stopError?: string | null;
   /** The ONE run state of this chat (`lib/runStatus.ts`). Every indicator
    *  of an open chat reads it: the status row, the composer's Stop, the
    *  header dot and the placeholder. Written only through `dispatchRun`. */

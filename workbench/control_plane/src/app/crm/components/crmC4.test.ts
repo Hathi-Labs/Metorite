@@ -457,7 +457,7 @@ describe("retire and restore (done-when 6)", () => {
 
   it("a retire asks first, in a ConfirmDialog", () => {
     const source = SOURCE_OF("./FieldStudio.tsx");
-    expect(source).toMatch(/onRetire=\{\(def\) => setConfirm\(\{ kind: "retire", def \}\)\}/);
+    expect(source).toMatch(/setConfirm\(\{ kind: "retire", def, back: fieldForm, draft: draftRef\.current \}\)/);
     expect(source).toMatch(/retireField\(entity, def\.key\)/);
   });
 });
@@ -651,7 +651,7 @@ describe("who sees the studio (done-when 12)", () => {
     );
     expect(html).toContain(FIELDS_READ_FAILED);
     expect(html).toContain(">Retry<");
-    expect(html).not.toContain("Only a studio admin can edit fields.");
+    expect(html).not.toContain("Field editing is not on for your organization yet.");
     expect(SOURCE_OF("./FieldsCard.tsx")).toMatch(
       /if \(shape === "error"\) return <FieldsCardError error=\{probe\.error\} onRetry=\{probe\.refresh\} \/>;/,
     );
@@ -678,7 +678,7 @@ describe("who sees the studio (done-when 12)", () => {
         readOnly: false,
       }),
     );
-    expect(html).toContain("Only a studio admin can edit fields.");
+    expect(html).toContain("Field editing is not on for your organization yet.");
     expect(html).not.toContain("<input");
   });
 });

@@ -2,6 +2,7 @@ import {
   Email, EmailAccount,
   AnalyticsOverview, SenderStat, NewsletterStatus, UnsubscribeResult,
   AutomationRule, RuleTestResult, ExecutedRule, AssistantSettings,
+  AssistantSettingsSave,
   RecentTestResult, ColdSender, KnowledgeEntry,
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
@@ -17,6 +18,8 @@ import {
   type ProviderAvailability,
 } from "./connect";
 import type { ForwardBody } from "./forward";
+import { announceDraftLeft } from "@/lib/draftLeftEvent";
+import { announceRulesChanged } from "./rulesChanged";
 
 /** The answer of `POST /email/forward`. */
 export interface ForwardResult {
@@ -145,7 +148,7 @@ function optionalCount(v: unknown): number | null | undefined {
 }
 
 /** Map a backend Email message (snake_case) to frontend Email (camelCase). */
-function mapEmail(raw: Record<string, unknown>): Email {
+export function mapEmail(raw: Record<string, unknown>): Email {
   const fromRaw = (raw.from_address ?? raw.from ?? {}) as Record<string, unknown>;
   return {
     id: String(raw.id ?? ""),
@@ -184,6 +187,7 @@ function mapEmail(raw: Record<string, unknown>): Email {
         downloadUrl: (a.download_url as string) ?? (a.downloadUrl as string) ?? undefined,
       })
     ),
+    attachmentsStatus: raw.attachments_status === "failed" ? "failed" : "ok",
     isRead: Boolean(raw.is_read ?? raw.isRead ?? false),
     isStarred: Boolean(raw.is_starred ?? raw.isStarred ?? false),
     isFlagged: Boolean(raw.is_flagged ?? raw.isFlagged ?? false),
@@ -1082,6 +1086,9 @@ export async function updateEmailLabels(
 
 export async function deleteEmail(id: string): Promise<void> {
   await gatewayFetch(`/email/messages/${id}`, { method: "DELETE" });
+  // The message can be the draft of a chat reply card. The card reads its
+  // state again at once (owner report, 2026-11-03).
+  announceDraftLeft(id);
 }
 
 // ── Attachments ────────────────────────────────────────────────────────────
@@ -1290,7 +1297,7 @@ export async function sendDraft(
   draftId: string,
   allowTextOnly?: boolean,
 ): Promise<{ sent: boolean }> {
-  return gatewayFetch("/email/drafts/send", {
+  const out = await gatewayFetch<{ sent: boolean }>("/email/drafts/send", {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
@@ -1298,6 +1305,10 @@ export async function sendDraft(
       ...(allowTextOnly === undefined ? {} : { allow_text_only: allowTextOnly }),
     }),
   });
+  // A chat reply card that wrote this draft must stop its Send now, or the
+  // reply goes out twice (owner report, 2026-11-03).
+  announceDraftLeft(draftId);
+  return out;
 }
 
 /**
@@ -1532,24 +1543,29 @@ export async function listRules(accountId: string): Promise<AutomationRule[]> {
 }
 
 export async function createRule(rule: AutomationRule): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>("/email/rules", {
+  const created = await gatewayFetch<AutomationRule>("/email/rules", {
     method: "POST",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return created;
 }
 
 export async function updateRule(
   id: string,
   rule: AutomationRule
 ): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
+  const updated = await gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
     method: "PATCH",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return updated;
 }
 
 export async function deleteRule(id: string): Promise<void> {
   await gatewayFetch(`/email/rules/${id}`, { method: "DELETE" });
+  announceRulesChanged();
 }
 
 /** Everything ELSE that acts on the mailbox, for the Rules screen's
@@ -1623,19 +1639,24 @@ export async function generateRules(
   accountId: string,
   prompt: string,
 ): Promise<{ created: AutomationRule[]; error?: string }> {
-  return gatewayFetch("/email/rules/generate", {
+  const res = await gatewayFetch<{ created: AutomationRule[]; error?: string }>("/email/rules/generate", {
     method: "POST",
     body: JSON.stringify({ account_id: accountId, prompt }),
   });
+  // The route saves the rules it makes (task 2451).
+  announceRulesChanged();
+  return res;
 }
 
 export async function installPresetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number }>(
     `/email/rules/install-presets?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 /**
@@ -1658,6 +1679,7 @@ export async function copyRules(
       ...(skipNames.length > 0 ? { skip_names: skipNames.slice(0, 200) } : {}),
     }),
   });
+  announceRulesChanged();
   return mapRuleCopyResult(raw ?? {});
 }
 
@@ -1691,10 +1713,12 @@ function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
 export async function resetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number; reset: boolean }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number; reset: boolean }>(
     `/email/rules/reset?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 export async function undoExecution(
@@ -2112,13 +2136,53 @@ export async function getAssistantSettings(
   );
 }
 
+/** The settings PUT. Only the member's own Auto-run act sends the marker
+ *  `auto_run_choice` (task 2305, `autoRunChoiceBody`). */
 export async function saveAssistantSettings(
-  settings: AssistantSettings
+  settings: AssistantSettingsSave
 ): Promise<AssistantSettings> {
   return gatewayFetch<AssistantSettings>("/email/assistant/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+/** The answer of `POST /email/signature/images` (WS-17 SG-1). `url` is the
+ *  public https address of the hosted image, and it never changes. */
+export interface SignatureImage {
+  id: string;
+  url: string;
+  kind: "logo" | "photo";
+  content_type: string;
+  width: number;
+  height: number;
+  dark_share: number;
+  clear_share: number;
+}
+
+/** Upload one signature image for a mailbox. The server re-encodes it and
+ *  hosts it, so the signature carries an https address and never a `data:`
+ *  URI (D-EM-67). A refusal throws the server's sentence. The body is
+ *  multipart, so this sets no Content-Type: `fetch` adds the boundary. */
+export async function uploadSignatureImage(
+  accountId: string,
+  file: File,
+  kind: "logo" | "photo" = "logo",
+): Promise<SignatureImage> {
+  const form = new FormData();
+  form.append("account_id", accountId);
+  form.append("kind", kind);
+  form.append("file", file);
+  const res = await fetch("/api/email/signature/images", {
+    method: "POST",
+    body: form,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof body.detail === "string" ? body.detail : "";
+    throw new Error(detail || body.error || `The upload failed (${res.status}).`);
+  }
+  return body as SignatureImage;
 }
 
 /** One "always copy" rule of a mailbox (§21.16): a domain or an address,
@@ -2518,7 +2582,27 @@ export interface ComposeAssistArgs {
   mode?: "new" | "reply" | "forward";
   messageId?: string;
   to?: string[];
+  /** A forward: the people who are copied. A reply and a new mail send none. */
+  cc?: string[];
   subject?: string;
+}
+
+/**
+ * The JSON of one compose-assist request, for the stream and the plain route.
+ * `cc` rides only when the caller gives it (a forward), so a reply and a new
+ * mail send the same body as before (task 1817).
+ */
+export function composeAssistBody(args: ComposeAssistArgs): string {
+  return JSON.stringify({
+    account_id: args.accountId,
+    body: args.body ?? "",
+    instruction: args.instruction ?? "",
+    mode: args.mode ?? "new",
+    message_id: args.messageId,
+    to: args.to,
+    cc: args.cc,
+    subject: args.subject ?? "",
+  });
 }
 
 export async function composeAssist(
@@ -2528,15 +2612,7 @@ export async function composeAssist(
   return gatewayFetch("/email/compose-assist", {
     method: "POST",
     signal,
-    body: JSON.stringify({
-      account_id: args.accountId,
-      body: args.body ?? "",
-      instruction: args.instruction ?? "",
-      mode: args.mode ?? "new",
-      message_id: args.messageId,
-      to: args.to,
-      subject: args.subject ?? "",
-    }),
+    body: composeAssistBody(args),
   });
 }
 
@@ -2626,15 +2702,7 @@ export async function composeAssistStream(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal,
-      body: JSON.stringify({
-        account_id: args.accountId,
-        body: args.body ?? "",
-        instruction: args.instruction ?? "",
-        mode: args.mode ?? "new",
-        message_id: args.messageId,
-        to: args.to,
-        subject: args.subject ?? "",
-      }),
+      body: composeAssistBody(args),
     });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
   } catch (err) {

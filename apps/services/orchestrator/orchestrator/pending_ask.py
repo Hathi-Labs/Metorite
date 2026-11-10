@@ -252,21 +252,27 @@ def move_ask(
         return _row(r) if r is not None else None
 
 
-def close_thread_asks(session: Any, thread_id: str) -> int:
+def close_thread_asks(
+    session: Any, thread_id: str, *, actor_email: str | None = None,
+) -> int:
     """Close every question of *thread_id* that still waits. Returns the count.
 
-    Runs inside the CALLER's tenant transaction (the chat delete), so the
-    chat and its questions go together.
+    Runs inside the CALLER's tenant transaction (the chat delete, or an edit
+    of the last message), so the rows change together with the caller's own
+    write. With *actor_email*, only the questions that member was asked
+    close: an edit never closes the card of another member in a room.
     """
     from sqlalchemy import text
 
+    who = (actor_email or "").strip().lower()
     result = session.execute(
         text(
             "UPDATE chat_pending_ask SET state = 'closed', "
             "  answered_at = COALESCE(answered_at, now()) "
-            "WHERE thread_id = :tid AND state = ANY(:waiting)"
+            "WHERE thread_id = :tid AND state = ANY(:waiting) "
+            "  AND (:who = '' OR actor_email = :who)"
         ),
-        {"tid": thread_id, "waiting": list(WAITING)},
+        {"tid": thread_id, "waiting": list(WAITING), "who": who},
     )
     return int(result.rowcount or 0)
 

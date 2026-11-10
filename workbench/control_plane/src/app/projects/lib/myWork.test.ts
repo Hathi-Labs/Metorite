@@ -238,7 +238,7 @@ describe("My work and the shared stores (fix round 1)", () => {
     // WS-64 #128: through the one live-refresh hook, which owns both events.
     expect(host).toContain("useLiveRefresh(");
     expect(host).toContain("loadMyToday()");
-    const hook = fs.readFileSync(path.join(PROJECTS, "lib", "liveRefresh.ts"), "utf8");
+    const hook = fs.readFileSync(path.join(PROJECTS, "..", "..", "lib", "liveRefresh.ts"), "utf8");
     expect(hook).toContain('"visibilitychange"');
     expect(hook).toContain('"focus"');
   });

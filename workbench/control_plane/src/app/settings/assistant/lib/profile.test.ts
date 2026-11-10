@@ -3,8 +3,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_PROFILE,
   ProfileError,
+  chatHref,
+  DELETE_ONE_BODY,
+  deleteAllBody,
+  deleteAllSummaries,
+  deleteSummary,
+  fetchSummaries,
+  saveKeepSummaries,
+  summaryCount,
+  summaryGate,
   errorText,
   exportPath,
+  fetchBlock,
   fetchExport,
   fetchProfile,
   forgetAll,
@@ -209,5 +219,100 @@ describe("the interview (PZ-27)", () => {
       { url: "/api/auth/me/assistant-profile/interview/good_day", method: "DELETE", body: undefined },
       { url: "/api/auth/me/assistant-profile/interview", method: "DELETE", body: undefined },
     ]);
+  });
+});
+
+// PZ-20a: "Read as text". Mutation: let a 503 resolve with "", and the 503
+// case fails. Drop the shape check, and the bad-shape case fails.
+describe("fetchBlock", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the proxy with no query and returns the text as sent", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      seen.push(url);
+      return new Response(JSON.stringify({ enabled: true, text: "## About line" }), { status: 200 });
+    }));
+    expect(await fetchBlock()).toEqual({ enabled: true, text: "## About line" });
+    expect(seen).toEqual(["/api/auth/me/assistant-profile/block"]);
+  });
+
+  it("passes an off org through", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ enabled: false, text: "" }), { status: 200 })));
+    expect(await fetchBlock()).toEqual({ enabled: false, text: "" });
+  });
+
+  it("throws a ProfileError on a 503, never an empty text", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    await expect(fetchBlock()).rejects.toMatchObject({ status: 0 });
+  });
+
+  it("throws on a body of the wrong shape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ text: 1 }), { status: 200 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+  });
+});
+
+describe("Recent chats (PZ-35)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const reply = (status: number, body?: unknown) =>
+    vi.fn(async () => new Response(body === undefined ? null : JSON.stringify(body), { status }));
+
+  it("reads the gate: the flag of the org, and the switch of the member (on by default)", () => {
+    expect(summaryGate({ summaries_enabled: true, apps: { chat: { summaries: false } } })).toEqual({
+      enabled: true,
+      keep: false,
+    });
+    expect(summaryGate({ summaries_enabled: true, apps: { brief: { enabled: true } } })).toEqual({
+      enabled: true,
+      keep: true,
+    });
+    expect(summaryGate({ enabled: true })).toEqual({ enabled: false, keep: true });
+    expect(summaryGate(null)).toEqual({ enabled: false, keep: true });
+  });
+
+  it("lists, and a fault throws, never an empty list", async () => {
+    const page = { summaries: [{ id: "s1", title: "Q3", date: null, text: "t", follow_ups: [] }], more: false };
+    vi.stubGlobal("fetch", reply(200, page));
+    expect(await fetchSummaries()).toEqual(page);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/auth/me/assistant-profile/summaries");
+    vi.stubGlobal("fetch", reply(503, { detail: "unavailable" }));
+    await expect(fetchSummaries()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", reply(200, { nope: 1 }));
+    await expect(fetchSummaries()).rejects.toBeInstanceOf(ProfileError);
+  });
+
+  it("deletes one, deletes all, and writes the switch through the apps key", async () => {
+    vi.stubGlobal("fetch", reply(204));
+    await deleteSummary("a b");
+    await deleteAllSummaries();
+    await saveKeepSummaries(false);
+    const calls = vi.mocked(fetch).mock.calls as unknown as [string, RequestInit][];
+    expect(calls[0][0]).toBe("/api/auth/me/assistant-profile/summaries/a%20b");
+    expect(calls[0][1].method).toBe("DELETE");
+    expect(calls[1][0]).toBe("/api/auth/me/assistant-profile/summaries");
+    expect(calls[1][1].method).toBe("DELETE");
+    expect(calls[2][1].method).toBe("PUT");
+    expect(JSON.parse(String(calls[2][1].body))).toEqual({ key: "apps", value: { chat: { summaries: false } } });
+  });
+
+  it("links to the chat and counts for the confirm", () => {
+    expect(chatHref("s 1")).toBe("/chat?do=open-chat&fill.session=s%201");
+    expect(summaryCount({ summaries: [], more: false })).toBe("0");
+    const one = { id: "s1", title: "", date: null, text: "", follow_ups: [] };
+    expect(summaryCount({ summaries: [one, one], more: false })).toBe("2");
+    expect(summaryCount({ summaries: [one, one], more: true })).toBe("2 or more");
+    expect(deleteAllBody({ summaries: [one, one], more: false })).toContain("This deletes all 2 chat summaries.");
+    expect(deleteAllBody({ summaries: [one], more: false })).toContain(
+      "If you keep chatting, new summaries can appear. To stop them, turn off Keep chat summaries. You cannot undo this.",
+    );
+    expect(DELETE_ONE_BODY).toBe("If you keep chatting in this chat, a new one can appear. You cannot undo this.");
+    expect(deleteAllBody({ summaries: [one, one], more: true })).toContain("This deletes all 2 or more chat summaries.");
   });
 });

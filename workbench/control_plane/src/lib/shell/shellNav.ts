@@ -75,6 +75,9 @@ export function desktopFrame(bar: boolean, nav: boolean): DesktopFrame {
 export const TEAM_GROUPS: readonly { team: string; label: string }[] = [
   { team: "personal", label: "Personal Center" },
   { team: "across", label: "Across teams" },
+  // The panes that installs give (PKG-6b). Empty groups are dropped, so it
+  // shows only while an install has a pane.
+  { team: "apps", label: "Apps" },
   { team: "studio", label: "AI Studio" },
   { team: "admin", label: "Admin" },
 ];
@@ -153,17 +156,6 @@ export const CHAT_PANE_HREF = "/chat";
 /** The line All apps shows when the sidebar's "Add apps" opens it. */
 export const ADD_APPS_HINT = "Star the apps you want in your sidebar.";
 
-/**
- * The count on panes the sidebar does not show. A run on a hidden pane
- * folds to Chat (`countRunsByApp`), and when Chat is hidden too its badge
- * had no row. The sidebar shows this count on "Add apps", the door to the
- * hidden apps, so a run is never out of sight.
- */
-export function strayCount(counts: Record<string, number>, shown: ReadonlySet<string>): number {
-  let n = 0;
-  for (const [href, c] of Object.entries(counts)) if (!shown.has(href)) n += c;
-  return n;
-}
 
 /** The account menu's panes, in their manifest order. */
 export function accountPanes(sections: readonly NavSection[]): NavPane[] {
@@ -201,6 +193,19 @@ export const ASSISTANT_LINK: AccountLink = {
 };
 
 /**
+ * Appearance in the account menu's Settings. Since 2026-11-01 it is also a
+ * sidebar app that a member stars on or off (owner: "keep it on the sidebar
+ * ... add or remove them in the favorites in All Apps"), so it is no longer
+ * an account pane. The account menu keeps it as a static link, as it keeps
+ * "Assistant settings", so a member who unstars it still finds it here.
+ */
+export const APPEARANCE_LINK: AccountLink = {
+  href: "/settings/appearance",
+  label: "Appearance",
+  icon: "Palette",
+};
+
+/**
  * The account menu's rows: the member's own pages, with "My access" after My
  * Profile, and "Assistant settings" after Appearance when `opts.assistant` is
  * true. That order puts Appearance first in the Settings group. A
@@ -223,7 +228,7 @@ export function accountLinks(
   // Right after My Profile, because both describe the member.
   const at = mine.findIndex((l) => l.href === "/people/me") + 1;
   const assistant = opts.assistant === true ? [ASSISTANT_LINK] : [];
-  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), ...assistant, ...org];
+  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), APPEARANCE_LINK, ...assistant, ...org];
 }
 
 /**
@@ -245,7 +250,7 @@ export type AccountMenuItem =
   | { kind: "add-account" }
   | ({ kind: "link" } & AccountLink)
   | { kind: "colour-mode" }
-  | { kind: "action"; id: "change-layout"; label: string; icon: string }
+  | { kind: "action"; id: "change-layout" | "take-tour"; label: string; icon: string }
   | { kind: "sign-out" }
   | { kind: "sign-out-all" }
   | { kind: "brand" };
@@ -276,6 +281,17 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
 };
 
 /**
+ * WS-OB GD-5a: start the guide's tour (`assistant_guide.md` §4.1), for every
+ * member, while `GUIDE_ORGS` holds the org. HLP-1 moves it under Help.
+ */
+export const TAKE_TOUR_ITEM: Extract<AccountMenuItem, { kind: "action" }> = {
+  kind: "action",
+  id: "take-tour",
+  label: "Take the tour",
+  icon: "Compass",
+};
+
+/**
  * The account menu, in its groups (owner, 2026-10-14: "Combine it with the
  * pop-up settings that show up for profile, access, appearance, light mode,
  * layout change").
@@ -286,7 +302,8 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  * 3. **You**: My Profile and My access.
  * 4. **Settings**: Appearance, "Assistant settings" when `opts.assistant` is
  *    true (PZ-25, PZ-28), the colour mode, and "Change my layout" while the
- *    shell nav is on (NS-7 asks the question only then).
+ *    shell nav is on (NS-7 asks the question only then). "Take the tour"
+ *    follows it when `opts.tour` is true (the guide's switch, GD-5a).
  * 5. **Sign out**, then "Sign out of all accounts" with another account held.
  * 6. **Our signature**: the comet and the word "Metorite", a quiet row at the
  *    end (owner, 2026-10-14). It is not a control.
@@ -301,7 +318,7 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  */
 export function accountMenu(
   sections: readonly NavSection[],
-  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean; assistant?: boolean },
+  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean; assistant?: boolean; tour?: boolean },
 ): AccountMenuGroup[] {
   const links = accountLinks(sections, { assistant: opts.assistant });
   const link = (l: AccountLink): AccountMenuItem => ({ kind: "link", ...l });
@@ -324,6 +341,7 @@ export function accountMenu(
         ...links.filter((l) => SETTINGS_PAGES.has(l.href)).map(link),
         { kind: "colour-mode" },
         ...(opts.layout ? [CHANGE_LAYOUT_ITEM] : []),
+        ...(opts.tour ? [TAKE_TOUR_ITEM] : []),
       ],
     },
     {

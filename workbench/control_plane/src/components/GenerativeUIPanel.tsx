@@ -35,8 +35,8 @@ function JsonView({ value }: { value: Json }): React.ReactElement {
         new Set(value.flatMap((row) => Object.keys(row as object))),
       );
       return (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto glass:rounded-[10px] glass:bg-secondary">
+          <table className="w-full text-left text-xs glass:text-footnote">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 {cols.map((c) => (
@@ -108,6 +108,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // The one assistant's mailbox mark (§7.1.1 rule 6). The transcript draws
   // it as a line, so the fold must not show it again as data.
   "email_mailbox_mark",
+  // The "used your profile" mark (PZ-20b). The message footer draws it.
+  "assistant_profile_used",
   // A file the turn wrote. `ArtifactCard` already renders it, with Open and
   // Download; the fold showed the same event again as raw data (UX review
   // 2026-09-23).
@@ -120,6 +122,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // An app update cut the run (incident 2026-10-09). The chat draws the
   // "interrupted" notice with Continue for it (`lib/chatRecovery.ts`).
   "run_interrupted",
+  // The offer of the pill "Continue in a fresh chat" (WT-2). The chat draws
+  // the pill, and the fold must not show the event as data.
+  "chat_continue_offer",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body
@@ -145,7 +150,7 @@ export const CUSTOM_EVENT_RENDERERS: Record<string, CustomEventRenderer> = {
     const v = (value ?? {}) as Record<string, unknown>;
     return (
       <div className="space-y-1">
-        <div className="text-[12px] font-semibold text-foreground">
+        <div className="text-[12px] font-semibold text-foreground glass:text-subhead">
           {String(v.title ?? "Approval request")}
         </div>
         {v.detail != null && (
@@ -199,7 +204,7 @@ export default function GenerativeUIPanel({
       <ToolCardShell title="Interactive view" icon={<Icon name="LayoutTemplate" size={13} />} defaultCollapsed>
         <div className="space-y-3">
           {hasState && (
-            <div className="rounded-md bg-card/50 p-2">
+            <div className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
               <JsonView value={shownState} />
             </div>
           )}
@@ -207,7 +212,7 @@ export default function GenerativeUIPanel({
             displayEvents.map((ev, i) => {
               const renderer = CUSTOM_EVENT_RENDERERS[ev.name];
               return (
-                <div key={i} className="rounded-md bg-card/50 p-2">
+                <div key={i} className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
                   {renderer ? (
                     renderer(ev.value)
                   ) : (

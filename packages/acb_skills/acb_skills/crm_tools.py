@@ -232,11 +232,7 @@ def _internal_token() -> str:
     from acb_common import get_settings
 
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 def _headers() -> dict[str, str]:
@@ -405,7 +401,7 @@ _BUDGETED = frozenset({
     "crm_list_records", "crm_get_record", "crm_list_fields", "crm_list_pipelines",
     "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
     "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
-    "crm_get_module_record", "crm_search_notes",
+    "crm_get_module_record", "crm_search_notes", "crm_change_history",
 })
 
 
@@ -979,20 +975,12 @@ async def _overlay_lanes(mod: str) -> str:
     return "\n".join(lines)
 
 
-@_read_tool
-async def crm_list_pipelines() -> str:
-    """The deal pipelines, each with its stages in order: the stage type, the
-    probability that a weighted forecast uses, and the stage id."""
-    mod = await _overlay_module("deals")
-    if mod is not None:
-        return await _overlay_lanes(mod)
-    pipelines = await _get("/crm/pipelines")
-    if not pipelines:
-        return "The CRM has no deal pipeline yet."
-    lines = []
+def _pipeline_lines(pipelines: list[dict[str, Any]], label: str) -> list[str]:
+    """One heading for each pipeline, then its stages in order."""
+    lines: list[str] = []
     for p in pipelines:
         lines.append(
-            f"Pipeline {p.get('name')}" + (" (default)" if p.get("is_default") else "")
+            f"{label} {p.get('name')}" + (" (default)" if p.get("is_default") else "")
             + f" (id={p.get('id')}):"
         )
         for s in p.get("stages") or []:
@@ -1002,6 +990,28 @@ async def crm_list_pipelines() -> str:
                 + (f" · {prob}%" if prob is not None else "")
                 + f" (id={s.get('id')})"
             )
+    return lines
+
+
+@_read_tool
+async def crm_list_pipelines() -> str:
+    """The deal pipelines, each with its stages in order: the stage type, the
+    probability that a weighted forecast uses, and the stage id. Then the lead
+    pipelines, if any, each with its lead statuses in order."""
+    mod = await _overlay_module("deals")
+    if mod is not None:
+        return await _overlay_lanes(mod)
+    pipelines = await _get("/crm/pipelines")
+    # CRM-M4a: the lead pipelines of the org, with ``kind=lead``. A lead with
+    # no pipeline sits on the default lead list, which holds every status.
+    leads = [p for p in await _get("/crm/pipelines", {"kind": "lead"}) or []
+             if isinstance(p, dict) and p.get("kind") == "lead"]
+    lines = (_pipeline_lines(pipelines, "Pipeline") if pipelines
+             else ["The CRM has no deal pipeline yet."])
+    if leads:
+        lines.append(
+            "Lead pipelines (a lead with no pipeline is on the default lead list):")
+        lines += _pipeline_lines(leads, "Lead pipeline")
     return "\n".join(lines)
 
 
@@ -1077,12 +1087,9 @@ _REPORT_TITLES: dict[str, str] = {
     "pipeline": "Pipeline", "funnel": "Funnel", "win-loss": "Win and loss",
     "owners": "Owners",
 }
-#: The kinds whose route sums ``crm_deals.amount``. The route carries no
-#: currency: it adds the amounts of every deal currency into one figure
-#: (``gateway/routes/crm/reports.py``, HANDOFF H-333). So the INR label is the
-#: label the text answer uses, and the report says how the sum was made.
-_MONEY_KINDS = frozenset({"pipeline", "win-loss", "owners"})
-CURRENCY_NOTE = "Amounts are summed across deal currencies."
+#: Each money figure of a report route is in ONE currency (HANDOFF H-333). The
+#: scalar fields are in the row's ``currency``. The other currencies sit in the
+#: row's ``others``, each with its own code. Code labels each amount with it.
 #: A bar chart holds 12 bars, and a table visual 20 rows.
 REPORT_CHART_BARS = 12
 REPORT_TABLE_ROWS = 20
@@ -1091,6 +1098,44 @@ REPORT_TABLE_ROWS = 20
 def _rupees(value: Any) -> int:
     """An amount in whole rupees, as the text answer prints it."""
     return round(float(value or 0))
+
+
+def _code(row: dict[str, Any]) -> str:
+    """The currency code of a report row. A row from an old route reads INR."""
+    return str(row.get("currency") or "INR")
+
+
+def _plus(row: dict[str, Any], fields: tuple[tuple[str, str], ...]) -> str:
+    """The " · plus USD 200 (weighted USD 100)" tail of a text line, or "".
+
+    ``fields`` pairs a key of each ``others`` entry with the word that names it.
+    The first pair may have an empty word, because it can be the amount itself.
+    """
+    parts = []
+    for other in row.get("others") or []:
+        if not isinstance(other, dict):
+            continue
+        code = _code(other)
+        head, *rest = fields
+        lead = f"{head[1]} " if head[1] else ""
+        text = f"plus {lead}{code} {float(other.get(head[0]) or 0):,.0f}"
+        if rest:
+            text += " (" + ", ".join(
+                f"{word} {code} {float(other.get(key) or 0):,.0f}"
+                for key, word in rest
+            ) + ")"
+        parts.append(text)
+    return "".join(f" · {part}" for part in parts)
+
+
+def _other_rows(rows: list[dict[str, Any]], name: Callable[[dict[str, Any]], str],
+                keys: tuple[str, ...]) -> list[list[Any]]:
+    """Table rows for the figures in the ``others`` of each row."""
+    return [
+        [name(row), _code(other), *(_rupees(other.get(key)) for key in keys)]
+        for row in rows for other in row.get("others") or []
+        if isinstance(other, dict)
+    ]
 
 
 def _cut_note(shown: int, total: int, noun: str) -> str:
@@ -1139,23 +1184,38 @@ def _table_section(heading: str, title: str, columns: list[str],
 def _pipeline_spec(data: dict[str, Any]) -> dict[str, Any]:
     stages = [s for s in data.get("stages") or [] if isinstance(s, dict)]
     count, amount, weighted = data["count"], data["amount"], data["weighted"]
+    code = _code(data)
+    others = [o for o in data.get("others") or [] if isinstance(o, dict)]
     sections: list[dict[str, Any]] = []
     if stages:
         sections.append(_chart_section(
-            "Value by stage", *_stage_bars(stages, "amount", "Value by stage (INR)", "INR")))
+            "Value by stage",
+            *_stage_bars(stages, "amount", f"Value by stage ({code})", code)))
     sections.append(_table_section(
-        "Stages", "Each open stage", ["Stage", "Deals", "Value (INR)", "Weighted (INR)"],
+        "Stages", "Each open stage",
+        ["Stage", "Deals", f"Value ({code})", f"Weighted ({code})"],
         [[str(s["status"]["name"]), s["count"], _rupees(s["amount"]), _rupees(s["weighted"])]
          for s in stages]))
+    extra = _other_rows(stages, lambda s: str(s["status"]["name"]),
+                        ("amount", "weighted"))
+    if extra:
+        sections.append(_table_section(
+            "Other currencies", "Each open stage in another currency",
+            ["Stage", "Currency", "Value", "Weighted"], extra))
+    kpis: list[dict[str, Any]] = [
+        {"label": "Open deals", "value": count},
+        {"label": "Pipeline value", "value": _rupees(amount), "unit": code},
+        {"label": "Weighted forecast", "value": _rupees(weighted), "unit": code},
+    ]
+    kpis.append({"label": "Open stages", "value": len(stages)})
     return {
-        "summary": (f"**{count} open deals** worth INR {_rupees(amount):,}, weighted "
-                    f"INR {_rupees(weighted):,}, in {len(stages)} stages."),
-        "kpis": [
-            {"label": "Open deals", "value": count},
-            {"label": "Pipeline value", "value": _rupees(amount), "unit": "INR"},
-            {"label": "Weighted forecast", "value": _rupees(weighted), "unit": "INR"},
-            {"label": "Open stages", "value": len(stages)},
-        ],
+        "summary": (f"**{count} open deals** worth {code} {_rupees(amount):,}, weighted "
+                    f"{code} {_rupees(weighted):,}"
+                    + "".join(f", plus {_code(o)} {_rupees(o.get('amount')):,}"
+                              f" (weighted {_code(o)} {_rupees(o.get('weighted')):,})"
+                              for o in others)
+                    + f", in {len(stages)} stages."),
+        "kpis": kpis,
         "sections": sections,
     }
 
@@ -1197,12 +1257,13 @@ def _funnel_spec(data: dict[str, Any]) -> dict[str, Any]:
 
 def _win_loss_spec(data: dict[str, Any]) -> dict[str, Any]:
     won, lost = data["won"], data["lost"]
+    code = _code(data)
     kpis: list[dict[str, Any]] = [
         {"label": "Won", "value": won},
         {"label": "Lost", "value": lost},
         {"label": "Win rate", "value": data["win_rate"], "unit": "%"},
-        {"label": "Won value", "value": _rupees(data["won_amount"]), "unit": "INR"},
-        {"label": "Lost value", "value": _rupees(data["lost_amount"]), "unit": "INR"},
+        {"label": "Won value", "value": _rupees(data["won_amount"]), "unit": code},
+        {"label": "Lost value", "value": _rupees(data["lost_amount"]), "unit": code},
     ]
     if data.get("average_cycle_days") is not None:
         kpis.append({"label": "Average cycle", "value": data["average_cycle_days"],
@@ -1217,10 +1278,23 @@ def _win_loss_spec(data: dict[str, Any]) -> dict[str, Any]:
         closed["text"] = "No deal closed in this window."
     reasons = [r for r in data.get("lost_reasons") or [] if isinstance(r, dict)]
     sections = [closed]
+    others = [o for o in data.get("others") or [] if isinstance(o, dict)]
+    if others:
+        sections.append(_table_section(
+            "Other currencies", "Won and lost value in another currency",
+            ["Currency", "Won value", "Lost value"],
+            [[_code(o), _rupees(o.get("won_amount")), _rupees(o.get("lost_amount"))]
+             for o in others]))
     if reasons:
         sections.append(_table_section(
-            "Lost reasons", "Lost deals by reason", ["Reason", "Deals", "Value (INR)"],
+            "Lost reasons", "Lost deals by reason",
+            ["Reason", "Deals", f"Value ({code})"],
             [[str(r["label"]), r["deals"], _rupees(r["amount"])] for r in reasons]))
+        extra = _other_rows(reasons, lambda r: str(r["label"]), ("amount",))
+        if extra:
+            sections.append(_table_section(
+                "Lost reasons in other currencies", "Lost value by reason",
+                ["Reason", "Currency", "Value"], extra))
     return {
         "period": f"The last {data['window_days']} days, since {data['since']}",
         "summary": (f"**{won} won** and {lost} lost since {data['since']}. "
@@ -1238,17 +1312,26 @@ def _owners_spec(data: dict[str, Any]) -> dict[str, Any]:
     if omitted:
         kpis.append({"label": "Owners not in the report", "value": omitted})
     kpis.append({"label": "Won window", "value": window, "unit": "days"})
+    code = _code(owners[0]) if owners else "INR"
     text = f"Won amounts cover the last {window} days."
     if omitted:
         text += f" {omitted} more owners are not in the report."
+    sections = [_table_section(
+        "Owners", "Each owner",
+        ["Owner", "Open deals", f"Weighted ({code})", f"Won ({code})"],
+        [[str(o.get("owner_email") or "Unassigned"), o["open_deals"],
+          _rupees(o["weighted"]), _rupees(o["won_amount"])] for o in owners],
+        text)]
+    extra = _other_rows(owners, lambda o: str(o.get("owner_email") or "Unassigned"),
+                        ("weighted", "won_amount"))
+    if extra:
+        sections.append(_table_section(
+            "Other currencies", "Each owner in another currency",
+            ["Owner", "Currency", "Weighted", "Won"], extra))
     return {
         "summary": f"**{len(owners)} owners**, ranked by their deals in play. {text}",
         "kpis": kpis,
-        "sections": [_table_section(
-            "Owners", "Each owner", ["Owner", "Open deals", "Weighted (INR)", "Won (INR)"],
-            [[str(o.get("owner_email") or "Unassigned"), o["open_deals"],
-              _rupees(o["weighted"]), _rupees(o["won_amount"])] for o in owners],
-            text)],
+        "sections": sections,
     }
 
 
@@ -1266,8 +1349,7 @@ def _crm_report_spec(report: str, data: dict[str, Any],
     return {"title": f"CRM report · {_REPORT_TITLES[report]}",
             **_REPORT_SPECS[report](data),
             "date": day,
-            "sources": [f"CRM {report}, {day}",
-                        *([CURRENCY_NOTE] if report in _MONEY_KINDS else [])]}
+            "sources": [f"CRM {report}, {day}"]}
 
 
 # read_only=False, idempotent=False in TOOL_ANNOTATIONS (§14.10.9): with
@@ -1290,13 +1372,16 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
             return await _overlay_report(report, mod)
     if report == "pipeline":
         lines = [
-            f"- {s['status']['name']}: {s['count']} deals · INR {s['amount']:,.0f}"
-            f" · weighted INR {s['weighted']:,.0f}"
+            f"- {s['status']['name']}: {s['count']} deals · {_code(s)} {s['amount']:,.0f}"
+            f" · weighted {_code(s)} {s['weighted']:,.0f}"
+            + _plus(s, (("amount", ""), ("weighted", "weighted")))
             for s in data.get("stages") or []
         ]
         lines.append(
-            f"Total: {data.get('count', 0)} deals · INR {data.get('amount', 0):,.0f}"
-            f" · weighted INR {data.get('weighted', 0):,.0f}"
+            f"Total: {data.get('count', 0)} deals · {_code(data)} "
+            f"{data.get('amount', 0):,.0f}"
+            f" · weighted {_code(data)} {data.get('weighted', 0):,.0f}"
+            + _plus(data, (("amount", ""), ("weighted", "weighted")))
         )
     elif report == "funnel":
         lines = [
@@ -1310,16 +1395,22 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
         lines = [
             f"Since {data.get('since')}: won {data.get('won')}, lost "
             f"{data.get('lost')}, win rate {data.get('win_rate')}%.",
-            f"Won INR {data.get('won_amount', 0):,.0f}, lost INR "
-            f"{data.get('lost_amount', 0):,.0f}. Closed with no date: "
-            f"{data.get('closed_without_date', 0)}.",
+            f"Won {_code(data)} {data.get('won_amount', 0):,.0f}, lost {_code(data)} "
+            f"{data.get('lost_amount', 0):,.0f}"
+            + "".join(
+                f", plus won {_code(o)} {float(o.get('won_amount') or 0):,.0f}, lost "
+                f"{_code(o)} {float(o.get('lost_amount') or 0):,.0f}"
+                for o in data.get("others") or [] if isinstance(o, dict))
+            + f". Closed with no date: {data.get('closed_without_date', 0)}.",
             *(f"- Lost reason {r['label']}: {r['deals']} deals"
               for r in data.get("lost_reasons") or []),
         ]
     else:
         lines = [
             f"- {o.get('owner_email') or 'Unassigned'}: {o['open_deals']} open · "
-            f"weighted INR {o['weighted']:,.0f} · won INR {o['won_amount']:,.0f}"
+            f"weighted {_code(o)} {o['weighted']:,.0f} · won {_code(o)} "
+            f"{o['won_amount']:,.0f}"
+            + _plus(o, (("weighted", "weighted"), ("won_amount", "won")))
             for o in data.get("owners") or []
         ]
     shown = _page_of(lines, page, "lines")
@@ -1507,6 +1598,25 @@ async def crm_aggregate(
     return await _aggregate_text(slug, params, page)
 
 
+def _with_others(main: str, value: Any, others: Any, key: str, group: bool) -> str:
+    """*main* (the value in the main currency), then each other currency with
+    its own code ("INR 12 and USD 4"). Never one sum over the currencies.
+
+    A GROUP with a main amount of 0 and another currency holds that other
+    currency only, so it prints "USD 4" and not "INR 0 and USD 4". The route
+    sorts by the main amount, so such a group sits last and, past 50 groups,
+    folds into "Other" (whose line prints each currency's own figure). A group
+    with no others keeps "INR 0", which is a real zero."""
+    more = [f"{o.get('currency')} {float(o.get(key) or 0):,.0f}"
+            for o in others or [] if isinstance(o, dict)]
+    if value is None or not more:
+        return main
+    shown = more if group and float(value) == 0 else [main, *more]
+    if len(shown) == 1:
+        return shown[0]
+    return " and ".join([", ".join(shown[:-1]), shown[-1]])
+
+
 async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
                           chosen: str | None = None,
                           handled: frozenset[str] = frozenset(),
@@ -1534,13 +1644,19 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     module = slug.startswith(MODULE_PREFIX)
     # On a module the amount is a field, so only a currency field is rupees.
     money = (measure in _MONEY_MEASURES and not module) or data.get("field_type") == "currency"
+    # Task 888: a deal sum is for ONE currency, named by the route. A module
+    # amount has no currency column, so it reads INR as before.
+    code = str(data.get("currency") or "INR") if measure in _MONEY_MEASURES and not module else "INR"
 
     def fmt(value: Any) -> str:
         if value is None:
             return "no value"
         if money:
-            return f"INR {float(value):,.0f}"
+            return f"{code} {float(value):,.0f}"
         return f"{float(value):,.0f}" if measure == "count" else _number(float(value))
+
+    def fmt_with(value: Any, others: Any, key: str, *, group: bool = False) -> str:
+        return _with_others(fmt(value), value, others if money else None, key, group)
 
     what = _measure_words(measure, field, data)
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
@@ -1552,7 +1668,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     if not group_by and not group_field:
         # One total over every filtered record: one line.
         head = _one_total(f"{plural}, {what}", data, field or data.get("field"),
-                          measure, fmt)
+                          measure, lambda v: fmt_with(v, data.get("others"), "total"))
         lines = await _total_tail(head, slug, data, overlay)
         lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
         return "\n".join(lines) + note
@@ -1566,15 +1682,20 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     if overlay and slug in ENTITY_LABELS:
         # CRM-Q20-3a: the route read the module that plays the slot.
         lines.append(_from_module(slug, str(overlay.get("module"))))
-    lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
-    lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
+    lines.extend(
+        f"- {g['label']}: {fmt_with(g.get('value'), g.get('others'), 'value', group=True)}"
+        for g in shown.items
+    )
+    lines.append(f"{_OVERALL.get(measure, 'Total')}: "
+                 f"{fmt_with(data.get('total'), data.get('others'), 'total')}.")
     if shown.line:
         lines.append(shown.line)
     omitted = int(data.get("omitted") or 0)
     if omitted:
         # Past the route's 50 largest groups. The total counts them.
         lines.append(
-            f"Other ({omitted} smaller groups): {fmt(data.get('other'))}. "
+            f"Other ({omitted} smaller groups): "
+            f"{fmt_with(data.get('other'), data.get('others'), 'other')}. "
             "The total counts them. Narrow the filter to see them."
         )
     zone = data.get("zone")
@@ -3374,6 +3495,93 @@ async def crm_search_notes(query: str, limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+# ── The Change history of the CRM set-up (WS-CRM CRM-M1) ────────────────────
+
+#: The shape of an area name. The route checks the name against its list.
+_CHANGE_AREA = re.compile(r"^[a-z][a-z_]{0,39}$")
+#: The longest value of a field that one line of the history shows.
+_CHANGE_VALUE_CHARS = 120
+
+
+def _change_value(value: Any) -> str:
+    """One value of a change, in one short line. Empty reads as "(none)"."""
+    if value is None or value == "" or value == [] or value == {}:
+        return "(none)"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text_ = value if isinstance(value, str) else repr(value)
+    one = " ".join(str(text_).split())
+    if len(one) <= _CHANGE_VALUE_CHARS:
+        return one
+    # A cut of one string, never of rows (test_read_tool_paging.py reads
+    # `str(...)` as text).
+    return str(one)[: _CHANGE_VALUE_CHARS - 1] + "…"
+
+
+def _change_lines(row: dict[str, Any]) -> list[str]:
+    """What one change did, field by field: before → after."""
+    before = row.get("before") if isinstance(row.get("before"), dict) else {}
+    after = row.get("after") if isinstance(row.get("after"), dict) else {}
+    keys = [k for k in (*after, *before) if k not in ("owner_email",)]
+    seen: list[str] = []
+    for key in keys:
+        if key not in seen:
+            seen.append(key)
+    return [
+        f"    {_humanize(key)}: {_change_value(before.get(key))} → "
+        f"{_change_value(after.get(key))}"
+        for key in seen
+    ]
+
+
+@_read_tool
+async def crm_change_history(
+    since: str | None = None, until: str | None = None,
+    area: str | None = None, page: int = 1,
+) -> str:
+    """The changes of the CRM set-up, newest first: who can open the CRM,
+    the CRM setup, the record names, deal stages, lead statuses, lost reasons,
+    pipelines, saved views and business rules. Each change shows when, who,
+    through what, what changed (before → after), and whether it was undone.
+    since and until take a date (YYYY-MM-DD, a day in UTC) or an ISO 8601
+    date and time, and until includes its whole day. area is one of access,
+    setup, record_names, deal_stage, lead_status, lost_reason, pipeline,
+    pipeline_stage, view or rule. A member who is not an admin sees only
+    their own changes."""
+    number = _page(page)
+    if area is not None and not _CHANGE_AREA.match(str(area)):
+        raise GatewayRefusal(
+            "Give area as one name: access, setup, record_names, deal_stage, "
+            "lead_status, lost_reason, pipeline, pipeline_stage, view or rule.")
+    data = await _get("/crm/change-history", {
+        "since": since or None, "until": until or None, "area": area or None,
+        "page": number, "page_size": MAX_ROWS,
+    }) or {}
+    rows = [r for r in (data.get("rows") or []) if isinstance(r, dict)]
+    total = int(data.get("total") or 0)
+    if not rows:
+        return ("No change of the CRM set-up matches." if total == 0
+                else f"No changes on page {number}. The history holds {total}.")
+    lines = [f"CRM set-up changes: {total}, page {number}, newest first."]
+    for r in rows:
+        when = str(r.get("at") or "")[:16].replace("T", " ")
+        who = r.get("actor_name") or r.get("actor_email") or "a member"
+        marks = []
+        if r.get("undone_by"):
+            marks.append("undone later")
+        if r.get("undoes_id"):
+            marks.append("this undid an earlier change")
+        if not r.get("reversible") and not r.get("undoes_id"):
+            marks.append("cannot be undone")
+        lines.append(
+            f"- {when} UTC · {who} · via {r.get('via')} · {r.get('area_label') or r.get('area')}: "
+            f"{r.get('summary')}" + (f" ({'; '.join(marks)})" if marks else "")
+        )
+        lines.extend(_change_lines(r))
+    lines.append(_more(total, number, MAX_ROWS).strip())
+    return "\n".join(line for line in lines if line)
+
+
 #: Every tool, in one list. The skill family ``crm`` holds these names.
 CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
     crm_list_records,
@@ -3389,6 +3597,7 @@ CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
     crm_list_module_records,
     crm_get_module_record,
     crm_search_notes,
+    crm_change_history,
 )
 
 CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)

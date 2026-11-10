@@ -157,7 +157,7 @@ async def test_a_full_profile_still_takes_a_mark(db) -> None:
         for area in acp.AREAS:
             await _mark(db.org_a, user, area, "asked", "chat")
         stored = _column(db, email)
-    assert len(stored["facts"]) == 40 and len(stored["interview"]["areas"]) == 10
+    assert len(stored["facts"]) == 40 and len(stored["interview"]["areas"]) == len(acp.AREAS)
     assert acp.profile_size(stored) > acp.PROFILE_MAX  # it passed because it is excluded
 
 
@@ -433,6 +433,74 @@ async def test_detail_and_people_take_their_own_evidence(db) -> None:
         "detail": "answered", "people": "answered"}
 
 
+async def _chat_address(org: str, user: UserContext, value: dict) -> dict:
+    with _tenant(org):
+        return await _ap().put_assistant_profile(body={"key": "address", "value": value},
+                                                 user=user, x_profile_via="chat")
+
+
+async def test_name_language_answer_rules(db) -> None:
+    """PZ-32: `name` needs a fresh chat put of the address name or formality,
+    and `language` a fresh chat put that changes style.language. A fact
+    answers neither. A language change never closes `detail`, and a length
+    change never closes `language`. The undo of the language change opens
+    `language` again and leaves `detail` closed."""
+    first, second = _address(), _address()
+    db.made.extend([first, second])
+    one, two = _member(first), _member(second)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, one)
+        for area in ("name", "language", "detail"):
+            await _mark(db.org_a, one, area, "asked", "chat")
+        # A fact with the area is no answer of `name` or `language`.
+        await _add_area_fact(db.org_a, one, "Call me Ana", "name")
+        await _add_area_fact(db.org_a, one, "Answer in Hindi", "language")
+        for area in ("name", "language", "detail"):
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, one, area, "answered", "chat")
+            assert exc.value.detail["reason"] == acp.NO_ANSWER
+        # The language alone: `language` passes, `detail` does not.
+        await _chat_style(db.org_a, one, {"language": "hi-IN"})
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, one, "detail", "answered", "chat")
+        await _mark(db.org_a, one, "language", "answered", "chat")
+        # The address name: `name` passes.
+        await _chat_address(db.org_a, one, {"name": "Ana"})
+        done = await _mark(db.org_a, one, "name", "answered", "chat")
+        assert {a: v["state"] for a, v in done["areas"].items()} == {
+            "name": "answered", "language": "answered", "detail": "asked"}
+
+        # The second member: the length alone closes `detail`, not `language`.
+        await _sit(db.org_a, two)
+        await _mark(db.org_a, two, "language", "asked", "chat")
+        await _mark(db.org_a, two, "detail", "asked", "chat")
+        await _chat_style(db.org_a, two, {"length": "short"})
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, two, "language", "answered", "chat")
+        await _mark(db.org_a, two, "detail", "answered", "chat")
+        # The undo of a language change opens `language`, and `detail` stays.
+        await _chat_style(db.org_a, two, {"length": "short", "language": "ta"})
+        await _mark(db.org_a, two, "language", "answered", "chat")
+        await _undo(db.org_a, two)
+        read = await _get(db.org_a, two)
+    assert read["style"] == {"length": "short"}
+    assert {a: v["state"] for a, v in read["interview"]["areas"].items()} == {
+        "detail": "answered"}
+
+
+async def test_a_sitting_sets_last_asked_at(db) -> None:
+    """PZ-32 (P1-3): the start of a sitting is a question asked now, so the
+    due line waits a day after it."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        sat = await _sit(db.org_a, user)
+    assert sat["last_asked_at"] == sat["sitting_at"]
+    later = acp._parse_time(sat["sitting_at"])
+    assert acp.due_area(sat, later) == ""
+
+
 async def _sleep_a_second() -> None:
     """The stored times have whole seconds. A reset must be later than the
     old evidence, so each scenario waits past one second boundary."""
@@ -614,3 +682,97 @@ async def test_a_chat_asked_keeps_an_answered_area(db) -> None:
         settings = await _mark(db.org_a, user, "goals", "asked")  # Settings is not limited
     assert again["areas"]["goals"] == done["areas"]["goals"]
     assert settings["areas"]["goals"]["state"] == "asked"
+
+
+# ── PZ-32 repair round 1 (P1-1): a stop holds, and a reset ends it ─────────
+
+_LATER = "2030-01-01T00:00:00Z"
+
+
+async def _stop(org: str, user: UserContext, body: dict | None = None) -> dict:
+    with _tenant(org):
+        return await _ap().start_assistant_interview(
+            body=body or {"stop": True}, user=user, x_profile_via="chat")
+
+
+async def test_a_chat_stop_writes_stopped_at_and_a_reset_ends_it(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    later = acp._parse_time(_LATER)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "Ships Q4", "goals")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        with pytest.raises(HTTPException) as both:
+            await _stop(db.org_a, user, {"sitting": True, "stop": True})
+        assert both.value.status_code == 422
+        stopped = await _stop(db.org_a, user)
+        assert stopped["stopped_at"]
+        assert {a: e["state"] for a, e in stopped["areas"].items()} == {
+            a: "answered" if a == "goals" else "never" for a in acp.AREAS}
+        assert acp.open_areas(stopped, later) == [] and acp.due_area(stopped, later) == ""
+        # A chat `asked` is a 422 now, inside the sitting too.
+        with pytest.raises(HTTPException) as asked:
+            await _mark(db.org_a, user, "role", "asked", "chat")
+        assert asked.value.status_code == 422
+        # A reset of one area in Settings ends the stop, and opens only it.
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area("role", user=user)
+        reset = _column(db, email)["interview"]
+        assert "stopped_at" not in reset
+        assert acp.open_areas(reset, later) == ["role"]
+        # A stop again, then a reset of the whole interview drops the key.
+        await _stop(db.org_a, user)
+        assert _column(db, email)["interview"]["stopped_at"]
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview(user=user)
+    assert "interview" not in _column(db, email)
+
+
+def _run_317(db) -> None:
+    """Migration 317, as the admin of the promoted catalog (found by content,
+    never by number, R1)."""
+    import os
+
+    from tests.unit._tenant_ladder import _LADDER_DIR
+
+    name = next(p for p in sorted(os.listdir(_LADDER_DIR))
+                if p.endswith("_assistant_profile_interview_stopped.sql"))
+    with open(os.path.join(_LADDER_DIR, name), encoding="utf-8") as fh:
+        sql = fh.read()
+    # The ladder ran it on an empty table, so its run-once mark goes first.
+    with db.admin_engine.begin() as conn:
+        conn.execute(text("COMMENT ON TABLE user_settings IS NULL"))
+    with db.admin_engine.begin() as conn, conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(sql)
+
+
+@pytest.mark.parametrize("area", ["name", "language", "goals"])
+async def test_a_stop_from_before_pz32_holds_after_317_until_a_reset(db, area) -> None:
+    """A stop before PZ-32 marked the ten old areas and wrote no
+    ``stopped_at``. Migration 317 backfills it. Then a reset of one area in
+    Settings opens that area only, and no other area changes (repair round
+    2, item B)."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    later = acp._parse_time(_LATER)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        for old_area in acp.OLD_AREAS:
+            await _mark(db.org_a, user, old_area, "never")  # as the old stop wrote it
+        old = (await _get(db.org_a, user))["interview"]
+        assert "stopped_at" not in old and not acp.interview_stopped(old)
+        _run_317(db)
+        stopped = (await _get(db.org_a, user))["interview"]
+        assert stopped["stopped_at"] == old["last_asked_at"]
+        assert acp.interview_stopped(stopped)
+        assert acp.open_areas(stopped, later) == [] and acp.due_area(stopped, later) == ""
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area(area, user=user)
+        reset = (await _get(db.org_a, user))["interview"]
+    assert not acp.interview_stopped(reset)
+    assert acp.open_areas(reset, later) == [area]
+    assert acp.due_area(reset, later) == area
+    assert reset["areas"] == {k: v for k, v in stopped["areas"].items() if k != area}

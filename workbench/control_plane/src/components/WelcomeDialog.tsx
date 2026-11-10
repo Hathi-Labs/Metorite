@@ -28,6 +28,9 @@
  *    `?welcome=new-org`, which `SignUpForm` appends to its post-create
  *    redirect. It says "your organization is ready" and "here is where you
  *    add your team". With the question on, it is the step after the apps.
+ *    With the guide's switch on for the org (`GUIDE_ORGS`, WS-OB GD-5a), it
+ *    also offers "Show me around", which closes the dialog and starts the
+ *    tour (`assistant_guide.md` §4.1).
  *
  * ⚠️ A read that fails asks nothing. "Never asked" is a fact only the server
  * knows, and asking on a fault would ask a member who already answered.
@@ -40,9 +43,16 @@
  * With the shell nav off (`shellNavOn`), only the founder's welcome exists,
  * exactly as before NS-7.
  *
- * Dismissing the welcome strips the query with `router.replace`, so a reload,
- * a share of the URL or the back button cannot summon it again (no
- * localStorage: a second founder on a shared machine still gets their own).
+ * Dismissing the welcome closes it AT ONCE, in local state, and then strips
+ * the query with `history.replaceState` (OB-0, owner report 2026-11-01). A
+ * reload, a share of the URL or the back button then cannot summon it again
+ * (no localStorage: a second founder on a shared machine still gets their
+ * own). ⚠️ Never `router.replace` here. It waits on a server round trip, and
+ * the dialog stayed open until that round trip ended. On a slow server no way
+ * out did anything. "Invite my team" also navigates in the same click, so the
+ * replace lost, and Back brought the dialog back. Fence:
+ * `e2e/shell-presets.spec.ts`, "a slow server never holds the founder's
+ * welcome open".
  *
  * Renders through the ONE Modal primitive (`components/ui/Modal`).
  * `useSearchParams` requires a Suspense boundary at build. The default export
@@ -51,7 +61,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
@@ -62,6 +72,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
+import { TOUR_GUIDE_ID, startGuide, useGuideAllowed } from "@/lib/shell/guide";
 import {
   ANSWERS,
   EMPTY_SHELL,
@@ -76,7 +87,7 @@ import {
   type PresetId,
 } from "@/lib/shell/presets";
 import { launcherGroups, shellNavOn } from "@/lib/shell/shellNav";
-import { layoutQuestionOpen, setWelcomeOpen, skipsAppsStep } from "@/lib/shell/welcomeSteps";
+import { layoutQuestionOpen, setWelcomeOpen, skipsAppsStep, withoutWelcome } from "@/lib/shell/welcomeSteps";
 import { CHANGE_LAYOUT, askedInThisPage, markAsked, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export const WELCOME_PARAM = "welcome";
@@ -98,7 +109,13 @@ export function appChoices(sections: readonly NavSection[]): NavSection[] {
     .filter((g) => g.items.length > 0);
 }
 
-function InviteBody({ onDone }: { onDone: () => void }) {
+/**
+ * The founder's welcome. With `onTour` (the guide's switch is on for the
+ * org, WS-OB GD-5a), it offers "Show me around". That button closes the
+ * dialog by the same path as "Explore on my own first", then starts the
+ * tour. The tour never starts by itself (D-GD-1, `assistant_guide.md` §4.1).
+ */
+export function InviteBody({ onDone, onTour }: { onDone: () => void; onTour?: () => void }) {
   return (
     <div className="flex flex-col gap-4 p-4">
       <p className="text-sm text-muted-foreground">
@@ -107,11 +124,19 @@ function InviteBody({ onDone }: { onDone: () => void }) {
         — each teammate gets an email, signs in with their own address, and lands
         straight in your workspace.
       </p>
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <Button variant="secondary" onClick={onDone}>
+      {/* Three buttons do not fit one row in this dialog, and a wrapped row
+          left "Invite my team" alone. With the tour button they stand in ONE
+          column, each the full width. Two buttons keep the row. */}
+      <div className={onTour ? "flex flex-col gap-2" : "flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end"}>
+        <Button variant="secondary" className={onTour ? "w-full" : ""} onClick={onDone}>
           Explore on my own first
         </Button>
-        <Link href="/settings/organization" onClick={onDone}>
+        {onTour ? (
+          <Button variant="secondary" className="w-full" onClick={onTour}>
+            Show me around
+          </Button>
+        ) : null}
+        <Link href="/settings/organization" onClick={onDone} className={onTour ? "block" : undefined}>
           <Button className="w-full">Invite my team</Button>
         </Link>
       </div>
@@ -120,10 +145,11 @@ function InviteBody({ onDone }: { onDone: () => void }) {
 }
 
 function WelcomeDialogInner() {
-  const router = useRouter();
-  const pathname = usePathname() ?? "/";
   const params = useSearchParams();
-  const newOrg = params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
+  // OB-0: a way out sets `dismissed` first, so the dialog never waits on the
+  // address to change.
+  const [dismissed, setDismissed] = useState(false);
+  const newOrg = !dismissed && params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
   // Read once, as the sidebar reads it: the dev override must not flip.
   const [navOn] = useState(() => shellNavOn());
   // WS-62 CF-2: with the chat-first flag on, a phone skips step 2. It has
@@ -132,6 +158,8 @@ function WelcomeDialogInner() {
   const { isMobile } = useViewMode();
   const noAppsStep = skipsAppsStep({ chatFirst, phone: isMobile });
   const shell = useShellPrefs();
+  // GD-5a: "Show me around" shows only while `GUIDE_ORGS` holds the org.
+  const tourOn = useGuideAllowed();
   const { access, loading } = useAccess();
   const sections = visibleSections(loading ? null : access.features, access.is_admin);
 
@@ -201,7 +229,10 @@ function WelcomeDialogInner() {
     setReopened(false);
     setHandled(true);
     setStep("ask");
-    if (newOrg) router.replace(pathname);
+    if (newOrg) {
+      setDismissed(true);
+      window.history.replaceState(null, "", withoutWelcome(window.location.href, WELCOME_PARAM));
+    }
   };
   const next = () => (newOrg ? setStep("invite") : close());
   const again = reopened && !asking;
@@ -407,7 +438,19 @@ function WelcomeDialogInner() {
       {/* The Modal primitive renders children bare — every consumer pads its
           own body (owner report 2026-08-24: this one didn't, and the text sat
           flush against the dialog edges). */}
-      <InviteBody onDone={close} />
+      <InviteBody
+        onDone={close}
+        // GD-5a: only with the guide's switch on for the org. The same
+        // instant close as "Explore on my own first" (OB-0), then the tour.
+        onTour={
+          tourOn
+            ? () => {
+                close();
+                startGuide(TOUR_GUIDE_ID, "welcome");
+              }
+            : undefined
+        }
+      />
     </Modal>
   );
 }

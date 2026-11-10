@@ -42,6 +42,64 @@ export function isSpecialistTool(name: string | null | undefined, agentName: str
 }
 
 /**
+ * Is `name` the orchestrator's `spawn_subagents` tool? Each child it starts
+ * streams `SUB_AGENT_*` events into the parent stream, so its row is a hand-off
+ * (OA-9b). Its children's answers are item JSON for the parent model, never
+ * text for the member, so the row keeps their steps and drops their text.
+ */
+export function isSpawnTool(name: string | null | undefined): boolean {
+  return String(name ?? "").toLowerCase().includes("spawn_subagents");
+}
+
+/**
+ * Does the tool `name` hand the work to another agent, so that the
+ * `SUB_AGENT_*` events between its start and its end belong on its row?
+ * `call_agent` and `call_agents_parallel`, `delegate_to_agent` and
+ * `spawn_subagents` do. The specialist tools are found by
+ * {@link isSpecialistTool}, which needs the agent name of the event.
+ * The server twin is the delegate test in `app/api/agent/chat/route.ts`.
+ */
+export function isHandoffTool(name: string | null | undefined): boolean {
+  const n = String(name ?? "").toLowerCase();
+  return n.includes("call_agent") || n.includes("delegate_to_agent") || isSpawnTool(n);
+}
+
+/** The sub-agent events that streamed since the last hand-off ended. */
+export interface SubAgentAccumulator<Step> {
+  name: string;
+  text: string;
+  tools: Step[];
+}
+
+/**
+ * The saved-message half of a hand-off: what the tool row `toolName` takes
+ * from the accumulator when it ends, and the accumulator that stays.
+ * `route.ts` calls it at `TOOL_CALL_END`. A hand-off row (see
+ * {@link isHandoffTool} and {@link isSpecialistTool}) takes the name, the text
+ * and the steps, and the accumulator starts again, so the steps of one child
+ * never land on a later row. A spawn row takes no text. Any other tool row
+ * takes nothing and leaves the accumulator alone.
+ */
+export function takeHandoff<Step>(
+  toolName: string,
+  acc: SubAgentAccumulator<Step>,
+): { fields: Record<string, unknown>; rest: SubAgentAccumulator<Step> } {
+  const isDelegate = isHandoffTool(toolName) || isSpecialistTool(toolName, acc.name);
+  if (!isDelegate) return { fields: {}, rest: acc };
+  const has = !!(acc.name || acc.text || acc.tools.length > 0);
+  return {
+    fields: has
+      ? {
+          subAgentName: acc.name,
+          subAgentText: isSpawnTool(toolName) ? "" : acc.text,
+          subAgentTools: acc.tools,
+        }
+      : {},
+    rest: { name: "", text: "", tools: [] },
+  };
+}
+
+/**
  * Fold pre-tool narration into the reasoning blocks and compute the timeline
  * cutoff for a starting tool (VS Code-style interleaved thinking).
  *
@@ -250,7 +308,7 @@ export function applyStreamEvent(
       // a replayed stream re-sends it).  Never add a second row for an id we
       // already have — keeps the consciousness timeline from duplicating.
       if ((m.toolEvents ?? []).some((t) => t.id === toolId)) return m;
-      const isDelegate = String(evt.name ?? "").toLowerCase().includes("call_agent");
+      const isDelegate = isHandoffTool(String(evt.name ?? ""));
       const hasSegments = (m.segments?.length ?? 0) > 0;
       // Phase 3c (VS Code parity): when the runtime supplied real segment ids,
       // EVERY assistant text segment is answer body — including text emitted
@@ -402,7 +460,7 @@ export function applySubAgentEvent(
    *  not know it was a hand-off. */
   const lastDelegate = (): number => {
     const idx = [...evts].reverse().findIndex(
-      (t) => (t.subAgentActive && (t.name.toLowerCase().includes("call_agent") || t.subAgentName))
+      (t) => (t.subAgentActive && (isHandoffTool(t.name) || t.subAgentName))
         || (t.status === "running" && isSpecialistTool(t.name, eventAgent)),
     );
     return idx === -1 ? -1 : evts.length - 1 - idx;
@@ -412,6 +470,9 @@ export function applySubAgentEvent(
     case "sub_agent_delta": {
       const ri = lastDelegate();
       if (ri === -1) return m;
+      // A spawn child ends with item JSON for the parent model. It is no text
+      // for the member, so the spawn row keeps the steps and drops the text.
+      if (isSpawnTool(evts[ri].name)) return m;
       const agent = String(evt.agentName ?? "");
       return {
         ...m,
@@ -452,6 +513,26 @@ export function applySubAgentEvent(
       const idx = [...evts].reverse().findIndex((t) => t.subAgentActive);
       if (idx === -1) return m;
       const ri = evts.length - 1 - idx;
+      if (isSpawnTool(evts[ri].name)) {
+        // One child of a spawn failed. The other children go on, so the row
+        // stays active until its own tool_end. A worker is a batch run: it
+        // sends no step before it fails. So the failure is its own step, keyed
+        // by the child's run id (route.ts forwards it), and no step of a
+        // sibling changes.
+        const steps = evts[ri].subAgentTools ?? [];
+        const failId = `err-${String(evt.runId ?? "") || steps.length}`;
+        if (steps.some((st) => st.id === failId)) return m;
+        const failed = {
+          id: failId,
+          name: String(evt.agentName ?? "") || "worker",
+          status: "error" as const,
+          result: String(evt.error ?? "Sub-agent error"),
+        };
+        return {
+          ...m,
+          toolEvents: evts.map((t2, k) => k === ri ? { ...t2, subAgentTools: [...steps, failed] } : t2),
+        };
+      }
       return {
         ...m,
         toolEvents: evts.map((t, i) => i === ri

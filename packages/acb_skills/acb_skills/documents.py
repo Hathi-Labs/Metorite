@@ -428,6 +428,8 @@ async def save_outputs(
         return {"error": "The file was refused: its folder goes through a link."}
     except OSError as exc:
         return {"error": f"The file could not be written: {exc.strerror or exc}."}
+    import importlib
+    wa = importlib.import_module("acb_skills.write_artifact")
     files: dict[str, dict[str, Any]] = {}
     for sfx, rel in rels.items():
         body = data[sfx]
@@ -435,7 +437,7 @@ async def save_outputs(
         files[sfx] = {
             "path": rel, "size": len(body), "sha256": hashlib.sha256(body).hexdigest(),
             "mime_type": mime,
-            "download_url": f"/api/agent/workspace/{session_id}/file?path={rel}"
+            "download_url": wa.workspace_file_url(session_id, rel)
                             if session_id else None,
         }
         mirror = asyncio.ensure_future(wa.mirror_to_blob_store(

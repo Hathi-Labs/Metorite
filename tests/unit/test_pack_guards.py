@@ -41,8 +41,11 @@ import pytest
 
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
+from acb_skills import agent_tools as at
 from acb_skills import egress as eg
 from acb_skills import skill_families as sf
+from acb_skills import subagent_contract as sc
+from acb_skills import tool_annotations as ta
 from acb_skills.write_artifact import (
     artifact_context,
     artifact_context_scope,
@@ -1014,3 +1017,514 @@ def test_a_good_owner_loads_once_for_the_process(owner_dir) -> None:
     assert first is not None and sk._owner_module("probe-owner") is first
     assert ti._pack_owner_module("probe-owner") is first
     assert (owner_dir / "imports.txt").read_text(encoding="utf-8") == "x"
+
+
+# ── 11. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
+
+CRM = "crm-assistant"
+CRM_DIR = "apps/agents/agent-crm"
+#: Ten since WS-CRM CRM-M1: the pack holds ``crm_change_history`` too, the
+#: read of the CRM Change history. The orchestrator base does not hold it,
+#: because the base was at the 110-tool cap (test_projects_packs.py).
+#: Thirteen: the ten of WS-CRM CRM-M1, ``crm_update_record`` and
+#: ``crm_update_task`` of CRM-M2b, and ``crm_create_pipeline`` of CRM-M3a,
+#: for an org on ``CRM_PIPELINES_ORGS`` (``_mode`` opens the flag).
+CRM_PACK = frozenset({
+    "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
+    "crm_search_notes", "crm_update_record", "crm_update_task",
+    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
+    "update_deal_status",
+})
+#: Seven: the four record writes, the two of CRM-M2b and the pipeline create.
+CRM_WRITES = frozenset({
+    "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    "crm_update_record", "crm_update_task", "crm_create_pipeline",
+})
+
+
+def _crm_module() -> Any:
+    return load_agent_module(CRM_DIR)
+
+
+def _mode(monkeypatch, mode: str | None, calls: list[str] | None = None) -> None:
+    """Patch the Mirror-mode read (``GET /crm/mode``). None makes it fail."""
+    async def crm_mode() -> str | None:
+        if calls is not None:
+            calls.append("read")
+        if mode is None:
+            raise RuntimeError("gateway down")
+        return mode
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so the pack holds all eleven
+    # tools. ``test_an_org_off_the_pipelines_flag_builds_no_pipeline_tool``
+    # holds the drop of an org off the list.
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
+
+
+async def test_the_built_crm_pack_holds_exactly_the_ten_tools(monkeypatch) -> None:
+    """An empty or short pack must fail loudly: the builder skips a tool that
+    is no coroutine function. Mutation: wrap one CRM tool in a ``FunctionTool``
+    or rename it -> the pack holds 9 tools -> red."""
+    _mode(monkeypatch, "live")
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert {t.__name__ for t in build.tools} == CRM_PACK and len(build.tools) == 13
+    assert build.owner == CRM and build.held is False and build.skipped == ()
+
+
+@pytest.mark.parametrize("layer", ["a-build", "b-load", "c-holds"])
+async def test_mirror_mode_takes_the_three_record_writes_from_every_layer(
+    monkeypatch, layer: str,
+) -> None:
+    """The drop lives in the builder, because a pack that ``load_skill_tools``
+    (layer b) or a turn-kind item (layer c) loads builds AFTER the executor's
+    ``_drop_mirror_record_writes``. Layer (a) is covered by order alone, but
+    runs the same builder. ``log_activity`` stays. The three cases call the
+    builder as each layer does: with the owner module, through
+    ``_build_pack_for_load``, and with the names of a live list. Mutation:
+    take the drop out of ``_pack_tools`` -> all 10 tools remain -> red."""
+    _mode(monkeypatch, "mirror")
+    with _run():
+        if layer == "a-build":
+            build = await _build("crm-records", _crm_module())
+        elif layer == "b-load":
+            build = await ti._build_pack_for_load("crm-records", artifact_context(), frozenset())
+        else:
+            build = await _build("crm-records", _crm_module(),
+                                 holds=frozenset({"web_search", "read_attachment"}))
+    names = {t.__name__ for t in build.tools}
+    assert names == CRM_PACK - ti.MIRROR_RECORD_WRITES
+    assert "log_activity" in names and not names & ti.MIRROR_RECORD_WRITES
+    assert set(build.dropped) == ti.MIRROR_RECORD_WRITES
+
+
+async def test_an_org_off_the_pipelines_flag_builds_no_pipeline_tool(monkeypatch) -> None:
+    """WS-CRM CRM-M3a. An org that ``CRM_PIPELINES_ORGS`` leaves out builds the
+    pack with no ``crm_create_pipeline``, and the build names the drop. The
+    other twelve tools stay. Mutation: take the flag drop out of
+    ``_drop_pack_mirror_writes`` -> the tool stays -> red."""
+    _mode(monkeypatch, "live")
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: False)
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert build.dropped == ("crm_create_pipeline",)
+    assert {t.__name__ for t in build.tools} == CRM_PACK - {"crm_create_pipeline"}
+
+
+async def test_the_mirror_drop_reuses_the_executor_set(monkeypatch) -> None:
+    """Mutation: copy the three names into a second set -> the set that the
+    builder drops differs from ``MIRROR_RECORD_WRITES`` when that set grows."""
+    _mode(monkeypatch, "mirror")
+    monkeypatch.setattr(ti, "MIRROR_RECORD_WRITES", frozenset({"create_lead"}))
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert build.dropped == ("create_lead",)
+    assert len(build.tools) == 12  # 13 less create_lead
+
+
+@pytest.mark.parametrize("mode", ["live", None])
+async def test_a_live_org_or_a_failed_mode_read_keeps_the_writes(monkeypatch, mode) -> None:
+    """A failed read keeps the tools: the 409 relay of the write tools is the
+    fallback, as in ``_drop_mirror_record_writes``. Mutation: drop on a failed
+    read -> red for ``None``."""
+    _mode(monkeypatch, mode)
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert {t.__name__ for t in build.tools} == CRM_PACK and build.dropped == ()
+
+
+@pytest.mark.parametrize(("mode", "gone"), [
+    ("live", frozenset()), ("mirror", ti.MIRROR_RECORD_WRITES),
+], ids=["native", "mirror"])
+async def test_a_held_crm_pack_keeps_the_writes_and_mirror_still_takes_three(
+    monkeypatch, mode: str, gone: frozenset[str],
+) -> None:
+    """RX-1 (D169). A held pack keeps the four writes behind their cards. The
+    Mirror drop runs in a held build too, or a held write would reach Zoho.
+    Mutation: skip the read of the mode in a held build -> the three writes
+    stay in Mirror mode -> red."""
+    calls: list[str] = []
+    _mode(monkeypatch, mode, calls)
+    with _run():
+        await eg.mark_untrusted_answer()  # the chat read mail on an earlier turn
+        build = await _build("crm-records", _crm_module())
+    assert build.held is True and calls == ["read"]
+    assert set(build.dropped) == gone
+    assert {t.__name__ for t in build.tools} == CRM_PACK - gone
+
+
+async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
+    """The pack drop is the one seam ``_is_egress``. Mutation: test the
+    annotation in the builder -> the patched rule is not followed -> red."""
+    _mode(monkeypatch, "live")
+    module = _crm_module()
+    with _run(no_egress=True):
+        assert (await _build("crm-records", module)).dropped == ()
+        monkeypatch.setattr(ti, "_is_egress", lambda t: ti._tool_name(t) == "get_record")
+        assert (await _build("crm-records", module)).dropped == ("get_record",)
+        monkeypatch.setattr(ti, "_is_egress", lambda t: False)
+        open_build = await _build("crm-records", module)
+    assert open_build.dropped == () and len(open_build.tools) == 13
+
+
+async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:
+    """RX-1 (D169). The chat read mail (``email`` pack), then the member asks
+    for a CRM write. The CRM pack builds held, and each write stays, because its
+    own card is the guard. The build shows no card. Mutation: take ``create_lead``
+    off ``HELD_CARD_WRITE_TOOLS`` -> the held pack drops it -> red."""
+    _mode(monkeypatch, "live")
+    cards: list[str] = []
+
+    async def card(**kw: Any) -> bool:
+        cards.append(str(kw.get("title")))
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    with _run():
+        await eg.mark_untrusted_session(EA)  # what an email pack call does first
+        build = await _build("crm-records", _crm_module())
+    assert build.held is True and "create_lead" in {t.__name__ for t in build.tools}
+    assert cards == [], "a build shows no card"
+
+
+async def test_a_crm_pack_run_with_no_user_refuses() -> None:
+    """R5: the identity comes from the bound run. With none, the owner's
+    ``_headers`` refuses before any request. Mutation: fall back to a default
+    user in a pack call -> the call goes out -> red."""
+    from acb_skills.memory_tools import _get_memory_user_id
+
+    with _run():
+        assert not _get_memory_user_id(), "non-vacuity: this run binds no user"
+        build = await _build("crm-records", _crm_module())
+        search = _named(build, "search_crm")
+        with pytest.raises(RuntimeError, match="No acting user"):
+            await search("Acme")
+
+
+# ── OA-9c: packs in a spawn child (§6.7, the child case of §5) ───────────────
+# The spawn builds the pack of a child on the parent frame, through this one
+# builder (``agent_tools._child_pack_tools`` -> ``_pack_tools``), with a run
+# key minted for that child. The child keeps the tools that
+# ``subagent_contract.child_may_hold`` lets through: read tools only.
+
+PROJECTS = "projects-assistant"
+PROJECTS_DIR = "apps/agents/agent-projects"
+_WRITE = {"read_only": False, "destructive": False, "idempotent": False, "open_world": False}
+
+#: The tools that each real pack gives a child (2026-10-29). The one marker
+#: decides: ``read_only=True`` in the risk registry, less the SUB-1 names and
+#: ``DISPLAY_TOOLS``. No email tool says read-only, so an email pack gives a
+#: child no tool and its job does not run.
+CHILD_TOOLS: dict[str, frozenset[str]] = {
+    "email": frozenset(),
+    "email-setup": frozenset(),
+    # WS-CRM CRM-M1: crm_change_history reads only, so a child holds it too.
+    "crm-records": frozenset({
+        "crm_change_history", "crm_search_notes", "get_pipeline", "get_record",
+        "get_timeline", "search_crm"}),
+    "projects": frozenset({
+        "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "people_for",
+        "project_summary", "projects_tree", "task_detail", "vocabulary"}),
+    "projects-plan": frozenset({
+        "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
+        "analytics_throughput", "find_conflicts", "fit_for_task", "get_plan", "needs_attention",
+        "rebalance", "recurrence", "task_dataset", "team_capacity",
+        "waiting_agent_requests"}),
+    "projects-reports": frozenset({"report_list", "report_recipients", "report_render"}),
+    "projects-structure": frozenset({"list_templates", "project_access", "project_views",
+                                     "watchers"}),
+    "projects-bulk": frozenset({"my_led_projects"}),
+    "projects-reminders": frozenset({
+        "intake_queue", "list_reminders", "my_areas", "my_contexts", "my_decisions",
+        "notifications"}),
+    "projects-authority": frozenset({"list_project_updates", "project_authorities"}),
+    # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
+    "studio": frozenset(),
+}
+
+#: The calls that put an event on the run's stream: a card, a page move, a
+#: panel. A tool that reaches one draws something in the member's chat. The
+#: last two are the direct push that `todo_tools` and `ask_tools` use.
+_DISPLAY_EMITTERS = frozenset({"emit_generative_ui", "emit_frontend_tool", "resolve_run_queue",
+                               "_active_run_queue", "_push_sse_to_stream",
+                               # STU-G2: a tool that awaits the confirmation card
+                               "request_confirmation"})
+#: The packages whose functions the scan follows. A call into any other
+#: package (httpx, the standard library) is never a display emitter.
+_SCAN_ROOTS = ("skill_projects", "acb_skills", "acb_common", "orchestrator",
+               "_native_maf_probe", "_tool_pack_owner")
+
+
+def _code_names(code: Any) -> set[str]:
+    """Each global and attribute name that *code* and its nested code read."""
+    import types
+
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            names |= _code_names(const)
+    return names
+
+
+def _display_path(fn: Any, seen: set[int] | None = None) -> str:
+    """The call path from tool *fn* to a display emitter, or ``""``.
+
+    It reads the tool, its ``func`` and each ``__wrapped__`` layer, and it
+    follows each function that a layer names in its module globals, inside
+    :data:`_SCAN_ROOTS`. So ``render_board > _emit > emit_generative_ui``."""
+    seen = set() if seen is None else seen
+    layer = getattr(fn, "func", fn)
+    while layer is not None and id(layer) not in seen:
+        seen.add(id(layer))
+        code = getattr(layer, "__code__", None)
+        if code is not None:
+            names = _code_names(code)
+            hit = sorted(names & _DISPLAY_EMITTERS)
+            if hit:
+                return f"{layer.__qualname__} > {hit[0]}"
+            for name in sorted(names):
+                target = getattr(layer, "__globals__", {}).get(name)
+                if (inspect.isfunction(target)
+                        and str(target.__module__).startswith(_SCAN_ROOTS)):
+                    found = _display_path(target, seen)
+                    if found:
+                        return f"{layer.__qualname__} > {found}"
+        layer = getattr(layer, "__wrapped__", None)
+    return ""
+
+
+def _owners(monkeypatch, **by_owner: Any) -> None:
+    """The owner module that the builder loads for each owner (``_pack_owner_module``)."""
+    monkeypatch.setattr(ti, "_pack_owner_module", lambda owner: by_owner.get(owner))
+
+
+async def _child(*packs: str, held: bool = False) -> tuple[str, Any]:
+    """The spawn's build of a child's packs, on this (parent) frame."""
+    job = sc.Job(1, "Read.", (), "fast", packs=packs)
+    return await at._child_pack_tools(job, artifact_context(), held=held)
+
+
+def _no_egress_probe(name: str, seen: list[Any]) -> Any:
+    async def body() -> None:
+        seen.append(artifact_context().get("no_egress"))
+
+    return _probe(name, body=body)
+
+
+async def test_a_child_with_the_email_pack_gets_the_held_set_less_the_writes(
+    monkeypatch,
+) -> None:
+    """§5, OA-9c, in a held chat: the main assistant's held set, read tools
+    only. Mutation: drop the ``child_may_hold`` filter -> ``snooze_email``
+    reaches the child. Drop the held drop -> ``send_email`` reaches both."""
+    for name in ("read_email", "query_inbox"):
+        monkeypatch.setitem(ta.TOOL_ANNOTATIONS, name, dict(_READ_ONLY))
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "snooze_email", dict(_WRITE))
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "send_email", dict(_SENDS))
+    seen: list[Any] = []
+    stub = _stub(_no_egress_probe("read_email", seen), _probe("query_inbox"),
+                 _probe("send_email", _SENDS), _probe("snooze_email", _WRITE))
+    _owners(monkeypatch, **{EA: stub})
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    with _run():
+        await eg.mark_untrusted_answer()  # the chat read mail on an earlier turn
+        main = await _build("email", stub)
+        why, job = await _child("email")
+    assert why == "" and main.held is True and "send_email" in main.dropped
+    main_names = {t.__name__ for t in main.tools}
+    child = {t.__name__ for t in job.pack_tools}
+    assert child == {n for n in main_names if sc.child_may_hold(n)}
+    assert child == {"read_email", "query_inbox"}
+    with _run(run_id="child-run", **{PACK_RUN_KEY: job.pack_run}):
+        await next(t for t in job.pack_tools if t.__name__ == "read_email")(email_id="m-1")
+    assert seen == [True], "the held answer reaches the child's call"
+
+
+async def test_a_child_in_an_open_chat_gets_the_open_read_set_and_no_write(
+    monkeypatch,
+) -> None:
+    """§5, OA-9c, in an open chat, on the real CRM owner: the main assistant
+    holds the ten tools, and the child holds the six reads. No write and no
+    send reaches the child (verdict acceptance, open chat)."""
+    _mode(monkeypatch, "live")
+    crm = _crm_module()
+    _owners(monkeypatch, **{CRM: crm})
+    with _run():
+        main = await _build("crm-records", crm)
+        why, job = await _child("crm-records")
+    assert main.held is False and {t.__name__ for t in main.tools} == CRM_PACK
+    child = {t.__name__ for t in job.pack_tools}
+    assert why == "" and child == CRM_PACK - CRM_WRITES == CHILD_TOOLS["crm-records"]
+
+
+async def test_an_email_child_builds_held_in_an_open_chat(monkeypatch) -> None:
+    """The owner reads stranger text, so ``_with_pack_tools`` builds the pack
+    held in a clean chat too. The spawn marks the chat before the child
+    starts, so no pack call of a child may clear ``no_egress``. Mutation:
+    build with ``held=False`` -> the call runs with ``no_egress`` False."""
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "read_email", dict(_READ_ONLY))
+    seen: list[Any] = []
+    stub = _stub(_no_egress_probe("read_email", seen))
+    _owners(monkeypatch, **{EA: stub})
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    with _run():
+        main = await _build("email", stub)
+        (job,), stopped, held = await at._with_pack_tools(
+            (sc.Job(1, "Read.", (), "fast", packs=("email",)),), artifact_context())
+    assert main.held is False and stopped == () and held is True
+    with _run(run_id="child-run", **{PACK_RUN_KEY: job.pack_run}):
+        await job.pack_tools[0](email_id="m-1")
+    assert seen == [True]
+
+
+async def test_a_child_pack_tool_acts_only_under_its_own_key(monkeypatch) -> None:
+    """The spawn mints one key for each child. The parent frame, a sibling's
+    frame and a frame with no key all refuse the tool. Mutation: the spawn
+    reuses the parent's key -> the parent frame runs it -> red."""
+    ran: list[str] = []
+
+    async def body() -> None:
+        ran.append("body")
+
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "read_email", dict(_READ_ONLY))
+    _owners(monkeypatch, **{EA: _stub(_probe("read_email", body=body))})
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    refused = ti.PACK_CALL_REFUSED.format(tool="read_email")
+    with _run():
+        _, one = await _child("email", held=True)
+        _, two = await _child("email", held=True)
+        tool = one.pack_tools[0]
+        assert await tool(email_id="m-1") == refused, "the parent frame"
+    assert await tool(email_id="m-1") == refused, "a frame with no run"
+    with _run(run_id="child-2", **{PACK_RUN_KEY: two.pack_run}):
+        assert await tool(email_id="m-1") == refused, "a sibling"
+    with _run(run_id="child-1", **{PACK_RUN_KEY: one.pack_run}):
+        assert await tool(email_id="m-1") == "read m-1"
+    assert ran == ["body"]
+    assert len({one.pack_run, two.pack_run, "key-r-1"}) == 3
+
+
+@pytest.mark.parametrize("slug", sorted(CHILD_TOOLS))
+async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: str) -> None:
+    """The real owners, the real builder and the one marker. A pack with no
+    read tool stops the job. Mutation: read another marker (``open_world``)
+    -> the email writes reach a child -> red."""
+    from acb_skills.tool_guard import tool_name
+
+    _owners(monkeypatch, **{EA: _module(), CRM: _crm_module(),
+                            PROJECTS: load_agent_module(PROJECTS_DIR),
+                            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")})
+    with _run():
+        why, job = await _child(slug, held=True)
+    want = CHILD_TOOLS[slug]
+    if not want:
+        assert job is None and f"the tool pack '{slug}' has no read tool" in why
+        return
+    assert why == "" and {tool_name(t) for t in job.pack_tools} == want
+
+
+def _pack_owners() -> dict[str, Any]:
+    return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR),
+            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
+
+
+def test_each_pack_tool_that_draws_is_a_display_tool() -> None:
+    """OA-9c review: a child's card would reach the member's chat, because a
+    child copies the parent's run queue. No single marker names the tools that
+    draw, so this scan does. Each read-only pack tool that reaches a display
+    emitter must be in ``DISPLAY_TOOLS`` (or ``MEMBER_TOOLS``), so a new
+    display tool fails here and never reaches a child. Mutation: drop
+    ``render_board`` from ``DISPLAY_TOOLS`` -> red."""
+    from acb_skills import tool_packs
+    from acb_skills.tool_guard import tool_name
+
+    owners = _pack_owners()
+    draws: dict[str, str] = {}
+    for slug in sf.pack_slugs():
+        found = tool_packs.pack(slug)
+        assert found is not None
+        for fn in tool_packs.owner_tools(slug, owners[found.owner]):
+            path = _display_path(fn)
+            if path:
+                draws[tool_name(fn)] = path
+    read_draws = {n for n in draws if sc.annotated_read_only(n)}
+    # STU-G2: ``studio_plan`` awaits a card. Mutation: take it out of
+    # ``DISPLAY_TOOLS`` -> ``loose`` below holds it -> red.
+    assert "studio_plan" in read_draws, f"non-vacuity: the scan finds the plan card {draws}"
+    assert "studio_interview" not in draws  # it returns text for ask_questions, draws nothing
+    assert {"render_board", "render_tasks", "render_timeline", "open_in_app",
+            "show_view"} <= read_draws, f"non-vacuity: the scan finds the views {draws}"
+    loose = {n: draws[n] for n in read_draws - sc.DISPLAY_TOOLS - sc.MEMBER_TOOLS}
+    assert loose == {}, f"a read-only pack tool draws, and a child could hold it: {loose}"
+    assert not any(sc.child_may_hold(n) for n in draws)
+
+
+def test_each_platform_tool_that_draws_is_blocked_for_a_child() -> None:
+    """The same scan over the platform tools that a job can name, and the
+    orchestrator's ``show_in_app``. Each read-only one that draws is blocked
+    by the parser (``DISPLAY_TOOLS`` or ``MEMBER_TOOLS``)."""
+    import orchestrator.agents as pkg
+
+    tools = [*ti._collect_injectable_platform_tools("orchestrator"), pkg._mod.show_in_app]
+    draws = {ti._tool_name(fn): _display_path(fn) for fn in tools}
+    draws = {n: p for n, p in draws.items() if p}
+    assert {"show_in_app", "share_artifact", "emit_generative_ui"} <= set(draws), draws
+    loose = {n: p for n, p in draws.items() if sc.annotated_read_only(n)
+             and n not in sc.DISPLAY_TOOLS | sc.MEMBER_TOOLS}
+    assert loose == {}
+    for name in draws:
+        plan = sc.parse_jobs(json.dumps([{"job": "Show.", "tools": [name]}]),
+                             parent_tools={name})
+        assert plan.jobs == (), f"the parser lets a child hold {name}"
+
+
+def test_each_pack_tools_own_mark_equals_its_registry_mark() -> None:
+    """``child_may_hold`` reads the risk registry BY NAME, as ``parse_jobs``
+    does. The registry keeps the last module that named a tool. So a module of
+    another agent with a tool of the same name could mark a pack write
+    read-only. With every in-repo agent loaded, each pack tool's own mark must
+    equal its registry mark. Mutation: register ``get_record`` as a write in
+    another module -> red."""
+    from pathlib import Path
+
+    from acb_skills import tool_packs
+    from acb_skills.tool_guard import tool_name
+
+    owners = _pack_owners()
+    own: dict[str, bool] = {}
+    for slug in sf.pack_slugs():
+        found = tool_packs.pack(slug)
+        assert found is not None
+        for fn in tool_packs.owner_tools(slug, owners[found.owner]):
+            risk = getattr(getattr(fn, "func", fn), "__tool_risk__", None) or {}
+            own[tool_name(fn)] = risk.get("read_only") is True
+    root = Path(__file__).resolve().parents[2]
+    for agents_py in sorted((root / "apps/agents").glob("*/agents.py")):
+        load_agent_module(agents_py.parent.relative_to(root).as_posix())
+    assert len(own) >= 150, "non-vacuity: the three owners build their tools"
+    clash = {n: ro for n, ro in own.items() if sc.annotated_read_only(n) is not ro}
+    assert clash == {}
+
+
+def test_the_child_build_calls_the_one_builder_and_copies_no_body() -> None:
+    """OA-9c calls ``_pack_tools`` and copies none of the held rule. Mutation:
+    decide the held set in the spawn -> a body name shows here -> red."""
+    src = inspect.getsource(at._child_pack_tools)
+    for body in ("_is_egress", "_pack_held", "_run_no_egress", "is_egress_tool",
+                 "session_mark_state"):
+        assert body not in src, body
+    assert "_pack_builder()" in src
+    assert at._pack_builder() is ti._pack_tools
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

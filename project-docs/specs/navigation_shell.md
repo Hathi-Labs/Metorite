@@ -5,6 +5,15 @@ and 2, NS-3 slices A, B and C, NS-4a, NS-4b, NS-6 slice 6a, NS-7, NS-10, NS-10b 
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
+**BUILT 2026-11-08, by owner direction (ASK-1, task 2242):** on a desktop,
+every page scrolls its last line clear of the floating Ask bar (§7.1, "The last
+line of a page scrolls clear of the Ask bar"). It has no flag, and it ships
+live.
+
+Email (2026-10-29, task #914): its own `CommandPalette`, its ⌘K listener and its
+`⌘K` button are gone. Its "Write an email" job is the one command that the shell
+carries. Fence: `src/app/email/emailShellSeam.test.ts`.
+
 NS-2 slice 2 (2026-10-09) adds three jobs and the job route fence. It rides
 the shell bar flag, which is on.
 
@@ -280,6 +289,29 @@ sees whose workspace this is at all times (D51).
   `e2e/shell-signature.spec.ts`.
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
+
+**The frame since GL-12 (owner, 2026-11-01).** The shell bar draws no row.
+The one field is the Ask bar at the foot of the page column (`ChatBar.tsx`,
+`AskBar`). The bell is the sidebar's Needs you row, the activity control is
+the bar's "N running" pill and the Chat row's count, and the assistant opens
+from the bar. `glass_look.md` GL-12 has the detail. The paragraph below is
+the GL-11 frame it replaces. The Chat row also marks a message that Reach
+posted and the member has not opened (D177, `proactive_reach.md` §19.2).
+
+**A region the Ask bar never sits on (owner, 2026-11-06, task 1816).** A page
+marks such a region with the attribute `data-ask-clear`. The Email composers
+carry it. The bar takes the largest form that does not overlap the region, at
+any overlap. Inside the region each control counts at any scroll for the
+corner button. The shell names no app. Fence: `askBarRest.test.ts`.
+
+**The frame since 2026-11-01 (owner, GL-11).** The owner said: "the burger
+icon being outside the sidebar kind of puts me off". The sidebar now runs
+the full height, and it owns its head: the organization's lockup and the
+fold control, on the sidebar it folds. The shell bar sits over the page
+column only, and it holds no brand zone. The table below keeps the bar's
+other zones. A folded rail keeps the organization's mark in view, as the
+owner asked on 2026-10-09. `AppShell.tsx` holds the frame, and the shell
+e2e specs fence it.
 
 This frame needs both shell flags. With the shell bar alone, the bar sits
 over the page column, as NS-1 built it. `desktopFrame` in
@@ -786,6 +818,14 @@ starts with `/centers/`. The six `preview` Center panes stay (D49). A new `src/l
 Home file calls a `center.` feature check. A gateway test drives rule 4 with a
 private task of another member and asserts that no card returns it.
 
+### 4.2a The team scope contract (T-4, task 2535, replan 2026-11-09)
+
+Proposed, owner review in this pull request. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
+
+A scope never grants. It narrows a view and opens nothing that the member could not already open (§4.2 rule 4). A team is a group, and the shell shows no team object (D87). The rules of hidden spaces are in `project_management_app.md` §14.9.
+
+Fence: `src/lib/shell/teamScope.test.ts` (new) fails when the value takes a third form or when a scope opens a row. Until T-4 builds it, the rule is advisory (R7).
+
 ### 4.3 Personal Center — three apps, three jobs
 
 My Tasks and Calendar already read the one task store. My Day joins them at
@@ -1182,7 +1222,9 @@ general agent, and a chat bar at the foot of the page opens it. Flag
   (§5.2 rule 2).
 - **The activity control stays in the shell bar.** It shows the running
   count and opens the list of runs. A row opens its chat in the assistant.
-  The control never opens a chat by itself.
+  The control never opens a chat by itself. The assistant itself may open
+  twice without a tap: the hello and Reach's pop (D177,
+  `proactive_reach.md` §19.3). Neither goes through this control.
 - **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
   at the right end of the bottom nav on every page, so the thumb learns one
   place. A tap opens the assistant as a full-screen sheet, with the cursor
@@ -1255,6 +1297,24 @@ on to the sub-run.
 - **A Copilot SDK specialist** (`task-manager`, `app-builder`). Its native
   `ask_user` parks through `_make_user_input_handler(<parent thread>)`, and
   no test runs that path through `orchestrator`.
+
+**The last line of a page scrolls clear of the Ask bar** (owner, 2026-11-07,
+ASK-1, task 2242). The owner asked for "extra scroll down so that all the
+elements appear above the chat box across all of the apps". The bar floats over
+the page column and reserves no space, so `lib/shell/askBarClearance.ts` adds
+the room:
+
+- The bar measures the vertical scrollers that it overlaps. The innermost one
+  that reaches the foot of its holder gets the room. A list in the middle of a
+  page is content, so the page gets the room. A box that scrolls only sideways
+  never gets it.
+- The room is what the bar needs, less the padding that the scroller has.
+- The scan runs after the page changes, on a resize, and after a scroll stops.
+  It puts every scroll position back.
+- The scan adds no room on a phone, or while the bar is folded.
+
+A new app needs no code for this. Fences: `askBarClearance.test.ts` and
+`e2e/askbar-clearance.spec.ts`.
 
 ### 7.1.1 Email through the one assistant (built 2026-10-23, branch `one-assistant-email`)
 
@@ -1376,6 +1436,7 @@ feature, then calls the app's own read:
 | `approvals` | `feature:approvals` | `list_pending` in `action_broker/broker.py` |
 | `projects` | `feature:projects` | `list_notifications`, unread only |
 | `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
+| `reminders` | `feature:projects` | `my_open_cards` in `routes/projects/reminders.py` (WS-66 RM-2b) |
 
 **Each read is one bounded query.** `my_due_tasks` reads the lens rows that
 are due before the member's tomorrow, in the member's zone. It gives the
@@ -1451,9 +1512,11 @@ display order stays as below.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
 - `id` is `tasks:<task id>`, `approvals:<pending action id>`,
-  `projects:<notification id>` or `email:<account id>:<thread id>`.
-- `kind` is `overdue`, `approval`, `due_today`, `notification` or
-  `needs_reply`.
+  `projects:<notification id>`, `email:<account id>:<thread id>` or
+  `reminders:<reminder id>`.
+- `kind` is `overdue`, `approval`, `due_today`, `notification`,
+  `needs_reply`, `reminder_due`, `reminder_check` or `reminder_unconfirmed`.
+  The three reminder kinds come last in `KIND_ORDER`, in that order.
 - `act` is `done`, `read` or null. `done` runs
   `POST /projects/tasks/{act_ref}/complete`. `read` runs
   `POST /projects/notifications/read` with the id in `ids`. An approval and
@@ -1474,9 +1537,21 @@ display order stays as below.
   number is still a floor of 60 at most.
 
 **The My Day feed reads the same providers (WS-58, ACTIVE 2026-10-13).**
-`my_day_feed.md` §4.4 owns the feed. This contract keeps its five kinds. A
+`my_day_feed.md` §4.4 owns the feed. This contract keeps its kinds. A
 new kind joins it only by an amendment of this section, in the PR that adds
 the kind.
+
+**The reminders source (WS-66 RM-2b, amended 2026-10-30).** This amendment
+adds the `reminders` row, the `reminders:<id>` item id and the three
+reminder kinds. The app of the source is `calendar`. The server keys
+`sources`, `totals` and `capped` by the source id `reminders`. The client
+maps a source id to its app through `NEEDS_SOURCE_APP` in `needs.ts`.
+
+The row
+is a link only, to `/chat?do=new-chat&reminder=<id>`. The source has no
+sidebar count (`calendar_events_reminders.md` RM-2b decision 5). A failed
+`reminders` source prints "Calendar did not answer, so its reminders may be
+missing."
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent
@@ -1779,6 +1854,11 @@ blocked until one is.
 
 ### 8.4 The first sign-in question
 
+**Amended by D150 (2026-11-02).** The first visit skips "Choose the apps for
+your sidebar", and the founder's dialog has no invite step.
+`specs/onboarding.md` §4 owns the first-run path. "Change my layout" keeps
+both steps.
+
 `WelcomeDialog` already mounts in `AppShell`. It asks one question, "What will
 you do most here?", with six answers. The answer picks a preset. The member may
 skip it. The question changes the starting layout and nothing else.
@@ -1867,15 +1947,85 @@ skip it. The question changes the starting layout and nothing else.
 
 ## 9. The phone
 
-Today the phone shell has no top bar. A bottom nav changes its tabs per app,
-and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
+The phone shell has no top bar. A bottom bar changes its tabs per app, and
+its Menu tab opens a drawer (`AppShell.tsx`, `MobileBottomNavInner`).
 
-- **Keep the per-app bottom tabs.** They work, and each app tuned them.
-- **Add one row at the top of every screen**: the command bar and the scope
-  chip.
 - **The drawer takes the sidebar shape of §3.2.** My Day comes first.
-- **The dock opens as a full-screen sheet.** With `NEXT_PUBLIC_SHELL_CHAT`
-  on, the Ask tab at the right end of the bottom nav opens it (D99, §7.1).
+- **The Ask tab opens the assistant** (D99, §7.1). Since 2026-11-07 the
+  assistant opens as a sheet above the bar (§9.1), not over it.
+
+### 9.1 The bar always shows (owner, 2026-11-07, MOB-9, task 2002)
+
+The owner asked in chat: "have the bottom menu bar always show. currently the
+popup end up covering the menu."
+
+- **No overlay covers the bar.** The bar paints on `LAYER.bottomNav` (96).
+  That is above every sheet, drawer, card, dialog and panel. The guide (98),
+  a confirmation (`Modal` `alert`, 100) and a toast (110) paint above it.
+- **Each full-height layer ends at the bar's top edge.** One CSS rule in
+  `globals.css` does this under `:root[data-phone-nav]`, with the variable
+  `--phone-nav-h`. An overlay never sets that height itself. A sheet sized in
+  `vh` subtracts `--phone-nav-h`.
+- **A tab closes what is open, then does its job.** The shell sends one
+  bar-tap signal (`lib/phoneBarTap.ts`). Each overlay closes on it, and the
+  Focus room drops to its strip. A second tap on the tab that opened a sheet
+  closes the sheet. Ask opens and closes the assistant.
+- **A menu or a panel stops at the bar.** `AnchoredPanel` and
+  `lib/menuClamp.ts` measure the room to the bar's top edge.
+- **The bar's top edge is square, with a hairline** (owner, 2026-11-07). A
+  sheet ends on that edge. Round corners left two gaps where the sheet seemed
+  to run on behind the bar.
+- **The bar keeps space at its foot for an iPhone** (owner, 2026-11-07). The
+  foot (`--phone-bar-foot`) is the home-indicator inset, and never less than
+  0.75rem. The bar's height is `--phone-bar-h`, and every clearance of the
+  bar reads it. No file adds 3.5rem and the inset by hand.
+
+Fences: `layers.test.ts`, `phoneBarTap.test.ts`, `menuClamp.test.ts`,
+`AnchoredPanel.test.ts` and `e2e/phone-bar-always.spec.ts`.
+
+### 9.2 One rule for every bar (owner, 2026-11-07, MOB-12, task 2005)
+
+The owner asked that each bar make it "as obvious as possible to the user how
+to use the app". `src/lib/shell/phoneBar.ts` declares the bar of each app, and
+the shell draws it. `AppShell.tsx` holds no branch for one app.
+
+1. Menu comes first and Ask comes last. At most three app tabs go between
+   them.
+2. A place tab goes to a part of the app. While that part shows, its icon
+   sits in a tinted pill.
+3. An act tab does one thing. At most one act is the accent: the app's main
+   "new". Its icon sits in a filled circle.
+4. No tab opens an empty sheet. The page hides a tab that has nothing to do.
+5. No tab repeats a control that stays on the screen. On a phone, the page
+   drops the top control that the bar holds.
+6. An app with no places and no "new" declares no tabs, and it gives its
+   reason.
+
+A page tells the shell what shows with one event, `cc-phone-bar` (the selected
+tab, the tabs to hide, and the counts). CRM keeps its own list
+(`cc-crm-nav`), because its page knows the source's labels.
+
+| App | Tabs between Menu and Ask |
+|---|---|
+| My Day | None. One page. CC-9 (task 1977) puts Capture at the thumb |
+| Calendar | Today · Schedule (count) · Reminders (count, behind its flag). The floating button is gone |
+| People | Directory · Org chart · Find skills |
+| Projects | Projects · Capture · Search (`one_projects_app.md` MOB-10) |
+| CRM | The page's own list, then More |
+| Knowledge | Spaces · Search · New page |
+| Email | Mailboxes · Automation · Write |
+| WhatsApp | Triage (inbox only) · Sections |
+| Chat | None while Ask shows, because `/chat` then opens the assistant |
+| Studio | Library · Modules · New app |
+| Artifacts | Chats · Workspaces |
+| Approvals | None. One list, and each row holds Approve and Reject |
+| Organisation | Members · Requests (count) · Invite |
+| Appearance | None. One settings page |
+| Integrations | Views · Add |
+
+Fence: `phoneBar.test.ts`. It fails when a live pane has no declared bar,
+when a bar holds more than three tabs or two accents, or when no page answers
+a tab's event.
 
 ---
 

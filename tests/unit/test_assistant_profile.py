@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common.assistant_profile import APP_PREFERENCES
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes.admin import assistant_profile as ap
@@ -44,6 +45,9 @@ class _Result:
 
     def first(self) -> Any:
         return self._row
+
+    def fetchall(self) -> list[Any]:
+        return []
 
 
 class _FakeDB:
@@ -71,12 +75,23 @@ class _FakeDB:
             raise RuntimeError("database away")
         sql, p = str(stmt), dict(params or {})
         self.sql.append((sql, p))
+        if "chat_session" in sql:
+            # PZ-35: Forget also clears the chat summaries. The SQL is proved
+            # in ``test_chat_summary_routes_r8.py`` (R8).
+            return _Result(None)
         if sql.startswith("SELECT 1 WHERE EXISTS"):
             # The alias check of PZ-5 (`email_in_org`).
             ok = self.in_org is None or p["email"] in self.in_org
             return _Result((1,) if ok else None)
         if "FROM app_user u LEFT JOIN people p" in sql:
             return _Result(self.address)
+        if sql.startswith("SELECT user_id, assistant_profile -> 'apps'"):
+            # The row rule of the app settings (BR-2a-1 repair round 2): the
+            # fake holds one row, under the session's address.
+            if self.row is _NO_ROW:
+                return _Result(None)
+            apps = self.row.get("apps") if isinstance(self.row, dict) else None
+            return _Result((p["m"], apps.get(p["app"]) if isinstance(apps, dict) else None))
         if sql.startswith("SELECT assistant_profile"):
             return _Result(None if self.row is _NO_ROW else (self.row,))
         if sql.startswith("INSERT INTO user_settings"):
@@ -93,6 +108,13 @@ class _FakeDB:
         if "assistant_profile = NULL" in sql:
             if self.row is not _NO_ROW:
                 self.row = None
+            return _Result(None)
+        if sql.startswith("UPDATE user_settings SET assistant_profile = CASE WHEN "
+                          "jsonb_typeof(assistant_profile -> 'apps')"):
+            # Forget-all (BR-2a-1): the app settings stay, the words go.
+            if self.row is not _NO_ROW:
+                apps = self.row.get("apps") if isinstance(self.row, dict) else None
+                self.row = {"v": 1, "apps": apps} if isinstance(apps, dict) else None
             return _Result(None)
         # A per-item UPDATE.
         base = self._base()
@@ -153,9 +175,12 @@ def _user(email: str = "ana@alpha.example", org: str | None = _ORG) -> UserConte
 
 
 def _stored(res: Any) -> dict[str, Any]:
-    """The GET body without ``enabled`` (PZ-25), which is not stored."""
+    """The GET body without ``enabled`` (PZ-25) and ``apps`` (BR-2a-1),
+    which the read adds."""
     body = res.json()
     assert isinstance(body.pop("enabled"), bool)
+    assert isinstance(body.pop("summaries_enabled"), bool)
+    assert set(body.pop("apps")) == set(APP_PREFERENCES)
     return body
 
 
@@ -242,6 +267,48 @@ class TestThePut:
             "length": "detailed", "language": "en-IN",
             "notes": ["x" * ap.NOTE_MAX] * ap.NOTES_MAX}}).status_code == 200
         assert _put({"key": "learning", "value": False}).status_code == 200
+
+    @pytest.mark.parametrize(("value", "names"), [
+        ({"brief": {"brief_time": "24:00"}}, "00:00 to 23:59"),
+        ({"brief": {"brief_time": "7:30"}}, "HH:MM"),
+        ({"brief": {"closeout_time": "18:30:00"}}, "HH:MM"),
+        ({"brief": {"brief_time": 730}}, "HH:MM"),
+        ({"brief": {"enabled": "no"}}, "true or false"),
+        ({"brief": {"enabled": 0}}, "true or false"),
+        ({"brief": {"colour": "red"}}, "enabled, brief_time, closeout_time"),
+        ({"brief": {}}, "at least one preference"),
+        ({"nobody": {"enabled": True}}, "the app is one of brief, chat"),
+        ({"brief": {"enabled": True}, "other": {}}, "exactly one app"),
+        ("brief", "exactly one app"),
+    ])
+    def test_an_app_setting_is_strict(self, fake: _FakeDB, value: Any, names: str) -> None:
+        """BR-2a-1 repair round 1, P1-3: the brief's keys, and nothing else."""
+        res = _put({"key": "apps", "value": value})
+        assert res.status_code == 422, res.text
+        assert names in _detail(res)
+        assert fake.sql == []
+
+    def test_an_app_setting_merges_into_its_app(self, fake: _FakeDB) -> None:
+        res = _put({"key": "apps", "value": {"brief": {"enabled": False, "brief_time": "06:45"}}})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        assert params["app"] == "brief"
+        assert json.loads(params["pval"]) == {"brief": {"enabled": False, "brief_time": "06:45"}}
+        update = sql.split("DO UPDATE SET", 1)[1]
+        assert "ARRAY['apps']" in update and "CAST(:app AS text)" in update
+        assert "EXCLUDED.assistant_profile" not in update
+        assert res.json()["apps"]["brief"] == {
+            "enabled": False, "brief_time": "06:45", "closeout_time": "18:30"}
+        assert res.json()["address"] == {"name": "VJ"}  # the other keys stay
+        for edge in ("00:00", "23:59"):
+            assert _put({"key": "apps", "value": {"brief": {"closeout_time": edge}}}
+                        ).status_code == 200
+
+    def test_a_chat_write_cannot_set_an_app_setting(self, fake: _FakeDB) -> None:
+        res = _client().put(_URL, json={"key": "apps", "value": {"brief": {"enabled": False}}},
+                            headers={"X-Profile-Via": "chat"})
+        assert res.status_code == 422 and "Settings" in _detail(res)
+        assert fake.sql == []
 
     def test_the_write_merges_one_key_with_jsonb_set(self, fake: _FakeDB) -> None:
         res = _put({"key": "style", "value": {"length": "short"}})
@@ -501,12 +568,27 @@ class TestTheForget:
     def test_delete_sets_the_column_null(self, fake: _FakeDB) -> None:
         res = _client().delete(_URL)
         assert res.status_code == 204
-        [(sql, params)] = fake.sql
-        assert sql.startswith("UPDATE user_settings SET assistant_profile = NULL")
+        [(sql, params), (clear, clear_params)] = fake.sql
+        # PZ-35: Forget also clears the chat summaries, by the session's member.
+        assert "UPDATE chat_session AS s" in clear
+        assert clear_params == {"member": "ana@alpha.example"}
+        assert sql.startswith("UPDATE user_settings SET assistant_profile = CASE WHEN")
+        assert "ELSE NULL END" in sql
         assert "current_setting('app.tenant_id', true)" in sql
         assert params == {"uid": "ana@alpha.example"}
         assert fake.row is None
         assert _stored(_client().get(_URL)) == ap.empty_profile()
+
+    def test_delete_keeps_the_app_settings(self, fake: _FakeDB) -> None:
+        """BR-2a-1 repair round 1, P1-3. An opt-out of the brief is a
+        setting, not the member's words. A forget keeps it, so the brief
+        does not turn back on."""
+        fake.row = {**fake.row, "apps": {"brief": {"enabled": False}}}
+        assert _client().delete(_URL).status_code == 204
+        assert fake.row == {"v": 1, "apps": {"brief": {"enabled": False}}}
+        body = _client().get(_URL).json()
+        assert body["apps"]["brief"]["enabled"] is False
+        assert body["facts"] == [] and body["address"] == {}
 
 
 # ── The read ───────────────────────────────────────────────────────────────
@@ -596,6 +678,13 @@ class TestTheMember:
             # The alias check of PZ-5 takes the typed address, never a member.
             if sql.startswith("SELECT 1 WHERE EXISTS"):
                 assert set(params) == {"email"}
+            elif sql.startswith("SELECT user_id, assistant_profile -> 'apps'"):
+                # The row rule of the app settings (BR-2a-1 repair round 2)
+                # binds the member as ``:m``, as the brief's reader does.
+                assert params["m"] == "bo@alpha.example"
+            elif "chat_session" in sql:
+                # PZ-35: Forget clears the summaries of the session's member.
+                assert params == {"member": "bo@alpha.example"}
             else:
                 assert params["uid"] == "bo@alpha.example"
             assert not any("org" in k for k in params), params
@@ -743,11 +832,13 @@ class TestTheAddress:
     def test_the_profile_get_is_unchanged(self, fake: _FakeDB) -> None:
         fake.address = ("Viju", "Asia/Kolkata", "Vijay Varada")
         body = _client().get(_URL).json()
+        # ``apps`` is the app settings of BR-2a-1, and never a name.
         assert set(body) == {"v", "learning", "address", "style", "aliases", "facts",
-                             "enabled"}
+                             "enabled", "summaries_enabled", "apps"}
         assert body["address"] == {"name": "VJ"}
-        assert [s for s, _ in fake.sql] == [s for s, _ in fake.sql
-                                            if s.startswith("SELECT assistant_profile")]
+        # The profile and the app settings (the row rule), and no name read.
+        reads = ("SELECT assistant_profile", "SELECT user_id, assistant_profile -> 'apps'")
+        assert [s for s, _ in fake.sql] == [s for s, _ in fake.sql if s.startswith(reads)]
 
 
 def test_the_count_is_by_lower_case_member_and_bounded(monkeypatch) -> None:

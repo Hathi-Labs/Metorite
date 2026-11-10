@@ -1,5 +1,6 @@
 "use client";
 
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -16,13 +17,12 @@ import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { emailAssistantFacts } from "./lib/assistantFacts";
 import { askRailSession } from "@/lib/railSessions";
-import { shellBarOn } from "@/lib/shell/registry";
+import { isTypingTarget } from "@/lib/keyboard";
 import { SearchBar } from "./components/SearchBar";
 import { MailboxActions } from "./components/MailboxActions";
 import { EmailDetail } from "./components/EmailDetail";
 import { EmailAssistantChat } from "./components/EmailAssistantChat";
 import { ComposePanel } from "./components/ComposePanel";
-import { CommandPalette, Command } from "./components/CommandPalette";
 import { TaskCaptureModal } from "./components/TaskCaptureModal";
 import { AutomationView } from "./components/automation/AutomationView";
 import { ConnectChoices } from "./components/ConnectChoices";
@@ -34,13 +34,14 @@ import { updateEmailAccount } from "./lib/api";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
+import { AutoRunNotice } from "./components/AutoRunNotice";
 import { StorageNotice } from "./components/StorageNotice";
 import { StorageStep } from "./components/StorageStep";
 import { SyncBanner } from "./components/SyncBanner";
 import { EmailDeepLink } from "./components/EmailDeepLink";
 import Modal from "@/components/ui/Modal";
 import {
-  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
+  useEmailStore, isRealFolder, backfillKey, scopeBusy, ALL_INBOXES,
 } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
@@ -69,6 +70,7 @@ import {
 } from "./lib/mailbox";
 import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 
 /** D99: the chat bar's one assistant replaces this app's chat scene. */
@@ -81,7 +83,6 @@ export default function EmailPage() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [listOpen, setListOpen] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
   // The mailbox the disconnect dialog asks about. `null` closes the dialog.
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
   // The mailbox whose name and colour the member edits (EM-T8b).
@@ -109,7 +110,8 @@ export default function EmailPage() {
   // other way into an automation view clears it too.
   const [processPastFrom, setProcessPastFrom] = useState<string | null>(null);
 
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
 
   // ── Zustand store ──
   const {
@@ -257,8 +259,13 @@ export default function EmailPage() {
     };
   }, [selectedAccountId, softRefresh]);
 
+  // Task #124: the assistant wrote to the mailbox (a draft, a label, a send).
+  // Read the list now instead of at the next 20 s tick. The open thread has
+  // its own listener in `EmailDetail`.
+  useLiveRefresh(() => softRefresh(), "email");
+
   // Derived data
-  const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  const selectedAccount =accounts.find((a) => a.id === selectedAccountId) ?? null;
   // The count of the header in All inboxes. A separate mailbox is not in All
   // inboxes, so it does not count (EM-T8g-2 item 2).
   const pooledCount = pooledMailboxes(accounts).length;
@@ -349,16 +356,12 @@ export default function EmailPage() {
   const noAccounts = surface === "empty";
 
   // Tell the mobile bottom bar, so it hides the email tabs that would open
-  // empty sheets (AppShell listens for `cc-email-empty`).
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: noAccounts }));
-  }, [noAccounts]);
-  useEffect(
-    () => () => {
-      window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: false }));
-    },
-    []
-  );
+  // empty sheets (`cc-phone-bar`, MOB-12). Write holds the compose button
+  // that the list toolbar drops on a phone.
+  usePhoneBar({
+    active: sheetTab,
+    hide: noAccounts ? ["email-accounts", "email-automation", "email-compose", "email-ai"] : [],
+  });
 
   // ── First sync ──
   // A new mailbox reports initial_sync_done=false until its first sync ends.
@@ -581,11 +584,17 @@ export default function EmailPage() {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "email-accounts" && accountsDrawerRef.current) {
-        // "Inbox" — folders/labels only (no automation section).
+        // "Mailboxes" — folders/labels only (no automation section).
+        markSheetTab("email-accounts");
         openDrawer(accountsDrawerRef.current);
       } else if (tab === "email-automation" && automationDrawerRef.current) {
         // "Automation" — the email-automation app list.
+        markSheetTab("email-automation");
         openDrawer(automationDrawerRef.current);
+      } else if (tab === "email-compose") {
+        // "Write" — the compose window. It holds the list toolbar's New button.
+        closeDrawer();
+        openCompose();
       } else if (tab === "email-ai" && ONE_ASSISTANT) {
         closeDrawer();
         openAssistant();
@@ -598,7 +607,7 @@ export default function EmailPage() {
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer, closeDrawer]);
+  }, [openDrawer, closeDrawer, markSheetTab, openCompose]);
 
   // Opening an email from a chat card (EmailToolCards) must leave any open
   // automation scene — the full-screen Chat otherwise covers the inbox so the
@@ -721,25 +730,12 @@ export default function EmailPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Command palette — works even while typing in a field.
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-        return;
-      }
-      if (e.key === "Escape") {
-        setPaletteOpen(false);
-        return;
-      }
+      // ⌘K belongs to the shell's command bar (D89). This page never
+      // listens for it.
       // Don't hijack typing, modifier combos, or when a modal owns the keys.
-      const t = e.target as HTMLElement | null;
-      const typing =
-        !!t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable);
+      const typing = isTypingTarget(e.target as HTMLElement | null);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -788,41 +784,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, editingMailbox, removingAccount, paletteOpen, automationFeature,
-  ]);
-
-  // Command palette entries (Cmd/Ctrl+K).
-  const commands = useMemo<Command[]>(() => {
-    const cmds: Command[] = [
-      { id: "compose", label: "Compose new email", hint: "C", run: () => openCompose() },
-    ];
-    const em = selectedEmail;
-    if (em) {
-      cmds.push(
-        { id: "reply", label: "Reply", hint: "R", run: () => handleToolbarAction("reply", em) },
-        { id: "reply-all", label: "Reply all", hint: "A", run: () => handleToolbarAction("reply-all", em) },
-        { id: "forward", label: "Forward", hint: "F", run: () => handleToolbarAction("forward", em) },
-        { id: "archive", label: "Archive", hint: "E", run: () => updateEmail(em.id, { folder: "archive" }) },
-        { id: "delete", label: "Delete", hint: "#", run: () => deleteEmail(em.id) },
-        { id: "star", label: em.isStarred ? "Remove star" : "Star", hint: "S", run: () => updateEmail(em.id, { isStarred: !em.isStarred }) },
-        { id: "read", label: em.isRead ? "Mark as unread" : "Mark as read", hint: "U", run: () => updateEmail(em.id, { isRead: !em.isRead }) },
-        { id: "flag", label: em.isFlagged ? "Clear flag" : "Flag / mark important", run: () => updateEmail(em.id, { isFlagged: !em.isFlagged }) },
-      );
-    }
-    for (const f of foldersInScope(folders, viewAll)) {
-      cmds.push({ id: `go-${f.key}`, label: `Go to ${f.label}`, run: () => handleFolderSelect(f.key) });
-    }
-    if (selectedAccountId) {
-      cmds.push({
-        id: "sync",
-        label: viewAll ? "Sync each mailbox now" : "Sync now",
-        run: () => useEmailStore.getState().syncScope(),
-      });
-    }
-    return cmds;
-  }, [
-    selectedEmail, folders, selectedAccountId, openCompose, viewAll,
-    handleToolbarAction, updateEmail, deleteEmail, handleFolderSelect,
+    disconnecting, editingMailbox, removingAccount, automationFeature,
   ]);
 
   // ── Render ──
@@ -920,18 +882,6 @@ export default function EmailPage() {
                 </>
               )}
               <MailboxActions selectedEmail={selectedEmail} />
-              {/* With the shell bar on, ⌘K is the command bar's, and this
-                  button would open a second palette (§6.7 rule 1). */}
-              {shellBarOn() ? null : (
-                <>
-                  <div className="w-px h-4 bg-border" />
-                  <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
-                    <span className="text-[10px] border border-border rounded px-1 leading-tight">
-                      ⌘K
-                    </span>
-                  </Button>
-                </>
-              )}
             </>
           }
         />
@@ -1237,6 +1187,14 @@ export default function EmailPage() {
           />
         )}
 
+        {/* ── Auto-run notice (task 2267, EM-G11c2) ──
+            For the Gmail mailbox in view that has an enabled rule and no
+            stored Auto-run choice. The rules step shows its own switch, so
+            the notice waits until the setup ends. */}
+        {selectedAccount && selectedAccount.provider === "gmail" && setupStage !== "rules" && (
+          <AutoRunNotice key={`auto-run-notice-${selectedAccount.id}`} account={selectedAccount} />
+        )}
+
         {/* ── The first import of the mailbox in view ──
             The panel draws only when the gateway reports progress
             (`import_phase`, EM-T6b). The sync banner names each other
@@ -1359,12 +1317,6 @@ export default function EmailPage() {
 
       </div>
 
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        commands={commands}
-      />
-
       {/* Add-to-Tasks clarify popup */}
       {taskCapturePopupEmailId && (() => {
         const popupEmail = emails.find((e) => e.id === taskCapturePopupEmailId);
@@ -1402,7 +1354,7 @@ export default function EmailPage() {
             })
           : null;
         return (
-          <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+          <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
             <span className="text-foreground">
               {isMessage ? (
                 n.title
@@ -1434,7 +1386,7 @@ export default function EmailPage() {
 
       {/* Undo-send toast — on mobile, sits above the fixed bottom nav bar */}
       {pendingSend && (
-        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+        <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
           <span className="text-foreground">Sending message…</span>
           <button
             onClick={() => useEmailStore.getState().undoSend()}
@@ -1468,6 +1420,7 @@ export default function EmailPage() {
         messageId={composeDefaults?.messageId}
         initialAttachments={composeDefaults?.attachments}
         initialArtifacts={composeDefaults?.artifacts}
+        initialSendError={composeDefaults?.sendError}
       />
 
       {/* Add a mailbox — the same choices as the empty state */}

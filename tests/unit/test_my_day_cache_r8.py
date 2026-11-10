@@ -179,7 +179,8 @@ class TestAHitSendsNoSql:
         assert first.status_code == 200, first.text
         body = first.json()
         assert body["sources"] == {"tasks": "ok", "projects": "ok", "email": "absent",
-                                   "approvals": "absent", "calendar": "ok"}
+                                   "reminders": "absent", "approvals": "absent",
+                                   "calendar": "ok"}
         assert f"tasks:{seeded['task']}" in [c["signal_id"] for c in body["cards"]]
         assert len(miss) > 0, "the miss sent no SQL: the count is blind"
         tag = first.headers["etag"]

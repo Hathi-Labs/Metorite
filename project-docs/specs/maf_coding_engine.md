@@ -22,6 +22,20 @@ the chat save to memory on unmount only the default agent's turns. H-227
 WS-43t2 (the session store, migration 228) is built and dark
 (2026-10-08). D86 paused it and D92 restarted it. Every other slice is
 spec only.**
+
+**WS-43h (app-builder on the MAF harness, task 2280) is built and dark
+(2026-11-08).** With `app_builder:<org>` in `MAF_CODING_SCOPE`, the factory
+builds a MAF harness agent on the one factory of `code_task`. Every other
+org keeps the Copilot agent until WS-43j. The block of WS-43h records what is
+true. On 2026-11-08 the owner told the team in chat to finish the removal,
+because Metorite will not use the Copilot SDK.
+
+**H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
+root agent also compares the member's org with the run's org (§15.4).
+**H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
+push gate of agent code read the membership and the access in the run's
+org (§15.4).
+
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -53,7 +67,8 @@ toolkit adds `WS-43y1` to `WS-43y4`, and the Email track splits `WS-43x` into
 **Amended 2026-10-03 by D86 (§16): Projects first, then Email.** The active
 track is WS-43d, WS-43u, WS-43v and WS-43w. The slices that port the older
 agents are parked, and §16.2 lists them. D84 stays decided, and it is
-deferred.
+deferred. D92 restarted those slices on 2026-10-07 (§17). On 2026-11-08 the
+owner confirmed that the removal goes on to its end.
 
 ## 0. One paragraph
 
@@ -450,6 +465,7 @@ needs all of them, so WS-43 uses Docker.
   Copilot `code_task` session gets no MCP server today either.
 - **Live streaming of the inner steps** of `code_task` to the chat. The
   session returns one report, as it does today.
+  §18 proposes to lift this non-goal (owner decision 2).
 - **A gateway with more than one worker process.** The broker keeps its
   registry in memory, as `copilot_sandbox.py` does. A second process needs the
   registry in Redis, through the tenant-prefix wrapper (R5c).
@@ -996,6 +1012,10 @@ the three host shell tools withheld. So `covers()` can be true for it before
 WS-43f.
 
 ### 7.8 app-builder on the MAF harness
+
+**Built 2026-11-08, dark (WS-43h).** The block of WS-43h in §11 lists where
+the build differs from this text. The main change: the registry label is now
+`"maf"`, so each executor site decides by the object.
 
 When `MAF_CODING_SCOPE` holds `app_builder` for the run's organization,
 `agent-app-builder/agents.py` builds a MAF harness agent in place of the
@@ -1793,14 +1813,14 @@ until its PR merges.
 | WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
-| WS-43h | app-builder on the MAF harness | WS-43d, WS-43e | AGENT-SAFE. ⏸ Parked by D86 |
+| WS-43h | app-builder on the MAF harness. Built 2026-11-08, dark (task 2280) | WS-43d, WS-43e | AGENT-SAFE |
 | WS-43i | Parity eval through the broker | WS-43f, WS-43h | AGENT-SAFE on a local stack. The flips are owner acts |
 | WS-43j | Retire the Copilot `code_task` path | WS-43i, 14 days on production | **OWNER-GATE** to merge (WS43-G7). ⏸ Parked by D86 |
 | WS-43k | The no-Copilot ratchet fence | Nothing | AGENT-SAFE |
 | WS-43l | Self-mutation on a MAF harness agent in the mutation container | WS-43k, H-218 | AGENT-SAFE. Dark behind `mutation:*`. ⏸ Parked by D86 |
 | WS-43m | The root `metorite` agent on MAF | WS-43h, WS-43l | AGENT-SAFE. Dark behind `metorite:*`. ⏸ Parked by D86 |
 | WS-43n | Agents from a repo default to MAF | Nothing | AGENT-SAFE. The external repo change is WS43-G11. ⏸ Parked by D86 |
-| WS-43o | The model list from the Router | Nothing | AGENT-SAFE. ⏸ Parked by D86 |
+| WS-43o | The model list from the Router | Nothing | AGENT-SAFE. ✅ Built 2026-11-08 (S4b, task 2282) |
 | WS-43p | Retire the Copilot mutation runner | WS-43i, WS-43l, 14 days on production | **OWNER-GATE** to merge (WS43-G9). ⏸ Parked by D86 |
 | WS-43q | Remove the Copilot runtime from the executor, the gateway and the settings | WS-43j, WS-43m, WS-43n, WS-43o, WS-43p, PR #585, WS-8i, and `MAF_NATIVE_SESSIONS` soaked ON in production (WS43-G13) | **OWNER-GATE** to merge (WS43-G9). ⏸ Parked by D86 |
 | WS-43r | Remove the packages and the CLI prefetch | WS-43q | **OWNER-GATE** to merge (WS43-G9, WS43-G12). ⏸ Parked by D86 |
@@ -2566,7 +2586,7 @@ uv run pytest tests/unit/test_sandbox_egress_proxy.py \
 **Gate.** AGENT-SAFE. It ships dark. The flip, the production allowlist and
 the firewall install are WS43-G1 and WS43-G4.
 
-### WS-43h — app-builder on the MAF harness 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
+### WS-43h — app-builder on the MAF harness ✅ **Built 2026-11-08, dark (task 2280)** · ⏸ Parked by D86, 2026-10-03 · ▶ Restarted by D92, 2026-10-07 (§17)
 
 **Scope.**
 
@@ -2583,6 +2603,9 @@ the firewall install are WS43-G1 and WS43-G4.
    builds the `GitHubCopilotAgent`, unchanged.
 2. The run takes the MAF path while the registry label still reads
    `"github-copilot"`, because the executor decides by the object.
+   **Changed, with the owner's OK of 2026-11-09** (task 2280, "Accept: the
+   label becomes maf"): the build set the label to `"maf"` instead. The
+   block below gives the reason.
 3. WS43-E8 passes on the MAF path: `index.html` is valid, and
    `node build/build_t2.mjs` runs in the container with the vendor cache.
 4. The broker mounts a `build/` copy with no `.git`, and refuses any other
@@ -2603,6 +2626,142 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**Built 2026-11-08, dark, on branch `ws43-s1-app-builder-maf-mt-3d248be7`
+(task 2280).** These facts change or add to the text above.
+
+- **The owner's answers, 2026-11-08.** Build on MAF's own harness and adapt
+  it, with no CodeAct. The soak follows rule A. The production flip of
+  `app_builder` is an owner act (WS43-G10).
+- **The factory (done-when 1).** `agent-app-builder/agents.py` asks
+  `code_session.app_builder_engine_for_run()` on each run. With
+  `app_builder:<org>` for the run's org, it builds
+  `code_session.build_app_builder_agent`. Every other run, and a run with no
+  org, gets the `GitHubCopilotAgent`, unchanged.
+- **One factory (CA-14).** `code_session.coding_harness_agent` is the one call
+  of `create_harness_agent`. `build_code_task_agent` and
+  `build_app_builder_agent` both use it. app-builder takes the `code_task`
+  flags and `disable_tool_auto_approval=True`. MAF's
+  `ToolApprovalMiddleware` needs an `AgentSession` on each run, and the
+  executor passes one only with `MAF_NATIVE_SESSIONS` on. No tool of this
+  agent asks MAF for an approval.
+- **The instructions.** The text of `instructions.md` does not change. The
+  MAF engine puts the sandbox paths of the two scripts
+  (`/opt/app-builder/build/`) in place of the placeholders. It adds a short
+  section that names its tools.
+- **The tools.** MAF's eight file tools over `sandbox_tools.RunAppFileStore`,
+  and `run_command` (`sandbox_tools.app_builder_run_command`). Each call
+  reads the run binding and the scope, so a flip off ends the tools at once.
+  The store is `tenant_file_store.AppWorkspaceFileStore`. It maps the app
+  dir as it is, and it refuses each name that starts with a dot. It uses the
+  safe opener, the dir lock and the quota, and it writes nothing to the blob
+  store. The agent does not hold the host floor file tools or the host web
+  tools (`sandbox_tools.host_tool_guard`), as in a covered `projects` run.
+- **The registry label: a change of done-when 2. The owner accepted it on
+  2026-11-09 (task 2280).** The build set the label of app-builder in
+  `_AGENT_REGISTRY` to `"maf"`, and removed the WS43-F31 entry, which named
+  WS-43h. The reason: each executor site reads "the label
+  OR the object", so a `"github-copilot"` label sends even the MAF agent
+  down the Copilot path. That path needs `_default_options`, so the run
+  ends in RUN_ERROR and its model gets no request
+  (`test_a_github_copilot_label_sends_the_maf_agent_down_the_copilot_path`).
+  The other way keeps the label and changes every label site of the
+  executor to read the object only. That changes the routing of every
+  agent, so the build did not take it. With `"maf"`, the Copilot agent of
+  an org outside the target keeps the Copilot path through its
+  `_default_options`. `loader.COPILOT_SPECIALIST_ALLOWED` keeps app-builder
+  until WS-43j. The roster (`observability._effective_runtime`) and the
+  runtime lines of the executor name the runtime of the built object, not
+  the label (fix round, review P3).
+- **A tenant dir.** A delegated run of app-builder works in its tenant dir
+  `o:<org>`, not in an app dir. That dir holds the uploads of every thread
+  and member (H-227). So the file tools and `run_command` both refuse there
+  (fix round, review P2). The Copilot CLI's file tools could read that dir.
+  The MAF engine works only in an app's own dir under the Custom Apps root.
+- **The session.** The agent holds `native_session_store.SessionHistoryProvider`
+  as its one provider of history. With `MAF_NATIVE_SESSIONS` on, the store
+  loads and saves its session, so a confirm turn sees the tool output of the
+  turn before. `_native_session_skip` does not skip for that provider, and
+  `agent_for_run` adds no second one.
+- **The mounts (done-when 4).** The broker copies `build_t2.mjs`,
+  `install_t2_deps.mjs` and `artifactUi.tsx` (`@cc/ui`) into its state dir,
+  under a name from a digest of the content. It mounts the copy read-only at
+  `/opt/app-builder/build`. It mounts `t2_vendor_dir()` read-only at
+  `/opt/t2-vendor`. The container env sets
+  `CUSTOM_APPS_T2_VENDOR_DIR=/opt/t2-vendor` and
+  `CUSTOM_APPS_T2_UI_SOURCE=/opt/app-builder/build/artifactUi.tsx`.
+  `build_t2.mjs` reads that variable, and with it unset it uses the path in
+  the repo (fix round, review P1: with no repo around the copy, the build
+  refused `@cc/ui`). `mount_list` refuses a source that holds `.git`.
+- **The bundle marker.** `build_t2.mjs` put the bundle in the template with
+  a STRING replace, and `String.replace` reads `$$`, `$&`, `` $` `` and
+  `$'` in that string as patterns. Two effects followed. Every T2 bundle
+  held the marker text in the key escape of React (`"$&/"`), which is a
+  small effect. And app code that held one of those four sequences was
+  changed, or broke the bundle with a SyntaxError. The docker test found
+  it, and the build now replaces with a function.
+- **The `.git` cover (§7.5 rule A, review P2).** `.git` gets the empty
+  read-only cover only when it exists at the start. So before a container
+  starts, `sandbox_broker.ensure_app_git` has `durability.init_app_repo`
+  run `git init` in an app dir with no `.git`. The broker itself starts no
+  process but `docker` (WS43-F1). It refuses a `.git` that is a link or a
+  file, and it fails closed when the init fails.
+- **The checkpoints (§7.5 rule A).** `_git` of `apps/durability.py` runs
+  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_ATTR_NOSYSTEM=1`, `GIT_CEILING_DIRECTORIES` at the parent of the app
+  dir, `-c core.fsmonitor=false`, `-c core.hooksPath=/dev/null`,
+  `-c core.attributesFile=/dev/null`, `-c commit.gpgSign=false` and
+  `-c submodule.recurse=false`. `status` adds `--ignore-submodules=all`.
+  Before each command but `init`, `_git_repo_trusted` refuses the repo when:
+  - a key of `.git/config`, listed with `git config --no-includes --list`,
+    is not one that `git init` writes (review P2);
+  - `.git` holds `commondir`, `objects/info/alternates` or
+    `info/attributes`, which `git init` never writes (review round 2);
+  - the work tree holds a `.git` entry below its top, a dir, a file or a
+    link, at any depth (review round 2). A container can run
+    `git init sub` and put a filter in `sub/.git/config`. Then `add -A`
+    records `sub`, and `status` runs git in it on the host.
+  These checks cover what the reviews found. They are not a proof that no
+  other file of `.git` can steer git: the read-only cover of `.git` is
+  the first line, and these checks are the second. The sync, the
+  checkpoint list and the restore run under the broker's dir lock, so no
+  container command runs between the checks and git. `lifecycle._git_init`
+  uses the same `_git`.
+- **No host access through a link (§7.5 rule B, review P0).** Every reader
+  and writer of `gateway/routes/apps/` opens through `acb_skills.safe_open`:
+  the sync and the fork read, the rehydrate and the fork write, the file
+  routes, the manifest, the publish read and the delete. The safe opener
+  refuses a link at any depth, and the file list leaves each link out.
+  After each command, the broker removes each link and each nested `.git`
+  that the command made in the app dir (`safe_open.remove_links`,
+  `safe_open.remove_nested_git`). The sweep runs in a `finally`, so it runs
+  also after a command that raised, or a stop (review round 2).
+- **The host T2 build (review round 2, option b).** It refuses a dir that a
+  container mounts now, or ever mounted, for good, and a dir that holds a
+  link. The safer choice: esbuild follows a relative import out of the app
+  dir with no link at all (`import x from "../other-app/src/data.json"`),
+  and a container wrote the source. So after a flip off of `app_builder`,
+  an app that the MAF engine edited has no build path, and its error text
+  says that an admin must turn the builder back on.
+- **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
+  Copilot path. A dir that a container mounted is on the broker's list, so
+  the executor's host git skips it (WS43-F13).
+- **Done-when 3 (WS43-E8), scripted.** `evals/coding_engine/app_builder.py`
+  holds WS43-E8: change the heading of a seeded T2 app that imports
+  `@cc/ui`, then build it. Run it with
+  `python -m evals.coding_engine.run --agent app-builder --tasks WS43-E8`.
+  With `--scripted` it calls no model, and it passed 2 of 2 on 2026-11-09
+  on a real container. The model run is open: the owner runs it under the
+  cost cap.
+- **Open: installs.** `install_t2_deps.mjs` needs the network, and the
+  sandbox has none until WS-43g. So an app with its own packages
+  (`node_modules`) does not build on the MAF engine until WS-43g.
+
+Fences: WS43-F12, `tests/unit/test_app_builder_engine.py`, and the Custom
+Apps half of WS43-F13, `tests/unit/test_app_workspace_links.py`. WS43-E8:
+`tests/unit/test_coding_eval_app_builder.py`. The `sandbox_docker` tests
+passed on the real image on 2026-11-09: the token probe of done-when 5,
+a real T2 build that imports `@cc/ui`, and the scripted WS43-E8.
 
 ### WS-43i — Parity eval through the broker 🔲
 
@@ -2817,7 +2976,7 @@ uv run pytest tests/unit/test_agent_runtime_default.py -q -rs
 
 **Gate.** AGENT-SAFE. The external repo change is WS43-G11.
 
-### WS-43o — The model list from the Router 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
+### WS-43o — The model list from the Router ✅ **Built 2026-11-08** ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** `gateway/main.py` (the warm-up at `:113-140`, `/health/runtime`
 at `:1650`, `/copilot/models` at `:1791`), `gateway/routes/settings.py`
@@ -2835,6 +2994,20 @@ Plane's `src/app/api/models/all/route.ts`, and fence WS43-F19.
    wired (WS-43c built and `MAF_CODING_SCOPE` set).
 4. The Control Plane shows no "GitHub Copilot SDK" model group when
    `routing_is_on()` is true.
+
+**Built (S4b, task 2282, 2026-11-08).** D84 and D92 removed the `routing_is_on()`
+condition, so the change is unconditional. `/api/models/all` has no "GitHub
+Copilot SDK" group and never calls `/copilot/models`. Gateway start does not
+warm the Copilot list.
+
+`/health/runtime` has a `router` check and no
+`copilot_sdk` check. `/copilot/models` stays as a retired route. It answers the
+Router tier slate with `source: "router"`.
+
+`/settings/llm/provider-models` for `github` no longer reads it. `gateway/main.py` left the WS43-F15
+allowlist. The `copilot_chat_model` setting, `/settings/llm/copilot-model` and
+the executor Copilot path stay for WS-43q. The test is
+`tests/unit/test_router_model_list.py`.
 
 **Verification.**
 
@@ -4529,8 +4702,28 @@ first-party admin may run it.
 - The name match takes no case and no `agent-` prefix, so an alias is refused
   too. The registry lists still name the agent, and hiding it there is not
   part of this rule.
+- The gate also compares the member's org with the run's org (H-232,
+  2026-11-05). It refuses a mismatch, an empty org and a failed read. So an
+  admin of one org cannot run it on a run of another org. Fence:
+  `tests/unit/test_root_agent_first_party.py`, sections 1b and 1c.
+- H-232b (task 1712, 2026-11-07) closed the multi-org lockout of H-232. The
+  gate asks two `acb_auth.access` reads keyed on (email, run org).
+  `is_active_member` reads the membership. With `IDENTITY_CUTOVER` on, it
+  reads `user_identity` and `org_membership`, so a person with two active
+  memberships passes for each org (PLN-Q5). With the flag off, it reads the
+  `app_user` row, as before. `resolve_access_in_org` reads the roles of the
+  `app_user` row of the run org only. So the roles of one org never count in
+  another org. Both reads fail closed. Both open `tenant_session` bound to
+  the run org, so they also work under phase-4 RLS on `app_user`.
+  `executor._agent_push_allowed` uses the same two reads, and it had no org
+  compare before. Fence: `tests/unit/test_member_of_org_read.py` (R8).
+- Known limit: the roles stay on the one `app_user` row of a person. A
+  person in two orgs holds roles only in the org of that row, and has no
+  access in the other org. Per-org roles wait for the role leg to move to
+  `user_role.user_identity_id` (D48).
 - Fence: `tests/unit/test_root_agent_first_party.py` (the access clause of
-  WS43-F17). Eleven mutations turn it red.
+  WS43-F17). Eleven mutations turn the access clause red, and four more
+  turn section 1b red.
 
 ### 15.5 Agents from a repo
 
@@ -4885,7 +5078,7 @@ assistants for now.
 | WS-43c | Kept. PR #591 |
 | D85 | Kept. PR #598 |
 | WS-8i | ⏸ Parked by D86. The task-manager move. ▶ Restarted by D92, 2026-10-07 (§17) |
-| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17) |
+| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17). Built 2026-11-08, dark |
 | WS-43j, WS-43l to WS-43s | ⏸ Parked by D86. The Copilot removal and the older agents. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43t2 | ⏸ Parked by D86, paused mid-build. Its branch `ws43t2-sessions` is kept. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43a, WS-43e, WS-43f, WS-43g, WS-43i | Not in the Projects track, and with no order yet. WS-43v takes the place of WS-43a here |
@@ -5009,7 +5202,9 @@ decision inside D86, after review: the control fails closed.
   depth, binds `no_egress=True` in its artifact context. Such a run holds
   only three kinds of tool: the platform's own four delegation tools, the
   sandbox tools, and tools whose annotation says `open_world=False`
-  explicitly.
+  explicitly. Each card-bound send joins them. Outside this chain, D169
+  adds the listed first-party writes, each behind its own card. A covered run
+  and each run under it keep this rule.
 - **A tool with no annotation is an egress tool.** So is a tool whose
   annotation has no `open_world` key, an MCP tool, and a tool that MAF made
   from an MCP server. A tool write to a store that later runs read is one
@@ -5459,7 +5654,7 @@ SDK agents, and that every agent runs on Microsoft Agent Framework.
 |---|---|---|
 | WS-43t2 | Parked, paused mid-build, branch `ws43t2-sessions` kept | ▶ Open. It comes first, because WS-8i and WS-43q wait on its soak (WS43-G13) |
 | WS-8i | Parked. The task-manager move | ▶ Open, after the soak of WS-43t2 |
-| WS-43h | Parked. app-builder | ▶ Open |
+| WS-43h | Parked. app-builder | ▶ Open. Built 2026-11-08, dark |
 | WS-43l, WS-43m, WS-43n, WS-43o | Parked. Self-mutation, the root agent, the repo agents, the model list | ▶ Open |
 | WS-43j, WS-43p, WS-43q, WS-43r, WS-43s | Parked. The removal | ▶ Open. Each merge stays an owner gate (WS43-G7, WS43-G9) |
 
@@ -5532,3 +5727,541 @@ covers every agent, or when the owner accepts the change.
 | # | Question | Agent default |
 |---|---|---|
 | WS43-Q10 | Do the D92 ports go before WS-43x (the Email track), or beside it? | Beside it. WS-43t2 starts now, and the Email track keeps its order |
+
+---
+
+## 18. Copilot SDK parity, and more (2026-10-30)
+
+**Status: SPEC. Nothing is built. Decision 1 is answered (D139). Decisions 2
+to 5 are open (§18.7).**
+
+Metorite task 1028 (CA-0) writes this section. Epic: task 1027. The slices
+CA-1 to CA-15 are tasks 1029 to 1043. Every slice ships dark (R6). Research
+date: 2026-10-30.
+
+A mark of [unverified] means the claim comes from a snippet or from memory.
+Check it before you build on it.
+
+**The rule of one harness.** One coding harness serves every surface that
+writes or runs code (CA-14). A second coding harness, tool set, permission
+model or event stream is a defect.
+
+### 18.1 The ask, and the recommendation
+
+On 2026-10-30 the owner asked for a MAF coding agent. It must do everything
+that the GitHub Copilot SDK does, and more. The Copilot SDK
+(https://github.com/github/copilot-sdk, MIT) is a full coding agent. It has
+shell, view, create, edit, glob, grep, URL fetch, sub-agents (`task`), skills,
+planning, infinite sessions, resume, `abort()`, steering and 53 event kinds.
+
+**Recommendation: keep MAF, and build natively.**
+
+- **Turn on** what the MAF harness already ships (CA-2).
+- **Build** the missing tools on the best public designs (CA-3 to CA-11).
+- **Use** the sandbox we own, with egress profiles (CA-4).
+
+This holds four decisions. D82: the loop and the keys stay in the gateway.
+D83: the tools run in the sandbox. D84: the Copilot SDK leaves the platform.
+D92: one runtime.
+
+The owner confirmed this route on 2026-10-30 (D139, decision 1 in §18.7). He
+added one need: the same coding harness serves AI Studio as well.
+
+### 18.2 The capability matrix
+
+Metorite state was measured on `main` on 2026-10-29. A cell with "not
+checked" means the research did not open that code. The slice that closes the
+row is in the last column. "Native" means MAF 1.23.0 (we pin 1.19.0).
+
+| # | Capability | Copilot SDK | MAF native | Metorite today | Closed by |
+|---|---|---|---|---|---|
+| 1 | Shell | Shell tool, background jobs | `LocalShellTool` and `DockerShellTool` in `agent-framework-tools` (pre-release) | `run_command` in Docker, no network, `/workspace` only (`sandbox_tools.py:345`) | CA-3 |
+| 2 | View a file | `view` | None | `file_access_*` paged read, limited to `agent-data/`, `inputs/`, `outputs/` | CA-3 |
+| 3 | Create a file | `create` | None | `file_access_*` write, same limits | CA-3 |
+| 4 | Edit | `edit` | None [unverified] | `file_access_*` edit. Semantics: not checked | CA-3 |
+| 5 | Multi-edit and patch | `apply_patch` | None | None | CA-3 |
+| 6 | Glob | `glob` | None | Semantics: not checked | CA-3 |
+| 7 | Grep | `grep` | None | `file_access_*` grep, limited paths | CA-3 |
+| 8 | URL fetch | Web fetch tool, name [unverified] | None | `fetch_page` in chat. The coding session blocks it | CA-4 |
+| 9 | Web search | Name [unverified] | None | `web_search` in chat. Blocked in the session (`disable_web_search=True`) | CA-4 |
+| 10 | Package install | Through the shell | Through the shell | None. `request_network_access` is a stub (WS-43g is spec only) | CA-4 |
+| 11 | Sub-agents | `task`, fleet mode | Background agents. No cancel today | Chat only: `call_agent*`, and `spawn_subagents` (dark, 2 a turn, no nesting) | CA-5 |
+| 12 | Skills | `skill`, `SKILL.md` folders | Harness skills provider | Skills load in WS-43d. The harness provider is not on | CA-2 |
+| 13 | Planning | Plan mode | Plan and execute modes | The session sets `disable_mode` (`code_session.py:372`) | CA-2 |
+| 14 | To-dos | To-do list | Harness to-dos | Chat has `manage_todo_list`. The session sets `disable_todo` | CA-2 |
+| 15 | Compaction | `infiniteSessions` at 0.80 and 0.95 of the context | Strategies, including `SummarizationStrategy` | Chat `compact_history`: token budget, no summary, dark (WS-43t2) | CA-2 |
+| 16 | Resume | By your own `sessionId`. State in `~/.copilot/session-state/{id}/` | `AgentSession` `to_dict` and `from_dict` | Chat store (`native_session_store.py`, migration 228), dark. Session: none | CA-6 |
+| 17 | Fork and checkpoint | None found | Workflow checkpoints | None | CA-6 |
+| 18 | Abort | `abort()` | No clean run-level abort [unverified] | `POST /run/{thread}/cancel` and `steer.mark_stopped`. Does not reach the container. The 600 s timeout is the only stop | CA-7 |
+| 19 | Steering | `immediate` and `enqueue` | None in the middle of a turn [unverified] | A steer rides the NEXT tool result (`steer.py:621`) | CA-7 |
+| 20 | Events | 53 named kinds | OpenTelemetry and stream updates | AG-UI, about 17 types (`event_translator.py`). None from inside `code_task` | CA-8 |
+| 21 | Permissions | Permission requests and `onPreToolUse` | `approval_mode` per tool | Chat: `permission_policy` and a card. Session: `never_require` | CA-9 |
+| 22 | Hooks | 8 hooks, with `onPreToolUse` and `onPostToolUse` | Agent Hooks (experimental) with `record_sink` | None in the session | CA-9 |
+| 23 | MCP | Yes | MCP tools | `_maf_mcp.py`, dark (`MAF_MCP_ORGS`). A non-goal in the session | CA-11 |
+| 24 | Git and PR | Through the shell and the user's own auth | None | The prompt says "Do not use git". Self-mutation runs on Copilot (`mutation.py`). WS-43l is spec only | CA-10 |
+| 25 | Images | Yes [unverified] | Content types for images [unverified] | Not found | CA-11 |
+| 26 | Model choice and BYOK | Copilot models, or BYOK with a key | Any client | The Router tiers. No choice for each session | CA-11 |
+| 27 | Metering | Premium requests of the user's plan [unverified] | OpenTelemetry usage | Each call has an attribution (`X-CC-Source: code_task`). No cap for each session | CA-11 |
+| 28 | Surfaces that use the harness | One CLI for one user | `create_harness_agent` | `code_task` only. The tool builder, App Workshop, Agent Workshop and self-mutation are specs or use Copilot | CA-14 |
+| 29 | Workflow: plan, verify, review, PR | None in the SDK | Workflows with checkpoints | None in the session. The loop that builds Metorite (`next-ticket.md`) is outside the product | CA-15 |
+
+### 18.3 The design lessons
+
+These 14 lessons come from four public sources:
+
+- the OpenCode source (MIT)
+- the public docs of Claude Code, and Anthropic's engineering posts
+- the OpenHands paper (https://arxiv.org/html/2511.03690v2)
+
+Each lesson is a rule that the tools must follow. Learn the sources by the rule in §18.6.
+
+1. **Isolation is the boundary, and prompts are not.** The gVisor sandbox
+   is the boundary (D130). A tool never relies on a prompt to stay safe.
+2. **The network goes only through a proxy.** The proxy has a hostname
+   allow-list, deny by default. It also checks the resolved address against
+   loopback, link-local and metadata ranges (`anthropics/sandbox-runtime`,
+   Apache-2.0).
+3. **An install profile opens only the registry hosts.** PyPI and npm are
+   examples. No secret enters the sandbox.
+4. **Edit is an exact `str_replace`.** It fails on 0 matches, and on 2 or
+   more, and it states the count. It has a `replace_all` flag and a
+   read-before-write guard. A patch tool covers multi-hunk changes.
+5. **Every output has a cap.** Overflow goes to a file. The agent gets a
+   preview and the path. The cap is about 30,000 characters.
+6. **The shell is one process for each call.** It keeps the cwd and uses
+   explicit timeouts. A background job has an id, a stop tool and a monitor
+   tool.
+7. **grep and glob use ripgrep.** Grep has the modes `files_with_matches`,
+   `content` and `count`, plus `head_limit` and `offset`. Glob sorts by
+   the time of the last change.
+8. **Web fetch converts HTML to markdown.** It has a size cap and follows no
+   cross-host redirect. A raw mode saves the page to a file.
+9. **A sub-agent has a narrower tool set and a turn cap.** The parent sees
+   only the final summary, of 1,000 to 2,000 tokens.
+10. **Permissions are rules in layers.** Each tool has allow, ask and deny
+    rules. Deny wins. Config and hook paths are write-protected.
+11. **A loop guard stops repeats.** Three identical calls in a row pause the
+    run and ask (OpenCode `doom_loop`).
+12. **One hook seam covers policy and audit.** It runs before and after each
+    model call and tool call (MAF Agent Hooks).
+13. **Compaction keeps the working notes.** Summarize near the limit. Clear
+    old tool results first. Keep the to-dos, the plan and the notes.
+14. **A session is a log of events.** A compaction is an event. The full log
+    stays (OpenHands).
+
+One more lesson comes from mini-SWE-agent (MIT). It reaches about 74% on
+SWE-bench Verified with bash only. The loop is cheap. The tools and the
+environment decide the quality.
+
+### 18.4 The slices
+
+All slices follow `work_plan.md` §1. Each slice cites this section. Risk tiers
+follow `next-ticket.md` step 1b. Every slice ships dark. The fence of each
+slice is a test the slice must add (R7). The test file names are proposals.
+
+The order is: CA-1 first. Then CA-2 and CA-3. Then the rest, as each
+"Blocked by" line allows.
+
+#### CA-1 (task 1029) — Upgrade MAF from 1.19 to 1.23
+
+- **Scope.** Raise `agent-framework-core`, `-openai` and `-ag-ui` to the
+  current stable versions, and `-redis` if it applies. Read the release notes
+  for 1.19 to 1.23. Check the `Agent` and `AgentSession` names,
+  `run(stream=True)` and the harness options. Fix `executor.py`,
+  `code_session.py`, `_maf_mcp.py` and `native_session_store.py`. Keep
+  `agent-framework-github-copilot` until WS-43j, WS-43q and WS-43r remove the
+  Copilot path (task 767).
+- **Acceptance.** The orchestrator and gateway unit suites pass. The R8 suites
+  pass with no skips. One chat run and one `code_task` run work on staging.
+- **Fence.** The existing suites, plus a pin test that names the three
+  versions. Watch the LiteLLM pin.
+- **Risk.** STANDARD. It touches every agent run, so staging goes first.
+
+#### CA-2 (task 1030) — Turn on the harness: plan, to-dos, compaction, skills, loop guard
+
+- **Scope.**
+  1. To-dos, and a read-only plan mode. The agent explores and writes a plan.
+     The member approves it on a card before any write. Copilot calls this
+     `exit_plan_mode`.
+  2. "Infinite sessions". Clear old tool results first. Summarize at about
+     80% of the context window, and again at 95%. Keep the to-do list, the
+     plan, the open files and the last user message. Log each compaction as an
+     event. Use the MAF strategies (`SummarizationStrategy`,
+     `TokenBudgetComposedStrategy`) and not our own code.
+  3. The harness skills provider over the org's skill store.
+  4. A loop guard. Three identical calls pause the run. Use
+     `AgentLoopMiddleware` for the turn cap.
+- **Acceptance.** A session writes a plan and waits for approval. It runs past
+  one context window with at least one summary compaction, and it finishes the
+  task. A repeated call trips the guard.
+- **Fence.** `tests/unit/test_code_session_harness.py` (new) covers each item.
+- **Risk.** STANDARD. Blocked by CA-1.
+
+#### CA-3 (task 1031) — The coding tools
+
+- **Scope.** Every tool runs in our sandbox (D83). Only command text crosses
+  the boundary.
+  - `view`: absolute paths, line numbers, `offset` and `limit`.
+  - `create`: a whole file. It refuses to overwrite a file the session did not
+    read first.
+  - `edit`: exact `str_replace` with `old_string`, `new_string` and
+    `replace_all`. No regex and no fuzzy match. `multi_edit` applies several
+    edits to one file, all or none. `apply_patch` handles multi-hunk changes.
+  - `glob`: ripgrep `--files`, sorted by the time of the last change, with a result cap.
+    It respects `.gitignore`.
+  - `grep`: ripgrep, with the modes and options of lesson 7.
+  - Shell: one process for each call, a persisted cwd and a timeout (2 minutes
+    by default, 10 at most). `run_in_background` returns a job id.
+    `job_output`, `job_stop` and `monitor` work on it.
+  - Output caps of lesson 5.
+  - Widen the paths from `agent-data/`, `inputs/` and `outputs/` to the
+    workspace root. Config and hook paths stay write-protected (CA-9).
+- **Acceptance.** Unit and R8 tests cover each refusal: a non-unique edit, a
+  write before a read, a cap overflow and a background job stop. A smoke run
+  fixes a bug in a small repo with only these tools.
+- **Fence.** `tests/unit/test_coding_tools.py` (new), and an R8 suite on the
+  broker with the `_DB_GATE` mark where it needs the database.
+- **Risk.** HIGH (code execution). The sandbox stays the boundary (D130).
+  Blocked by CA-1.
+
+#### CA-4 (task 1032) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
+
+**Since D148, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
+
+**CA-4 is WS-43g.** Build it once, here. The WS-43g text of §11 stays the
+verification contract, and CA-4 adds the tools on top. Nobody builds the proxy
+twice.
+
+- **Scope.**
+  1. An egress proxy outside the sandbox. It has a hostname allow-list, deny
+     by default. It refuses loopback, link-local, private and cloud-metadata
+     addresses after resolution. It caps bytes and time.
+  2. Profiles, each off by default for each org (an owner gate). `install`
+     opens only the package registries. `fetch` opens web fetch through the
+     proxy. `build` and `run` stay as D130 says.
+  3. `web_fetch`: HTML to markdown, a cap of about 100,000 characters, HTTP
+     upgraded to HTTPS, no cross-host redirect, a raw mode to a sandbox file,
+     and a statement of how much went unread.
+  4. `web_search`: a pluggable backend (the one chat uses), with allowed and
+     blocked domains.
+  5. No secret enters the sandbox. The proxy injects a registry token if one
+     is ever needed.
+- **Acceptance.** An R8 or integration test proves four facts. A request to a
+  host off the list fails. `169.254.169.254` and loopback fail. `pip install`
+  works only under `install`. `web_fetch` honours its caps. Each refusal names
+  the rule that refused it.
+- **Fence.** WS43-F5 and WS43-F9 (§11, WS-43g), plus
+  `tests/unit/test_web_fetch_caps.py` (new).
+- **Risk.** HIGH (egress). Blocked by CA-3, and by BH-3 and gVisor for
+  production (owner gates).
+
+#### CA-5 (task 1033) — Sub-agents in the coding session
+
+- **Scope.** A `task` tool starts a child MAF agent. The child has its own
+  context, a named profile, a narrower tool set and `max_turns`. The profile
+  `explore` is read only, and `general` is wider. The parent sees only the
+  child's final summary. Several children run in parallel. Each has a cancel,
+  and its state survives a restart. MAF's `BackgroundAgentsProvider` has no
+  cancel today, so add one. Children run in the same tenant sandbox under the
+  same rules. A child cannot
+  widen its parent's permissions. Reuse the WS-67 spawn work (OA-9b
+  `spawn_subagents`). Do not build a second spawn path.
+- **Acceptance.** A session sends two `explore` children in parallel and uses
+  their summaries. A cancel stops a child. Tests prove that a child's tools
+  are a subset of its parent's.
+- **Fence.** `tests/unit/test_coding_subagents.py` (new), with the subset
+  proof.
+- **Risk.** STANDARD. D85 holds: a shared agent gets no shell. Blocked by CA-2
+  and CA-3.
+
+#### CA-6 (task 1034) — Resume, fork and checkpoint
+
+- **Scope.** Store the session in Postgres for each org, member and session
+  id (R5, FORCE RLS). Extend `native_session_store.py` and add no second
+  store. Store the events in order as a log (lesson 14). `resume(session_id)`
+  restores the session and the workspace. `fork` copies a session to try
+  another route. Each edit batch takes a workspace snapshot. A rewind
+  restores the files and the conversation to a checkpoint. This is the Claude
+  Code model, and Copilot does not have it.
+- **Acceptance.** R8: a session resumes after a service restart, with its
+  files. A fork and a rewind work. Another member, or another org, cannot load
+  the session.
+- **Fence.** An R8 suite on the new table, with the `_DB_GATE` mark, and a
+  tenancy test.
+- **Risk.** HIGH (tenancy, data). The migration is expand only (R6). Take the
+  number at merge (R1). Blocked by CA-2.
+
+#### CA-7 (task 1035) — Abort and steering
+
+- **Scope.**
+  - Abort: the run's cancel (`POST /run/{thread}/cancel` and the "stopping"
+    state) reaches the coding session. It kills the sandbox process tree and
+    ends the turn with an `abort` event and its reason. It leaves the
+    workspace as it is.
+  - Steering. `immediate`: the message enters before the NEXT model call, and
+    a running tool finishes first, as in the Copilot SDK. `enqueue` is the
+    default: the message waits for the end of the turn, first in, first out.
+  - Use the steer store (`steer.py`). Extend it to the coding session and add
+    the immediate mode. Add no second steer path.
+  - A steer and an abort each emit an event (CA-8).
+- **Acceptance.** A test aborts a session in the middle of a long shell
+  command, and the process is gone within 2 seconds. An immediate steer
+  changes the next model call. A queued steer runs after the turn.
+- **Fence.** `tests/unit/test_coding_abort_steer.py` (new), and a Docker test
+  with the `sandbox_docker` mark for the process kill.
+- **Risk.** STANDARD. Blocked by CA-3.
+
+#### CA-8 (task 1036) — The typed event stream
+
+- **Scope.** One event schema for the coding session. It covers:
+  - the assistant: turn start and end, message and reasoning deltas, intent,
+    usage
+  - tools: start, progress, shell output stream, complete with a result
+    summary
+  - the plan and to-dos
+  - compaction: start, complete
+  - sub-agents: started, completed, failed
+  - permissions: requested, completed
+  - steering and abort
+  - the session: idle, error, limits
+
+  Map each to AG-UI (`event_translator.py`, `stream_relay.py`). Add new kinds
+  as `CUSTOM` with a typed name and not as ad-hoc strings. Keep a parity
+  table: Copilot event, our event, AG-UI event. The same stream feeds the web
+  chat, the MCP for external agents and the audit log. The target is at least
+  the 53 Copilot kinds. This slice needs owner decision 2.
+- **Acceptance.** A fence proves that each Copilot event kind in the parity
+  table maps to an emitted event. A browser test shows the steps live.
+- **Fence.** `tests/unit/test_coding_event_parity.py` (new). It reads the
+  parity table and the emitter.
+- **Risk.** STANDARD. Blocked by CA-2 and CA-3.
+
+#### CA-9 (task 1037) — Permissions and hooks
+
+- **Scope.**
+  - Rules for each tool, with patterns such as `shell(npm test *)`,
+    `edit(./src/**)` and `web_fetch(*.python.org)`: allow, ask or deny. Deny
+    always wins. The layers are org (an admin sets them), project and member.
+    No lower layer loosens the org layer.
+  - "Ask" shows an approval card in chat (AG-UI), in the same card system as
+    other writes. The choices are: once, always for this session, or reject.
+    For an external agent over MCP, use the approval path of
+    `external_agent_access.md` §19. Add no second path.
+  - Write-protected paths: config files, hook files and `.git/hooks`.
+  - One hook seam: MAF Agent Hooks, for policy and audit. `record_sink`
+    writes the audit row. No member-written hook runs as the host.
+- **Acceptance.** Tests prove four facts. Deny beats allow. An org deny
+  cannot be overridden. An ask waits for a card. A protected path refuses a
+  write. Each decision writes an audit row.
+- **Fence.** `tests/unit/test_coding_permissions.py` (new).
+- **Risk.** HIGH. Blocked by CA-1 and CA-3.
+
+#### CA-10 (task 1038) — Git and pull requests on MAF. This is WS-43l.
+
+**CA-10 is WS-43l.** Build it once, here. The WS-43l text of §11 and §15.3
+stays the contract for the mutation container. CA-10 adds the repo workspace
+and the git tools on top. Nobody builds the MAF mutation runner twice.
+
+- **Scope.** A repo workspace: clone or check out into the sandbox, on a
+  branch (a worktree for each session). The git tools: status, diff, add,
+  commit and log. The git credential stays OUTSIDE the sandbox. The push and
+  the PR go through a gateway route that holds the token and acts as the
+  member. A push or a PR is a write that asks on a card. The PR body links the
+  Metorite task. Self-mutation (`mutation.py`) moves from the Copilot SDK to
+  this runner. Then `agent-framework-github-copilot` can leave `uv.lock`.
+- **Acceptance.** On staging, a session fixes a bug in a test repo, commits,
+  and opens a PR after the member's approval. No token appears in the sandbox:
+  a test searches the sandbox environment and files.
+- **Fence.** WS43-F16 (§11, WS-43l), plus
+  `tests/unit/test_coding_no_token_in_sandbox.py` (new).
+- **Risk.** HIGH (credentials, and a write to an outside system). Blocked by
+  CA-3, CA-4 (for clone) and CA-9.
+
+#### CA-11 (task 1039) — MCP, images, model choice, metering caps
+
+- **Scope.**
+  - MCP in the coding session: the org's allowed servers (`_maf_mcp.py`,
+    behind `MAF_MCP_ORGS`). The CA-9 rules cover each server's tools. This
+    amends the §6.2 non-goal on MCP.
+  - Image and PDF input: `view` returns an image or a PDF to a model that can
+    see. The member can attach a screenshot.
+  - Model choice: a tier for each session through the Router
+    (`tier-balanced` and others). BYOK comes later, behind the same Router.
+  - Metering: each run writes usage events (CA-8). A credit cap for each
+    session and each org stops the run with a clear reason (D19.3 hard cap).
+- **Acceptance.** Tests cover each item. A run that hits its cap stops with
+  the reason, and the member sees it.
+- **Fence.** `tests/unit/test_coding_credit_cap.py` (new).
+- **Risk.** STANDARD. The cap touches money, so it is HIGH. Blocked by CA-3,
+  CA-8 and CA-9.
+
+#### CA-12 (task 1040) — Measure it, and the OpenHands pilot
+
+- **Scope.**
+  1. A fixed subset, for example 30 SWE-bench Verified tasks and 20
+     Terminal-Bench tasks, run through the Router on the same model tier.
+     Measure the solve rate, the turns and cost for each task, the compactions
+     and the failures by kind.
+  2. Run it on today's engine, then after CA-2 and CA-3, then after CA-4 and
+     CA-5. Each step shows its gain.
+  3. The OpenHands SDK pilot (owner decision 4). One day. Run `openhands-sdk`
+     (MIT, https://github.com/OpenHands/software-agent-sdk) as a `code_task`
+     backend against our broker, through the Router, on the same subset. Check
+     its steering, abort, event mapping and a Postgres store. Its
+     `litellm<1.106` pin can conflict with ours. Write a one-page memo: adopt
+     parts, adopt it as a backend, or drop it.
+- **Acceptance.** A results table for each step, and the memo.
+- **Fence.** None, because no product code changes. Set a credit cap for the
+  run.
+- **Risk.** LOW. It costs model credits. This slice extends WS-43a and WS-43i
+  and adds no second eval harness.
+
+#### CA-13 (task 1041) — More than Copilot
+
+The owner picks the first two items. Each becomes its own task with its own
+acceptance, fence and risk tier. The risk follows the item.
+
+1. A sandbox for each org, with egress profiles set by the org's admin (CA-4).
+2. Org skills and agents in the database, with versions and roles. Link the
+   sandbox tool registry (SBX, task 810), so a tool the agent builds can
+   become an org skill.
+3. Approval cards that show the exact diff, with standing approvals for each
+   project.
+4. Credit metering with a hard cap for each run and each org (CA-11).
+5. Memory across sessions from org knowledge and the graph (D128, D132).
+6. Scheduled and triggered runs, and background work that survives a restart.
+7. Checkpoint and rewind (CA-6).
+8. A full audit trail through the hook seam (CA-9).
+9. The task tie. Each run links to a Metorite task, a branch and a PR. The run
+   posts its progress as the agent run of the task. An external agent drives a
+   coding session over the MCP (`external_agent_access.md` §19).
+
+#### CA-14 (task 1042) — One harness for every surface
+
+- **Scope.**
+  1. One factory, for example `coding_harness(profile, scope)`. It returns
+     the CA harness with the CA-3 tools, the CA-4 egress profiles, the CA-9
+     rules and hooks, the CA-8 events, the CA-6 persistence and the CA-7
+     control. It runs under the member's own access (D130 rule 1).
+  2. Each surface picks a profile. `code` has a repo workspace.
+     `tool_builder` (SBX) writes one tool, smoke-tests it and stores it only
+     after a good run. `app_builder` serves the App Workshop. `agent_builder`
+     serves the Agent Workshop and writes an agent's manifest and skills.
+     Self-mutation uses a profile too. A profile only narrows tools and paths.
+     It never adds a loop.
+  3. AI Studio (D127) streams the same CA-8 events into its own pane. It shows
+     the same CA-9 approval cards.
+  4. (D187) The SBX registry is the Studio package store. A Studio object
+     that the harness builds (a tool, a workflow or an app) is a package. A
+     tool version is an `app_versions` row, and a holder of `studio:publish`
+     approves a share (`agent_sandbox.md` §7, §8). It is not saved as a file
+     in the workspace.
+  5. The STU-0 spec (WS-STU, epic 491) and `agent_sandbox.md` §6 cite this
+     harness. They do not describe a runner of their own.
+- **Acceptance.** On staging, the Studio tool builder and `code_task` both run
+  through `coding_harness`. A tool built in Studio runs from chat.
+- **Fence.** `tests/unit/test_one_coding_harness.py` (new). It fails when any
+  code path calls `create_harness_agent` outside the factory.
+- **Risk.** HIGH (code execution, tenancy). Blocked by CA-2, CA-3, CA-8 and
+  CA-9, and by SBX-1 for the registry. D127 holds: sandbox code ships after
+  the off-box sandbox (BH-3).
+
+#### CA-15 (task 1043) — The coding workflow
+
+The tools alone do not make a capable agent. The harness also ships a working
+loop. Its model is the loop that builds Metorite (`.claude/commands/next-ticket.md`).
+
+- **Scope.** A workflow definition that the harness runs (CA-14), with one
+  step for each stage:
+  1. **Understand.** Read the task and search the code with an `explore`
+     sub-agent (CA-5).
+  2. **Plan.** Plan mode (CA-2). The member approves the plan on a card. A
+     standing approval can skip this step for small changes.
+  3. **Implement.** The CA-3 tools.
+  4. **Verify.** Run the repo's own tests, type checks and linters in the
+     sandbox. Find the commands in the repo (`package.json`, `pyproject.toml`,
+     a `Makefile`) or in a per-repo profile. Fast checks follow each edit. They
+     are the cheap form of the LSP diagnostics of OpenCode and Claude Code.
+  5. **Review.** A SEPARATE reviewer sub-agent with read-only tools reads the
+     diff and hunts for defects. The verifier is never the implementer. A
+     finding goes back once to the implementer.
+  6. **Deliver.** Commit and open a PR on approval (CA-10). The PR body holds
+     the evidence (the test output and the review findings) and links the
+     Metorite task.
+  7. **Limits and events.** Each stage has limits for turns, time and credits
+     (CA-11). A run that fails a stage says which stage and why. Each stage
+     emits events (CA-8).
+  8. **The workflow is data.** An org adds a step, for example a security
+     check, through Studio and the Workflows app. It needs no second engine.
+- **Acceptance.** On staging, a run takes a bug report and plans. It edits and
+  runs the tests (red, then green). A separate review follows. Then the run
+  opens a PR with the evidence. A failed verify step stops the run with its
+  reason.
+- **Fence.** `tests/unit/test_coding_workflow.py` (new). It proves that the
+  reviewer has no write tools, and that the workflow is data.
+- **Risk.** STANDARD. The parts carry their own tiers. Blocked by CA-2, CA-3,
+  CA-5, CA-8, CA-10 and CA-14.
+
+### 18.5 The rejected routes
+
+| Route | Verdict | Reason |
+|---|---|---|
+| `GitHubCopilotAgent` (`agent-framework-github-copilot`) | Rejected | A CLI process owns the tool loop. The loop and the keys must stay in the gateway (D82, D83), and the SDK leaves the platform (D84). Learn page: https://learn.microsoft.com/en-us/agent-framework/integrations/by-component/agent-services/github-copilot |
+| LangChain deepagents (MIT, v0.7) | Rejected | It adds LangGraph beside MAF. That is a second runtime, against D92 |
+| OpenCode as an engine (https://github.com/anomalyco/opencode, MIT) | Rejected for now | `opencode serve` gives HTTP and SSE, with abort, permissions, fork and revert. It has no sandbox of its own, and it runs a second loop. Keep it as a design source. Keep "as an engine" as a later flag |
+| Claude Agent SDK (Python, Alpha) | Rejected | It runs a CLI binary, against D82. It also falls under Anthropic's Commercial Terms |
+| Codex app-server (Apache-2.0) and Gemini CLI (Apache-2.0) | Rejected | Subprocesses only. They own their loops |
+| mini-SWE-agent (MIT) | Not an engine | Bash only. It supports the last lesson of §18.3 only |
+| OpenHands Software Agent SDK (MIT, `openhands-sdk` 1.59, LiteLLM) | Pilot only (CA-12) | It fits 4 of 5 of our rules. Its `litellm<1.106` pin is the risk. https://github.com/OpenHands/software-agent-sdk |
+
+### 18.6 The provenance rule
+
+**Do not read, copy or mimic `github.com/yasasbanukaofficial/claude-code`.**
+Its own README says it mirrors leaked Anthropic source. It has no licence.
+
+- Learn Claude Code only from Anthropic's public docs and engineering posts,
+  and from `anthropics/sandbox-runtime` (Apache-2.0).
+- Learn OpenCode from its MIT source. Keep the licence notice in any file that
+  copies OpenCode text.
+- Record the source of each tool design in the pull request that builds it.
+  A reviewer rejects a design with no public source.
+
+This rule is advisory (R7). A reviewer enforces it.
+
+### 18.7 Owner decisions, open
+
+The recommendation comes first in each decision. D139 records decision 1.
+The answers to decisions 2 to 5 go in a later D-number (CA-0 done-when).
+R1 re-checks the number at merge.
+
+1. **Engine route. ANSWERED, 2026-10-30 (D139).** Keep MAF and build
+   natively. D84 holds. The answer adds CA-14 and CA-15. The owner said:
+
+   ```text
+   "Yes, I like the idea of keeping MAF and building natively. I just want
+   to ensure that we have built all the necessary tools and workflows that
+   enable MAF to become a capable coding agent harness. The same coding
+   harness gets used with the AI Studio as well."
+   ```
+
+2. **Amend §6.2.** Allow the coding session to stream its inner steps
+   (recommended). The ask needs it, and CA-8 builds it. The same amendment
+   covers the MCP non-goal (CA-11). This section does not edit §6.2 yet. It
+   adds a forward note there.
+3. **Egress profiles.** Approve `install` (package registries only) and
+   `fetch` (through the proxy), each off by default for each org
+   (recommended). Turning one on for an org stays an owner gate.
+4. **OpenHands pilot.** Run the one-day comparison pilot (recommended, CA-12).
+   The other choice is to skip it.
+5. **First org.** Offer the coding agent first to the owner's own org
+   (recommended). Then name the next orgs. `MAF_CODING_SCOPE` holds the list.
+
+### 18.8 Relation to other work
+
+- Task 767 (finish the MAF engine, remove the SDK): CA-1 and CA-10 feed it.
+- Task 810 (SBX, `agent_sandbox.md`, D127, D130): CA-4 and CA-13 use its
+  sandbox. The broker, the image and the egress proxy stay in this spec.
+- WS-67 sub-agents (OA-9b): CA-5 reuses them.
+- D85 holds: a shared agent gets no shell tool until `covers()` is true.
+- AI Studio (D127, `agent_sandbox.md` §6): its build, smoke test and run steps
+  run on the harness of CA-14.

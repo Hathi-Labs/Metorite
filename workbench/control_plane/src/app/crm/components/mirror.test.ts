@@ -11,7 +11,7 @@ import { modeLine, type ConnectionInfo, type SyncStatus } from "../lib/connect";
 import AccessPanel from "./AccessPanel";
 import PipelineSettings from "./PipelineSettings";
 import FieldsPanel from "./FieldsPanel";
-import FirstOpen from "./FirstOpen";
+import FirstOpen, { CHOICE_LINE } from "./FirstOpen";
 import KanbanBoard from "./KanbanBoard";
 import { ImportProgress, StalledBanner } from "./MirrorBanner";
 import Timeline from "./Timeline";
@@ -37,20 +37,26 @@ describe("the first open", () => {
       createElement(FirstOpen, { phase, busy: null, onNative: noop, onConnectZoho: noop }),
     );
 
-  it("shows an admin two cards, with Zoho live and three coming soon", () => {
+  it("shows an admin two cards, with Zoho live and one line for the later CRMs", () => {
     const html = draw("choose");
     expect(html).toContain("Use Metorite as your CRM");
     expect(html).toContain("Connect your CRM");
-    for (const name of ["Zoho CRM", "HubSpot", "Salesforce", "Pipedrive"]) {
-      expect(html).toContain(name);
-    }
-    expect(html.match(/Coming soon/g)).toHaveLength(3);
-    // Zoho's Connect is the one enabled Connect button.
+    expect(html).toContain("Zoho CRM");
+    expect(html).toContain("HubSpot, Salesforce and Pipedrive come later.");
+    // No dead row: HubSpot, Salesforce and Pipedrive have no Connect button and no badge.
+    expect(html).not.toContain("Coming soon");
     const connects = [...html.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g)]
       .map((m) => m[0])
       .filter((b) => b.replace(/<[^>]*>/g, "").trim() === "Connect");
-    expect(connects).toHaveLength(4);
+    expect(connects).toHaveLength(1);
     expect(connects.filter((b) => !/ disabled=/.test(b))).toHaveLength(1);
+  });
+
+  it("tells the truth about changing the choice", () => {
+    const html = draw("choose");
+    expect(html).toContain(CHOICE_LINE);
+    expect(CHOICE_LINE).toBe("To change this later, you start over, and the CRM records are removed.");
+    expect(html).not.toContain("You can change this later in Settings");
   });
 
   it("shows only the Native card when the mirror is off", () => {
@@ -125,7 +131,7 @@ describe("the locked fields", () => {
 
   it("locks a record that Zoho owns, with the tooltip", () => {
     const html = draw({ id: "1", name: "Acme", ext_source: "zoho" });
-    expect(html).toContain("Synced from Zoho. Change it in Zoho.");
+    expect(html).toContain("Edit this in Zoho.");
     expect(html).toContain("Acme");
     // No field is a button that starts an edit.
     expect(html).not.toMatch(/<button[^>]*>\s*Acme/);
@@ -155,14 +161,11 @@ describe("the pipeline settings in Mirror mode", () => {
         leadStatuses: [],
         lostReasons: [],
         saving: false,
-        canPullStages: true,
         onSaveStatus: async () => true,
         onRemoveStatus: async () => true,
-        onReorderStatuses: async () => undefined,
         onSaveLostReason: async () => true,
         onRemoveLostReason: async () => true,
         onReorderLostReasons: async () => undefined,
-        onPullStages: async () => null,
       }),
     );
   it("says where the stages come from, and shuts every control", () => {
@@ -194,18 +197,23 @@ describe("the board", () => {
         weighted: 0,
       },
     ] as unknown as BoardLane[];
-  const draw = (ext: string | null, onCreate?: () => void) =>
+  const draw = (ext: string | null, _unused?: undefined, mode: "native" | "mirror" | null = null) =>
     renderToStaticMarkup(
-      createElement(KanbanBoard, { lanes: lanes(ext), loading: false, onMove: noop, onOpen: noop, onCreate }),
+      createElement(KanbanBoard, { lanes: lanes(ext), loading: false, onMove: noop, onOpen: noop, mode }),
     );
 
-  it("drops the New deal button when no create handler is given", () => {
+  it("draws no dashed end-of-board New deal tile (CRM-U15)", () => {
     expect(draw(null)).not.toContain("New deal");
-    expect(draw(null, noop)).toContain("New deal");
+    expect(draw(null)).not.toContain("border-dashed");
   });
   it("does not let a mirrored deal be dragged", () => {
     expect(draw("zoho")).toContain('draggable="false"');
     expect(draw(null)).toContain('draggable="true"');
+  });
+  it("lets an imported deal be dragged in Native mode only (CRM-Z10c)", () => {
+    expect(draw("zoho", undefined, "native")).toContain('draggable="true"');
+    expect(draw("zoho", undefined, "mirror")).toContain('draggable="false"');
+    expect(draw("zoho", undefined, null)).toContain('draggable="false"');
   });
 });
 
@@ -228,16 +236,16 @@ describe("the timeline", () => {
     );
 
   it("badges only the Metorite-only activity, only under a mirrored record", () => {
-    expect(draw(true).match(/Only in Metorite/g)).toHaveLength(1);
-    expect(draw(false)).not.toContain("Only in Metorite");
+    expect(draw(true).match(/Not in Zoho/g)).toHaveLength(1);
+    expect(draw(false)).not.toContain("Not in Zoho");
   });
 });
 
 describe("the page", () => {
   const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
-  it("hides the New verb and the board's create in Mirror mode", () => {
-    expect(page).toMatch(/mayCreate && view\.tab !== "settings"/);
-    expect(page).toMatch(/onCreate=\{mayCreate \?/);
+  it("greys out the New verb in Mirror mode and draws no board create (CRM-U15)", () => {
+    expect(page).toMatch(/disabled=\{!mayCreate\}/);
+    expect(page).not.toMatch(/onCreate=\{mayCreate \?/);
   });
   it("loads nothing for the pipeline until the gate says ready", () => {
     expect(page).toMatch(/if \(phase !== "ready"\)/);

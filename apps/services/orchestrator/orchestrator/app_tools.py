@@ -58,6 +58,10 @@ def _granted_live_apps(agent_name: str) -> list[tuple[str, dict[str, Any]]]:
     no worker-thread hop). flag OFF → the unbound ``get_session`` (byte-identical);
     flag ON + no resolvable org → fail closed (no granted apps), never an unbound
     read on a FORCE-RLS'd catalog.
+
+    A Studio package (``format = 'manifest'``, WS-STU A3) never becomes a tool
+    here: its manifest is not a code-format manifest. NULL reads as code.
+    Fence: ``tests/unit/test_studio_packages_r8.py``.
     """
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -76,6 +80,7 @@ def _granted_live_apps(agent_name: str) -> list[tuple[str, dict[str, Any]]]:
                        JOIN app_versions v
                          ON v.app_id = a.id AND v.version = a.live_version
                        WHERE a.status = 'live' AND a.live_version IS NOT NULL
+                         AND a.format IS DISTINCT FROM 'manifest'
                          AND g.subject IN ('agents:*', :subject)"""
                 ),
                 {"subject": f"agent:{agent_name}"},

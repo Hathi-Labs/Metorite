@@ -12,6 +12,7 @@ import {
   isRenderable,
   opensRendered,
   pdfNameFor,
+  workspaceFileOfHref,
   workspaceFileUrl,
 } from "./artifactKind";
 
@@ -215,4 +216,23 @@ describe("the PDF extensions agree with the gateway", () => {
       expect(canDownloadPdf(kind), ext).toBe(true);
     }
   });
+});
+
+describe("a link to a file with marks in its name (#120)", () => {
+  const origin = "https://app.test";
+  const names = [
+    "outputs/Q3 plan & notes.md",
+    "outputs/c++ #1 100%.md",
+    "outputs/\u00e9t\u00e9/r\u00e9sum\u00e9.pdf",
+    "outputs/a/b/c/data.CSV",
+  ];
+  for (const path of names) {
+    it(`reads back ${path} from the address the viewer builds`, () => {
+      expect(workspaceFileOfHref(workspaceFileUrl("s1", path), origin)?.path).toBe(path);
+    });
+    it(`reads back ${path} from the chat's encoded address`, () => {
+      const href = `/api/agent/workspace/s1/file?path=${encodeURIComponent(path).replace(/%2F/g, "/")}`;
+      expect(workspaceFileOfHref(href, origin)?.path).toBe(path);
+    });
+  }
 });

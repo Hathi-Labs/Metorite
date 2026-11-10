@@ -22,7 +22,6 @@ import SelectButton from "@/components/ui/SelectButton";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { FIELD_MAP_TITLE } from "../lib/fieldMap";
 import {
   CONVERT_MAPPING_KEY,
   CONVERT_MAPPING_NOTE,
@@ -41,7 +40,11 @@ import {
   type ConversionMapping,
   type MapEntity,
 } from "../lib/convertMapping";
+import { typeLabel } from "../lib/fieldStudio";
 import { Card } from "./SettingsCards";
+
+/** The card title. The Mirror Field map keeps "Field mapping". */
+export const CONVERT_MAPPING_TITLE = "When a lead converts";
 
 /** The tables, drawn from a served map. Pure, so the test renders it. */
 export function ConvertMappingView({
@@ -57,7 +60,7 @@ export function ConvertMappingView({
   onChange: (source: string, entity: MapEntity, choice: string) => void;
 }) {
   return (
-    <Card title={FIELD_MAP_TITLE} note={CONVERT_MAPPING_NOTE}>
+    <Card title={CONVERT_MAPPING_TITLE} note={CONVERT_MAPPING_NOTE}>
       {error && (
         <p
           role="alert"
@@ -86,7 +89,7 @@ export function ConvertMappingView({
                     <span className="min-w-0 text-xs text-foreground">
                       <span className="truncate">{field.label}</span>
                       <span className="ml-1.5 text-[10px] text-muted-foreground">
-                        {field.type}
+                        {typeLabel(field.type)}
                       </span>
                       {cell.problem && (
                         <span className="block text-[10px] text-warning">
@@ -159,14 +162,14 @@ export default function ConvertMappingCard() {
 
   if (res.data === undefined && res.error === null) {
     return (
-      <Card title={FIELD_MAP_TITLE}>
+      <Card title={CONVERT_MAPPING_TITLE}>
         <SkeletonRows count={4} className="p-4" />
       </Card>
     );
   }
   if (res.data === undefined) {
     return (
-      <Card title={FIELD_MAP_TITLE}>
+      <Card title={CONVERT_MAPPING_TITLE}>
         <div
           role="alert"
           className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs text-muted-foreground"

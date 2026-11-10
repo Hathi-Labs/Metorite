@@ -120,7 +120,7 @@ export function WaitingForView({ items }: { items: MyTask[] }) {
       tabIndex={0}
       onKeyDown={onKeyDown}
       aria-label="Waiting for — arrow keys move, Enter opens"
-      className="flex-1 overflow-y-auto outline-none"
+      className="isolate flex-1 overflow-y-auto outline-none"
     >
       {groups.map((g) => (
         <section key={g.key}>

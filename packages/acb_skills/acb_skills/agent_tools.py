@@ -23,16 +23,25 @@ call_agents_parallel(tasks) -> str
 call_agent_background(agent_name, message) -> str
     Fire-and-forget delegation; returns immediately with the run_id.
     Use this when you want to trigger parallel work without blocking.
+
+spawn_subagents(jobs) -> str
+    The main assistant only (WS-67 OA-9b, dark behind SPAWN_SUBAGENTS_ORGS).
+    Runs up to 5 read-only children at once and returns their parsed items.
+    Not injected: ``orchestrator.agents`` lists it as an own tool.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import json as _json
 import os as _os
+import secrets
+import textwrap
 import uuid as _uuid
 from collections.abc import Iterator
+from typing import Any
 
 from acb_common.paging import paged
 
@@ -76,7 +85,7 @@ def _delegation_refusal(agent_name: str) -> str | None:
     return None
 
 
-def _pack_refusal(agent_name: str) -> str | None:
+def _pack_refusal(agent_name: str, *, starts: bool = False, run_id: str = "") -> str | None:
     """The pack refusal of a hand-off to *agent_name*, or None (WS-67 OA-7c).
 
     ``tool_packs.delegation_refusal``: the chat run holds a pack that replaces
@@ -86,10 +95,16 @@ def _pack_refusal(agent_name: str) -> str | None:
     (``executor._run_sub_agent_streaming``) asks it too, for the specialist
     tools and ``delegate_to_agent``. ``call_agent_background`` does not ask
     it: a background run is not conversational, so it keeps delegation
-    (``one_assistant_context.md`` §4.3.1)."""
+    (``one_assistant_context.md`` §4.3.1).
+
+    OA-8i: a caller that starts the hand-off on a None answer passes
+    *starts*, so the run records the hand-off at once. A later write tool of
+    a pack of that owner in this run then refuses. Task 1533: *run_id* is
+    the id of the sub-run, the one that the streaming seam gets, so the two
+    asks record one hand-off and its end closes it."""
     from acb_skills.tool_packs import delegation_refusal
 
-    return delegation_refusal(agent_name)
+    return delegation_refusal(agent_name, starts=starts, run_id=run_id)
 
 
 def _parent_run_model() -> str | None:
@@ -132,7 +147,9 @@ async def call_agent(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = _delegation_refusal(agent_name) or _pack_refusal(agent_name)
+    refusal = (_delegation_refusal(agent_name)
+               or _pack_refusal(agent_name, starts=True, run_id=run_id)
+               or _worker_refusal(agent_name))
     if refusal:
         return refusal
 
@@ -293,6 +310,166 @@ async def _answer_of(agent_name: str, text: str) -> str:
             f"{frame.wrap('AGENT ANSWER', str(text))}")
 
 
+# ── The one fan-out (WS-67 OA-9b) ───────────────────────────────────────────
+# ``call_agents_parallel`` and ``spawn_subagents`` run their branches through
+# ``_run_branch`` and ``_fan_out``. So the guards of a branch (the cycle and
+# depth rule, the pack refusal, the held answer of a marked chat) and the Stop
+# rule are written once.
+
+
+class _Wire:
+    """Where a branch streams its events: a queue, and the sub-run function."""
+
+    def __init__(self, event_queue: Any, run_sub: Any) -> None:
+        self.event_queue = event_queue
+        self.run_sub = run_sub
+
+
+def _stream_wire() -> _Wire:
+    """The queue and the streaming seam of the run on this frame, if any.
+
+    With a queue (Tier 2), the sub-runs stream through it. Without one, the
+    streaming seam pushes to the Redis relay (Tier 1 and 1.5) when that run
+    has a relay thread. With no seam at all, a branch takes the batch path.
+    """
+    event_queue = None
+    run_sub = None
+    try:
+        from orchestrator.executor import (  # noqa: PLC0415
+            _active_run_queue,
+        )
+        from orchestrator.executor import (  # noqa: PLC0415
+            _run_sub_agent_streaming as _rss,
+        )
+        event_queue = _active_run_queue.get(None)
+        run_sub = _rss
+    except (ImportError, Exception):  # noqa: BLE001
+        pass
+
+    # Redis relay fallback (Tier 1 / Tier 1.5) when no queue is available.
+    if event_queue is None:
+        try:
+            from orchestrator.executor import (  # noqa: PLC0415
+                _stream_relay_thread_id,
+            )
+            from orchestrator.executor import (  # noqa: PLC0415
+                _run_sub_agent_streaming as _rss_relay,
+            )
+            if _stream_relay_thread_id.get(None):
+                run_sub = _rss_relay
+        except (ImportError, Exception):  # noqa: BLE001
+            pass
+    return _Wire(event_queue, run_sub)
+
+
+async def _run_branch(
+    agent_name: str, message: str, *, wire: _Wire, model: str | None, timeout: float,
+) -> tuple[str, str]:
+    """One branch of a fan-out: run *agent_name* on *message*, with every guard.
+
+    Returns ``(agent_name, text)``. It never raises, and a refusal, a timeout
+    and a failure each come back as text. The cycle and depth guard (P0-7), the
+    pack refusal and the worker refusal run before any work. The ancestry chain
+    grows for this branch only: the caller makes each branch a task, and a task
+    copies the context, so branches do not see each other.
+    """
+    run_id = str(_uuid.uuid4())
+    refusal = (_delegation_refusal(agent_name)
+               or _pack_refusal(agent_name, starts=True, run_id=run_id)
+               or _worker_refusal(agent_name))
+    if refusal:
+        return agent_name, refusal
+    _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
+    _held = contextlib.ExitStack()
+    _held.enter_context(_delegate_held(await _session_marked()))
+    try:
+        # Use streaming path if we have either a queue (Tier 2) or
+        # Redis relay (Tier 1 / Tier 1.5).  Pass event_queue=None
+        # for the relay path — _run_sub_agent_streaming will push
+        # events directly to Redis.
+        if wire.run_sub is not None:
+            try:
+                result = await asyncio.wait_for(
+                    wire.run_sub(
+                        agent_name, message, run_id, wire.event_queue,
+                        model=model),
+                    timeout=timeout,
+                )
+                return agent_name, result
+            except TimeoutError:
+                return agent_name, (
+                    f"Sub-task timed out after {int(timeout)}s "
+                    "and was stopped.")
+            except Exception as exc:  # noqa: BLE001
+                return agent_name, f"Sub-task failed: {exc}"
+        # Fallback: no parent stream
+        try:
+            from orchestrator.executor import run_agent  # noqa: PLC0415
+            result = await asyncio.wait_for(
+                run_agent(
+                    agent_name,
+                    {"message": head_task(message), "mode": "sub_task"},
+                    run_id=run_id,
+                    model=model,
+                ),
+                timeout=timeout,
+            )
+            text = result.get("result") or result.get("answer") or ""
+            if isinstance(text, dict):
+                text = text.get("content", str(text))
+            return agent_name, str(text) if text else f"({agent_name!r} returned empty)"
+        except TimeoutError:
+            return agent_name, (
+                f"Sub-task timed out after {int(timeout)}s "
+                "and was stopped.")
+        except Exception as exc:  # noqa: BLE001
+            return agent_name, f"Sub-task failed: {exc}"
+    finally:
+        _held.close()
+        _delegation_chain.reset(_tok)
+
+
+#: What :func:`_fan_out` puts in a result slot whose branch did not finish in
+#: time. The branch was cancelled.
+_UNFINISHED = object()
+
+
+async def _cancel_all(tasks: list["asyncio.Task[Any]"]) -> None:
+    """Cancel every task and wait until each one has ended."""
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _fan_out(branches: list[Any], *, timeout: float | None = None) -> list[Any]:
+    """Run *branches* at once, each in its own task, and return their results in order.
+
+    Each task copies the context, so a branch can bind a job or extend its
+    chain without a sibling seeing it. **Stop:** when this call is cancelled,
+    every branch is cancelled and has ended before the cancel goes on, so no
+    child runs on after the Stop and each ``finally`` of a child has run.
+    With *timeout*, a branch that has not ended by then is cancelled too, and
+    its slot holds :data:`_UNFINISHED`. A branch that raises raises here, after
+    the others ended.
+    """
+    tasks = [asyncio.create_task(branch) for branch in branches]
+    try:
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+    except BaseException:
+        await _cancel_all(tasks)
+        raise
+    if pending:
+        await _cancel_all(list(pending))
+    return [task.result() if task in done else _UNFINISHED for task in tasks]
+
+
+def _worker_refusal(agent_name: str) -> str | None:
+    """``subagent_contract.worker_refusal``: an internal agent needs its job."""
+    from acb_skills.subagent_contract import worker_refusal
+
+    return worker_refusal(agent_name)
+
+
 async def call_agents_parallel(tasks: str) -> str:
     """Run multiple agents concurrently and return all results once every agent finishes.
 
@@ -329,93 +506,17 @@ async def call_agents_parallel(tasks: str) -> str:
                   maximum=_PARALLEL_MAX, noun="tasks")
     task_list, left_out = batch.items, task_list[_PARALLEL_MAX:]
 
-    event_queue = None
-    _run_sub_agent_streaming = None
-    try:
-        from orchestrator.executor import _active_run_queue, _run_sub_agent_streaming as _rss  # noqa: PLC0415
-        event_queue = _active_run_queue.get(None)
-        _run_sub_agent_streaming = _rss
-    except (ImportError, Exception):  # noqa: BLE001
-        pass
-
-    # Redis relay fallback (Tier 1 / Tier 1.5) when no queue is available.
-    _relay_tid = None
-    if event_queue is None:
-        try:
-            from orchestrator.executor import (  # noqa: PLC0415
-                _stream_relay_thread_id,
-                _run_sub_agent_streaming as _rss_relay,
-            )
-            _relay_tid = _stream_relay_thread_id.get(None)
-            if _relay_tid:
-                _run_sub_agent_streaming = _rss_relay
-        except (ImportError, Exception):  # noqa: BLE001
-            pass
-
+    wire = _stream_wire()
     # Inherit the parent run's resolved tier for every fanned-out sub-agent.
     _parent_model = _parent_run_model()
 
-    async def _run_one(agent_name: str, message: str) -> tuple[str, str]:
-        run_id = str(_uuid.uuid4())
-        # Delegation guard (P0-7): refuse cycles/over-depth per fanned task,
-        # and extend the ancestry chain for this branch only (gather copies
-        # the context per coroutine, so branches don't see each other).
-        refusal = _delegation_refusal(agent_name) or _pack_refusal(agent_name)
-        if refusal:
-            return agent_name, refusal
-        _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
-        _held = contextlib.ExitStack()
-        _held.enter_context(_delegate_held(await _session_marked()))
-        try:
-            # Use streaming path if we have either a queue (Tier 2) or
-            # Redis relay (Tier 1 / Tier 1.5).  Pass event_queue=None
-            # for the relay path — _run_sub_agent_streaming will push
-            # events directly to Redis.
-            if _run_sub_agent_streaming is not None:
-                try:
-                    _q = event_queue if event_queue is not None else None
-                    result = await asyncio.wait_for(
-                        _run_sub_agent_streaming(
-                            agent_name, message, run_id, _q,
-                            model=_parent_model),
-                        timeout=_SUB_AGENT_TIMEOUT,
-                    )
-                    return agent_name, result
-                except TimeoutError:
-                    return agent_name, (
-                        f"Sub-task timed out after {int(_SUB_AGENT_TIMEOUT)}s "
-                        "and was stopped.")
-                except Exception as exc:  # noqa: BLE001
-                    return agent_name, f"Sub-task failed: {exc}"
-            # Fallback: no parent stream
-            try:
-                from orchestrator.executor import run_agent  # noqa: PLC0415
-                result = await asyncio.wait_for(
-                    run_agent(
-                        agent_name,
-                        {"message": head_task(message), "mode": "sub_task"},
-                        run_id=run_id,
-                        model=_parent_model,
-                    ),
-                    timeout=_SUB_AGENT_TIMEOUT,
-                )
-                text = result.get("result") or result.get("answer") or ""
-                if isinstance(text, dict):
-                    text = text.get("content", str(text))
-                return agent_name, str(text) if text else f"({agent_name!r} returned empty)"
-            except TimeoutError:
-                return agent_name, (
-                    f"Sub-task timed out after {int(_SUB_AGENT_TIMEOUT)}s "
-                    "and was stopped.")
-            except Exception as exc:  # noqa: BLE001
-                return agent_name, f"Sub-task failed: {exc}"
-        finally:
-            _held.close()
-            _delegation_chain.reset(_tok)
-
     runnable = [t for t in task_list
                 if isinstance(t, dict) and t.get("agent") and t.get("message")]
-    coros = [_run_one(str(t["agent"]), str(t["message"])) for t in runnable]
+    coros = [
+        _run_branch(str(t["agent"]), str(t["message"]), wire=wire,
+                    model=_parent_model, timeout=_SUB_AGENT_TIMEOUT)
+        for t in runnable
+    ]
 
     def _not_run() -> list[str]:
         """The lines that name every task this call did not run."""
@@ -438,11 +539,7 @@ async def call_agents_parallel(tasks: str) -> str:
         return "\n\n".join(
             ["Error: each task must have 'agent' and 'message' fields", *_not_run()])
 
-    # create_task per branch → each gets its own context copy, so one
-    # branch's chain extension never leaks into a sibling.
-    results = await asyncio.gather(
-        *(asyncio.create_task(c) for c in coros), return_exceptions=False
-    )
+    results = await _fan_out(coros)
 
     parts = []
     for agent_name, response in results:
@@ -454,6 +551,373 @@ async def call_agents_parallel(tasks: str) -> str:
         parts.append(f"[{agent_name}]\n{await _answer_of(agent_name, response)}")
     parts.extend(_not_run())
     return "\n\n".join(parts)
+
+
+# ── spawn_subagents (WS-67 OA-9b, D117 item 5) ──────────────────────────────
+
+#: The answer when the flag is off for the organization of the run. The tool
+#: is dropped from such a run, so the text is a second layer.
+_SPAWN_OFF = "spawn_subagents is not available here. Do the work yourself with your own tools."
+
+#: The answer when the run used its two spawn calls (§6.2).
+_SPAWN_LIMIT = (
+    "This turn already used its 2 spawn_subagents calls. Do the rest yourself, "
+    "with the items you have."
+)
+
+#: The answer in a run that is itself a sub-run, at any delegation depth
+#: (OA-9b hardening item 2). Only the member's own assistant spawns.
+_SPAWN_NESTED = (
+    "spawn_subagents is not available in a sub-run. Do the work yourself with "
+    "your own tools."
+)
+
+#: The label of the block that holds the items of the children.
+_ITEMS_LABEL = "SUB AGENT ITEMS"
+
+#: The tier name that a ``fast`` job sends (``tier_policy.TIER_FAST``).
+_FAST_TIER = "tier-fast"
+
+
+def _caller_org() -> str | None:
+    """The tenant of the run on this frame, from the run binding only (R11)."""
+    try:
+        from orchestrator.executor import _current_run_org  # noqa: PLC0415
+
+        return _current_run_org()
+    except Exception:  # noqa: BLE001
+        try:
+            from acb_common.db import current_tenant
+
+            return current_tenant()
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _delegating_names() -> frozenset[str]:
+    """The tools of the main assistant that start another agent, other than
+    the four of ``egress.DELEGATION_TOOLS``: ``spawn_copilot_agent`` and one
+    specialist tool for each registered agent. A job that names one gets the
+    hand-off reason (``subagent_contract.parse_jobs``, *delegating*)."""
+    names = {"spawn_copilot_agent"}
+    try:
+        from gateway.routes.agent import (  # noqa: PLC0415
+            _AGENT_REGISTRY,
+            _load_dynamic_agents,
+        )
+        for entry in [*_load_dynamic_agents(), *_AGENT_REGISTRY]:
+            if entry.get("name"):
+                names.add(str(entry["name"]).replace("-", "_"))
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(names)
+
+
+def _render_items(number: int, label: str, text: str, tools: Any = ()) -> str:
+    """One job block for the parent: the parsed items of the child, never its
+    raw text (SUB-1 rule 2)."""
+    from acb_skills.subagent_contract import parse_items
+
+    items = parse_items(text, tools=tuple(tools))
+    lines = [f"Job {number} ({label}):"]
+    if not items:
+        lines.append("- No items found.")
+    for item in items:
+        value = item.value.replace("\n", "\n  ")
+        lines.append(f"- [{item.kind}] {value} (source: {item.source})")
+    return "\n".join(lines)
+
+
+# ── Packs in a child (WS-67 OA-9c, §6.7) ────────────────────────────────────
+# A job names a pack that the parent run holds now. The spawn builds the pack
+# on THIS frame, through the one guarded builder of OA-7b
+# (``_tool_injection._pack_tools``), with a run key that it mints for that
+# child only. The child keeps the tools that ``child_may_hold`` lets through,
+# so it reads and never writes, also in an open chat.
+
+
+def _parent_packs(ctx: Any) -> frozenset[str] | None:
+    """The packs that the parent run holds now: ``PackRun.holds()`` of the
+    record at ``tool_packs.PACKS_KEY``, which the executor binds (OA-7c), and
+    the loads of ``load_skill_tools`` too (OA-7e). ``None`` when the frame
+    holds no record or the read fails. Then a job that names a pack does not
+    run (fail closed)."""
+    try:
+        from acb_skills.tool_packs import PACKS_KEY, PackRun
+
+        record = (ctx or {}).get(PACKS_KEY)
+        if not isinstance(record, PackRun):
+            return None
+        return frozenset(str(slug) for slug in record.holds())
+    except Exception:  # no record means no pack
+        return None
+
+
+def _pack_builder() -> Any:
+    """THE builder of the tools of one pack for one run
+    (``orchestrator._tool_injection._pack_tools``, OA-7b), or None when the
+    orchestrator is not in this process."""
+    try:
+        from orchestrator._tool_injection import _pack_tools
+    except Exception:  # no orchestrator means no build, so no pack
+        return None
+    return _pack_tools
+
+
+def _reads_strangers(slug: str) -> bool:
+    """True when the owner of pack *slug* reads text that a stranger wrote
+    (``tool_packs._reads_strangers``, which fails closed)."""
+    from acb_skills.tool_packs import _reads_strangers as reads
+
+    return reads(slug)
+
+
+async def _child_pack_tools(job: Any, ctx: Any, *, held: bool) -> tuple[str, Any]:
+    """The pack tools of the child of *job*, or why the job cannot run.
+
+    On the parent frame, for each pack of the job in order: the guarded
+    builder with *ctx* (the parent's run context) and a run key that this
+    call mints for this child only. The builder decides the held answer and
+    drops the egress tools of a held build. The child then keeps the tools
+    that ``subagent_contract.child_may_hold`` lets through. *held* forces a
+    held build, for a call that holds a pack of an owner that reads stranger
+    text (:func:`_with_pack_tools`).
+
+    Gives ``("", job)`` with ``pack_tools`` and ``pack_run`` set, or
+    ``(why, None)``. A pack that gives the child no tool stops the job, and
+    so does a child past ``tool_packs.MAX_REQUEST_TOOLS``. The count is the
+    tools of the job plus the pack tools, the whole list that the pin lets
+    through, as layer (b) counts the live list plus a load.
+    """
+    from acb_skills import subagent_contract as sc
+    from acb_skills import tool_packs
+    from acb_skills.egress import NO_EGRESS_KEY
+    from acb_skills.tool_guard import tool_name
+
+    build = _pack_builder()
+    if build is None:
+        return "this chat cannot build a tool pack here. Name its tools instead.", None
+    # A fresh key for each child: never the parent's key, never a sibling's.
+    run_key = secrets.token_urlsafe(24)
+    build_ctx = {**dict(ctx or {}), tool_packs.PACK_RUN_KEY: run_key,
+                 tool_packs.PACKS_KEY: None}
+    if held:
+        build_ctx[NO_EGRESS_KEY] = True
+    holds = set(job.tools)
+    kept: list[Any] = []
+    for slug in job.packs:
+        made = await build(slug, build_ctx, holds=frozenset(holds))
+        built = tuple(getattr(made, "tools", None) or ())
+        tools = [t for t in built if sc.child_may_hold(tool_name(t))]
+        if not tools:
+            return (f"the tool pack '{slug}' has no read tool that a sub-agent may "
+                    "hold here. Do that step yourself, or name other tools."), None
+        kept.extend(tools)
+        holds |= {tool_name(t) for t in built}
+    count = len(job.tools) + len(kept)
+    if count > tool_packs.MAX_REQUEST_TOOLS:
+        return (f"its tools and packs hold {count} tools, and a sub-agent holds at "
+                f"most {tool_packs.MAX_REQUEST_TOOLS}. Name fewer packs or tools."), None
+    return "", dataclasses.replace(job, pack_tools=tuple(kept), pack_run=run_key)
+
+
+def _reads_any(jobs: Any) -> bool:
+    """True when a job of *jobs* names a pack of an owner that reads stranger
+    text. THE held answer of a spawn call (OA-9c)."""
+    return any(_reads_strangers(slug) for job in jobs for slug in job.packs)
+
+
+async def _build_children(
+    jobs: Any, ctx: Any, *, held: bool,
+) -> tuple[list[Any], list[str]]:
+    """Build the pack tools of each job of *jobs* (:func:`_child_pack_tools`).
+    Gives the jobs that run and one line for each job that the build stops."""
+    from acb_skills import subagent_contract as sc
+
+    ready: list[Any] = []
+    stopped: list[str] = []
+    for job in jobs:
+        if not job.packs:
+            ready.append(job)
+            continue
+        why, built = await _child_pack_tools(job, ctx, held=held)
+        if built is None:
+            stopped.append(sc.job_refusal(job, why))
+        else:
+            ready.append(built)
+    return ready, stopped
+
+
+async def _with_pack_tools(
+    jobs: Any, ctx: Any,
+) -> tuple[tuple[Any, ...], tuple[str, ...], bool]:
+    """The jobs that run, each with its pack tools, one line for each job that
+    the build stops, and the held answer of the call (OA-9c). A job with no
+    pack passes unchanged.
+
+    The held answer is :func:`_reads_any` of the jobs that RUN, and the spawn
+    uses it in three places: the build of each pack, the mark of the chat
+    (:func:`_mark_before_children`) and the start of each child
+    (:func:`_spawn_run`). So no pack call of a child can clear ``no_egress``.
+    The build comes first, so a job whose pack of stranger text gives no tool
+    can stop. Then no child of the call reads stranger text, and the jobs that
+    run build again open, so the one answer holds for each of them.
+    """
+    if not any(job.packs for job in jobs):
+        return tuple(jobs), (), False
+    held = _reads_any(jobs)
+    ready, stopped = await _build_children(jobs, ctx, held=held)
+    if held and not _reads_any(ready):
+        by_number = {job.number: job for job in jobs}
+        ready, again = await _build_children(
+            [by_number[job.number] for job in ready], ctx, held=False)
+        stopped.extend(again)
+        held = False
+    return tuple(ready), tuple(stopped), held
+
+
+async def _mark_before_children(jobs: Any, ctx: Any) -> None:
+    """Mark the chat before a child that holds a pack of an owner that reads
+    stranger text starts (WS-17 EM-G11f3, as for a run of that owner).
+
+    A child's own pack call marks the child's own thread, so this mark on the
+    PARENT frame is the one that holds the chat: later egress of the chat
+    asks the untrusted card, and a later delegation binds ``no_egress``. The
+    spawn calls it only when the held answer of the call is True
+    (:func:`_with_pack_tools`), and *jobs* are the jobs that run. The spawn
+    holds each child of the call too, whether the write of the mark worked or
+    not. Never raises."""
+    from acb_skills import tool_packs
+    from acb_skills.egress import mark_untrusted_session
+
+    owners = {
+        (found.owner if (found := tool_packs.pack(slug)) is not None else slug)
+        for job in jobs for slug in job.packs if _reads_strangers(slug)
+    }
+    for owner in sorted(owners):
+        with contextlib.suppress(Exception):  # the mark never costs the call
+            await mark_untrusted_session(owner, ctx)
+
+
+async def spawn_subagents(jobs: str) -> str:
+    """Run up to 5 sub-agents at once. Each one reads and gives back items.
+
+    Use this only when each job reads long material (documents, contracts,
+    reports) that would fill this chat, or when each job needs its own chain of
+    several dependent steps. Do not use it for independent short reads or
+    searches, at any count, or for one tool call: call those tools yourself,
+    several in one step. A sub-agent only reads. It cannot write, send, ask the member or
+    start another agent, so do any write yourself after the sub-agents answer.
+    A sub-agent has no memory of this chat, so each job must hold all it needs.
+    A job with no "tools" key holds no tool at all, so it can only answer from
+    its job text. Name the tools the job needs.
+
+    Args:
+        jobs: A JSON array of 1 to 5 jobs. Each job is an object with the keys
+              "job" (the job, self-contained), "tools" (optional, names of your
+              own read-only tools, for example ["web_search", "fetch_page"]),
+              "packs" (optional, tool packs that you hold now, for example
+              ["crm-records"]; the sub-agent gets only their read tools)
+              and "tier" (optional, "fast" or "main", default "main"). Example:
+              [{"job": "Find the pricing page of Acme and quote the plans",
+                "tools": ["web_search", "fetch_page"], "tier": "fast"}]
+
+    Returns:
+        One block for each job. A block lists items, each marked quoted or
+        inferred, with its source. State an inferred item as a guess. A job
+        that did not run gets a line that says why.
+    """
+    from acb_skills import subagent_contract as sc
+    from acb_skills.write_artifact import artifact_context, artifact_context_scope
+
+    if not sc.spawn_subagents_on(_caller_org()):
+        return _SPAWN_OFF
+    ctx = artifact_context()
+    if _delegation_chain.get() or ctx.get("sub_run"):
+        return _SPAWN_NESTED  # a sub-run never spawns, at any depth
+    run_tools = ctx.get("run_tools")
+    if not isinstance(run_tools, (frozenset, set, tuple, list)):
+        return _SPAWN_OFF  # a frame with no run holds no tool to share
+    plan = sc.parse_jobs(
+        jobs, parent_tools=run_tools, delegating=_delegating_names(),
+        held_packs=_parent_packs(ctx),
+    )
+    if not plan.jobs:
+        return plan.notes() or "No job ran."
+    # Two spawn calls of one model step run one after the other, so at most
+    # five children of a run run at once (§6.2).
+    async with sc.spawn_lock(ctx.get("run_id")):
+        # OA-9c: the pack tools of each child, built on THIS frame before any
+        # child starts. A job that the build stops does not run, and a call
+        # with no job left uses no spawn.
+        ready, stopped, held = await _with_pack_tools(plan.jobs, ctx)
+        plan = dataclasses.replace(plan, jobs=ready, refused=(*plan.refused, *stopped))
+        if not plan.jobs:
+            return plan.notes() or "No job ran."
+        if not sc.take_spawn(ctx.get("run_id")):
+            return _SPAWN_LIMIT
+        if held:
+            await _mark_before_children(plan.jobs, ctx)
+        return await _spawn_run(plan, sc, artifact_context_scope, held=held)
+
+
+async def _spawn_run(
+    plan: Any, sc: Any, artifact_context_scope: Any, *, held: bool = False,
+) -> str:
+    """Run the jobs of *plan* and join the item blocks (the body of the spawn).
+
+    *held* (OA-9c): the call holds a pack of an owner that reads stranger
+    text, so each child starts with ``no_egress`` bound (``_delegate_held``).
+    """
+    wire = _stream_wire()
+    parent_model = _parent_run_model()
+
+    async def _child(job: Any) -> tuple[str, str]:
+        # The job is bound on this task's own context copy, so the worker of
+        # this child reads it and no sibling sees it.
+        with artifact_context_scope(), _delegate_held(held):
+            sc.bind_job(job)
+            model = _FAST_TIER if job.tier == "fast" else parent_model
+            return await _run_branch(
+                sc.WORKER_NAME, job.job, wire=wire, model=model,
+                timeout=sc.JOB_TIMEOUT_S,
+            )
+
+    results = await _fan_out(
+        [_child(job) for job in plan.jobs], timeout=sc.FANOUT_TIMEOUT_S,
+    )
+
+    def _clip(text: str) -> str:
+        return textwrap.shorten(text, width=60, placeholder="...")
+
+    blocks: list[str] = []
+    for job, result in zip(plan.jobs, results, strict=True):
+        label = f'"{_clip(job.job)}"'
+        if result is _UNFINISHED:
+            blocks.append(f"Job {job.number} ({label}): Error: no answer in "
+                          f"{sc.FANOUT_TIMEOUT_S:g}s, so the job was stopped.")
+            continue
+        _name, text = result
+        if text.startswith("Sub-task timed out after"):
+            blocks.append(f"Job {job.number} ({label}): Error: no answer in "
+                          f"{sc.JOB_TIMEOUT_S:g}s, so the job was stopped.")
+            continue
+        # OA-9c: a pack tool that the child held is a source it may name.
+        blocks.append(_render_items(job.number, label, text, sc.child_allowed(job)))
+    # The items come from pages the children read, so the parent reads them
+    # as data and never as an instruction (OA-9b hardening item 6).
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    out = [
+        frame.note("The blocks below hold what sub-agents read from the web "
+                   "and the tools of this chat."),
+        frame.wrap(_ITEMS_LABEL, "\n\n".join(blocks)),
+    ]
+    notes = plan.notes()
+    if notes:
+        out.append(notes)
+    return "\n\n".join(out)
 
 
 async def call_agent_background(agent_name: str, message: str) -> str:
@@ -475,7 +939,11 @@ async def call_agent_background(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = _delegation_refusal(agent_name)
+    # STU-G1: a background run keeps delegation (§4.3.1), so it asks no pack
+    # refusal. A pack-only owner never runs at all, so it asks that one.
+    from acb_skills.tool_packs import pack_only_refusal
+
+    refusal = _delegation_refusal(agent_name) or pack_only_refusal(agent_name)
     if refusal:
         return refusal
 

@@ -184,7 +184,7 @@ def test_the_crm_sync_runs_table_is_tenant_scoped() -> None:
     "table",
     ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages", "crm_views",
      "crm_module_records", "crm_field_rules", "crm_field_sections",
-     "crm_convert_mappings"],
+     "crm_convert_mappings", "crm_lead_pipeline_stages"],
 )
 def test_the_crm_q1_q2_tables_are_tenant_scoped(table: str) -> None:
     """WS-53 CRM-Q1/Q2 (``crm_platform.md`` §18). The source profile and the
@@ -354,12 +354,227 @@ def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_signature_image_table_is_tenant_scoped() -> None:
+    """WS-17 SG-1 (``email_app_master_plan.md`` §23.4). A hosted signature
+    image is served to anybody with its token, so RLS is what keeps the token
+    of one organization from opening under the id of another (D-EM-68). The
+    table may not be exempt, and the committed policy phase must carry it."""
+    gen = _generator()
+    assert "email_signature_images" in gen.discover_tables()
+    assert "email_signature_images" not in gen.EXEMPT
+    assert "email_signature_images" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE email_signature_images FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_signature_settings_table_is_tenant_scoped() -> None:
+    """WS-17 SG-2 (``email_app_master_plan.md`` §23.4). The row says which
+    signature each send of a mailbox carries, so a row of one organization
+    must never reach another. The table may not be exempt, and the committed
+    policy phase must carry it."""
+    gen = _generator()
+    assert "email_signature_settings" in gen.discover_tables()
+    assert "email_signature_settings" not in gen.EXEMPT
+    assert "email_signature_settings" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize("table", ["reminders", "reminder_events"])
 def test_the_reminder_tables_are_tenant_scoped(table: str) -> None:
     """WS-66 RM-1 (``calendar_events_reminders.md`` §5.2, D114). A reminder
     and its ledger hold the private nudges of one member of one
     organization. Neither may be exempt, and the committed policy phase must
     carry each (R5). RLS covers the org, and the routes add the member."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize("table", ["calendar_entries", "calendar_entry_attendees"])
+def test_the_calendar_entry_tables_are_tenant_scoped(table: str) -> None:
+    """WS-CAL CE-4 (``calendar_events_reminders.md`` §3.3, D138). An entry and
+    its attendees hold the events of the members of one organization. Neither
+    may be exempt, and the committed policy phase must carry each (R5). RLS
+    covers the org, and the routes add the owner or the attendee row."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_job_queue_table_is_tenant_scoped() -> None:
+    """WS-BRIEF BR-1a (``docs/job_queue.md``). A job holds one unit of
+    background work of one organization, and its payload can name tenant
+    data. The table may not be exempt, and the committed policy phase must
+    carry it (R5)."""
+    gen = _generator()
+    assert "jobs" in gen.discover_tables()
+    assert "jobs" not in gen.EXEMPT
+    assert "jobs" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE jobs FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize("table", ["unattended_runs", "unattended_incidents"])
+def test_the_unattended_ledger_tables_are_tenant_scoped(table: str) -> None:
+    """WS-BRIEF AUTO-2 (``docs/job_queue.md`` §9). A ledger row and an
+    incident record the unattended work of one organization. The tables may
+    not be exempt, and the committed policy phase must carry them (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize("table", ["brief_runs", "brief_claims"])
+def test_the_brief_tables_are_tenant_scoped(table: str) -> None:
+    """WS-BRIEF BR-4 (``core_brief.md`` §3.4). A brief run and its claims hold
+    the lines of one member of one organization. The tables may not be
+    exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize("table", ["studio_skills", "studio_skill_versions"])
+def test_the_studio_skill_tables_are_tenant_scoped(table: str) -> None:
+    """WS-STU F1 (``ai_studio.md`` §3.5). A skill and its versions hold the
+    instructions that one organization wrote for its assistant. The tables
+    may not be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize("table", ["package_install", "package_contribution"])
+def test_the_package_registry_tables_are_tenant_scoped(table: str) -> None:
+    """WS-PKG PKG-4 (``package_host.md`` §5.1). An install and its claims
+    hold the apps that one organization installed and who sees them. The
+    tables may not be exempt, and the committed policy phase must carry each
+    (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_package_field_value_table_is_tenant_scoped() -> None:
+    """WS-PKG PKG-13 (``package_host.md`` §5.1 and §8.3). An extension value
+    holds the data that one organization wrote on its host records. The table
+    may not be exempt, and the committed policy phase must carry it (R5)."""
+    table = "package_field_value"
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize(
+    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
+)
+def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
+    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records
+    and their hot rows hold the data of one organization's apps. The tables
+    may not be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_goal_record_table_is_tenant_scoped() -> None:
+    """WS-WEB WEB-10 (``web_research.md`` §6). A goal record holds the
+    objective of one member of one organization. The table may not be
+    exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "goal_records" in gen.discover_tables()
+    assert "goal_records" not in gen.EXEMPT
+    assert "goal_records" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize(
+    "table", ["pm_cycles", "pm_cycle_tasks", "pm_cycle_committed", "pm_cycle_capacity"],
+)
+def test_the_cycle_tables_are_tenant_scoped(table: str) -> None:
+    """WS-39 SP-1 (``project_management_app.md`` §13.2a). A cycle, its tasks
+    and its two snapshots hold the plan of one organization. The tables may
+    not be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_project_update_table_is_tenant_scoped() -> None:
+    """WS-39 LP-1a (``project_management_app.md`` §14.2a). An update tells
+    how one project of one organization goes. The table may not be exempt,
+    and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "pm_project_updates" in gen.discover_tables()
+    assert "pm_project_updates" not in gen.EXEMPT
+    assert "pm_project_updates" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE pm_project_updates FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize("table", ["pm_templates", "pm_template_applies"])
+def test_the_template_tables_are_tenant_scoped(table: str) -> None:
+    """WS-39 TPL-1a (``project_management_app.md`` §14.8). A template holds
+    the statuses, the fields and the starter tasks of one organization, and
+    an apply record holds a member's key. The tables may not be exempt, and
+    the committed policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT
@@ -520,12 +735,35 @@ async def test_live_catalog_has_column_force_and_policy() -> None:
     finally:
         await session.close()
 
+    # H3.3 (handover §H3.3, D120.3): subtract HOMONYM_BLOCKED too, the same
+    # set the generator scopes (`main()`: discover - EXEMPT - HOMONYM_BLOCKED).
+    # A homonym table is tracked apart: `test_tenancy_boundary.py` holds the
+    # partition, and the generator refuses a new homonym. It is not a
+    # promotion failure. Fence:
+    # `test_the_live_catalog_gate_subtracts_the_homonym_map` (DB-free).
     bad = [
         r["table_name"] for r in rows
         if r["table_name"] not in gen.EXEMPT
+        and r["table_name"] not in gen.HOMONYM_BLOCKED
         and not (r["has_col"] and r["rls_enabled"] and r["rls_forced"] and r["has_policy"])
     ]
     assert not bad, f"tables missing tenant scoping in the live catalog: {sorted(bad)}"
+
+
+def test_the_live_catalog_gate_subtracts_the_homonym_map() -> None:
+    """H3.3 (D120.3), DB-free: the live gate subtracts BOTH generator maps.
+
+    The generator scopes ``discover - EXEMPT - HOMONYM_BLOCKED``. A gate that
+    subtracts only ``EXEMPT`` can never go green on a faithful promotion while
+    the homonym map holds a table. R7 name: ``live-gate-subtracts-homonyms``.
+    """
+    import inspect
+
+    src = inspect.getsource(test_live_catalog_has_column_force_and_policy)
+    assert 'not in gen.EXEMPT' in src
+    assert 'not in gen.HOMONYM_BLOCKED' in src, (
+        "the live-catalog gate no longer subtracts HOMONYM_BLOCKED (H3.3)"
+    )
 
 
 @_needs_db

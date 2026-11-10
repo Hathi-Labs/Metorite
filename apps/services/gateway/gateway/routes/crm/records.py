@@ -66,10 +66,12 @@ from gateway.routes.crm.core import (
     insert_row,
     lead_name_is_derived,
     list_contract,
-    load_default_status,
+    load_pipeline_start_status,
     now,
+    pipeline_takes_unset,
     record_zoho_tombstone,
     related_filters,
+    require_deal_pipeline,
     require_row,
     resolve_owner,
     router,
@@ -108,6 +110,26 @@ def refuse_nul(pairs: Iterable[tuple[str, str]]) -> None:
     for name, value in pairs:
         if "\x00" in name or "\x00" in value:
             raise HTTPException(status_code=422, detail=NUL_DETAIL)
+
+
+def refuse_nul_tree(node: Any) -> None:
+    """The one guard over a JSON body: every string key and value of the
+    tree (WS-53 CRM-Z10d). ``json.dumps`` writes a NUL as the six characters
+    ``\u0000``, so a dump would hide it. The walk reads the raw strings.
+    """
+    refuse_nul(_string_pairs(node))
+
+
+def _string_pairs(node: Any) -> Iterable[tuple[str, str]]:
+    if isinstance(node, str):
+        yield ("", node)
+    elif isinstance(node, dict):
+        for key, val in node.items():
+            yield (str(key), "")
+            yield from _string_pairs(val)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _string_pairs(item)
 
 
 class ListParams:
@@ -236,7 +258,11 @@ async def list_query(
         q=params.q, sort=params.sort, direction=params.direction,
         page=params.page, page_size=params.page_size,
         status_id=params.status_id, owner=owner, source=params.source,
-        pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
+        pipeline_id=params.pipeline_id,
+        pipeline_takes_unset=(
+            entity is DEALS and await pipeline_takes_unset(db, params.pipeline_id)
+        ),
+        extra_where=(*extra, *more_where),
         extra_params={**extra_params, **more_params},
     )
 
@@ -261,7 +287,8 @@ async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> 
         return
     stated = values.get("pipeline_id")
     if stated:
-        await require_row(db, "crm_pipelines", str(stated), "Pipeline")
+        # CRM-M4a: a lead pipeline is never the pipeline of a deal.
+        await require_deal_pipeline(db, str(stated))
     elif "pipeline_id" not in values:
         found = await default_pipeline_id(db)
         if found:
@@ -321,7 +348,9 @@ async def _resolve_status(
     status = (
         await require_row(db, entity.status_table, str(chosen), "Status")
         if chosen
-        else await load_default_status(db, entity.status_table)
+        else await load_pipeline_start_status(
+            db, entity.status_table, values.get("pipeline_id"),
+        )
     )
     if status.type == "lost" and not values.get("lost_reason_id"):
         raise HTTPException(

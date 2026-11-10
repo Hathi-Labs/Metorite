@@ -870,3 +870,27 @@ class TestFixRound7Parts:
         tool = PIPE_7 + "\nWon: INR 135,300,000\nLost: INR 22,450,000"
         assert not check("Won ₹13.53 crore is 5x Lost ₹2.245 crore.", [tool]).ok
         assert check("Won ₹13.53 crore is 6x Lost ₹2.245 crore.", [tool]).ok
+
+
+# CRM #873: a range of days with one month is a date, not a figure. Only a real
+# range (1 <= first < second <= 31) is blanked, so a count cannot hide in one.
+@pytest.mark.parametrize("text", [
+    "the week of 5-11 October", "19 to 25 Oct 2026", "Oct 5-11", "5th-11th October",
+])
+def test_a_real_range_of_days_holds_no_figure(text: str) -> None:
+    assert check(f"Pipeline update for {text}.", []).ok
+
+
+@pytest.mark.parametrize(("text", "figure"), [
+    ("Deals 37-11 October", "37"),
+    ("We closed 40-45 October.", "40"),
+    ("We closed 99 to 45 Oct.", "99"),
+    ("Deals 25-11 October", "25"),
+    ("5-110 October we closed 37", "37"),
+    ("We closed 5-11 deals.", "5"),
+    ("Deals 5-11 October: 37", "37"),
+])
+def test_a_count_does_not_hide_in_a_range_of_days(text: str, figure: str) -> None:
+    result = check(text, [])
+    assert not result.ok, text
+    assert figure in [f.text for f in find_figures(text)], (text, figure)

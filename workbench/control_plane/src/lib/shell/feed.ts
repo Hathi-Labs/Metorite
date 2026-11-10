@@ -38,13 +38,15 @@ import { cacheKey, guardedPut, onClear } from "@/lib/dataCache";
 import { isInAppPath } from "@/lib/inAppLink";
 import { NAV_SECTIONS } from "@/lib/nav";
 
-import { APP_NAMES, appIcon, failedLines } from "./myDay";
+import { APP_NAMES, type FailedSource, appIcon, failedLines, isFailedSource } from "./myDay";
+import { isReminderKind } from "./reminderKinds";
 import {
   KIND_ORDER,
   type NeedsApp,
   type NeedsFeed,
   type NeedsItem,
   type NeedsKind,
+  type NeedsSource,
   type SourceState,
   NEEDS_APP_HREF,
   needsKey,
@@ -157,6 +159,25 @@ export interface HandledEntry {
   at: string | null;
 }
 
+/**
+ * One scheduled reminder of the rest of the member's day (RX-3). It is never
+ * a card, a needs row or a count: the Reminders band draws it as a quiet row.
+ */
+export interface AheadReminder {
+  id: string;
+  title: string;
+  kind: "action" | "notice";
+  /** ISO with an offset. */
+  fire_at: string;
+  important: boolean;
+}
+
+/** The object a reminder is linked to. `label` is null when the member may not see it. */
+export interface ReminderSubject {
+  kind: string;
+  label: string | null;
+}
+
 export interface FeedAnswer {
   cards: FeedCard[];
   /** The groups that hold a card, in the server's order. */
@@ -172,9 +193,17 @@ export interface FeedAnswer {
    * and it reads as false, so the summary makes no claim.
    */
   handled_ok: boolean;
+  /**
+   * The scheduled reminders of the rest of the member's day, soonest first
+   * (RX-3). An older gateway sends none, and it reads as empty.
+   */
+  reminders_ahead: AheadReminder[];
+  /** The linked object of each reminder on the band, by reminder id (RX-3). */
+  reminder_subjects: Record<string, ReminderSubject>;
   /** The needs view of the same run, or null from a gateway that sent none. */
   needs: NeedsFeed | null;
-  sources: Partial<Record<FeedApp, SourceState>>;
+  /** Keyed by SOURCE id, as the server sends it: `reminders` is a source, not an app. */
+  sources: Partial<Record<FeedApp | NeedsSource, SourceState>>;
   /**
    * The app of each source, by source id (MD-3b, §14.1a). An MD-3 source has
    * an id of its own, such as `crm_followups`, so the client maps a failed or
@@ -319,6 +348,37 @@ function readHandled(raw: unknown): HandledEntry | null {
   };
 }
 
+/** The upcoming reminders of the band, each row with an id, a title and a real time. */
+function readAhead(raw: unknown): AheadReminder[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AheadReminder[] = [];
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object") continue;
+    if (typeof r.id !== "string" || !r.id || typeof r.title !== "string") continue;
+    if (typeof r.fire_at !== "string" || Number.isNaN(Date.parse(r.fire_at))) continue;
+    out.push({
+      id: r.id,
+      title: r.title,
+      kind: r.kind === "notice" ? "notice" : "action",
+      fire_at: r.fire_at,
+      important: r.important === true,
+    });
+  }
+  return out;
+}
+
+/** The `reminder_subjects` map, with each entry that is not well formed dropped. */
+function readSubjects(raw: unknown): Record<string, ReminderSubject> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, ReminderSubject> = {};
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    const e = v as Record<string, unknown> | null;
+    if (!e || typeof e !== "object" || typeof e.kind !== "string" || !e.kind) continue;
+    out[id] = { kind: e.kind, label: typeof e.label === "string" && e.label ? e.label : null };
+  }
+  return out;
+}
+
 /** The `source_apps` map, with each entry that is not text dropped. */
 function readSourceApps(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -359,6 +419,8 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
     groups,
     handled,
     handled_ok: Array.isArray(body.handled) && body.handled_ok === true,
+    reminders_ahead: readAhead(body.reminders_ahead),
+    reminder_subjects: readSubjects(body.reminder_subjects),
     needs: body.needs && typeof body.needs === "object" ? readFeed(body.needs) : null,
     sources: body.sources && typeof body.sources === "object" ? (body.sources as FeedAnswer["sources"]) : {},
     source_apps: readSourceApps(body.source_apps),
@@ -416,6 +478,48 @@ export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   const carried = carryCards(before, { ...answer, fetchedAt }, noCarry);
   lastOk.set(limit, noteOk(before, answer, fetchedAt));
   return carried;
+}
+
+// ── The member's feed prefs: the ONE client (WS-66 RE-9a) ───────────────────
+
+/** The stored prefs: `user_settings.my_day_prefs`, as the gateway returns it. */
+export type FeedPrefs = Readonly<Record<string, unknown>>;
+
+const PREFS_URL = "/api/shell/feed/prefs";
+
+/**
+ * Read the member's prefs. `null` means the read failed, so a caller draws no
+ * guess. A key the member never set is absent from the object. The body names
+ * no member and no tenant, because the gateway takes both from the session.
+ */
+export async function loadFeedPrefs(): Promise<FeedPrefs | null> {
+  try {
+    const res = await fetch(PREFS_URL, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return data && typeof data === "object" ? (data as FeedPrefs) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save one pref, and return all the prefs the server stored. `null` means the
+ * save failed, and the caller keeps the old value.
+ */
+export async function saveFeedPref(key: string, value: unknown): Promise<FeedPrefs | null> {
+  try {
+    const res = await fetch(PREFS_URL, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return data && typeof data === "object" ? (data as FeedPrefs) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── A failed source keeps its cards for a while (§6.1, MD-2b) ───────────────
@@ -795,6 +899,9 @@ export function actSpent(act: FeedAct, marked: ReadonlySet<string>): boolean {
  */
 export function cardHidden(card: FeedCard, marked: ReadonlySet<string>): boolean {
   if (marked.size === 0) return false;
+  // RX-3: a reminder card has no `tap` act. The band's Done and Snooze mark
+  // its own id, so the card leaves the band, the bell and the count together.
+  if (isReminderKind(card.kind) && marked.has(card.signal_id)) return true;
   const closed = new Set<string>();
   for (const act of card.acts) if (actSpent(act, marked)) for (const k of CLOSES[act.act ?? ""] ?? []) closed.add(k);
   return closed.has(card.kind) && card.folded.every((k) => closed.has(k));
@@ -930,6 +1037,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   deal_close_passed: "Close date passed",
   colleague_out: "Colleague away",
   agent_asks: "Waiting for your answer",
+  // WS-ALN ALN-2b: a question that waits on me by name.
+  decision: "Waiting for your decision",
   // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
   digest_ready: "Weekly digest",
   // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.
@@ -958,21 +1067,28 @@ export function stateMark(card: Pick<FeedCard, "updated" | "still_open">): strin
   return null;
 }
 
-/** "My Tasks · Overdue": the app's name, a dot, and the state of the card. */
+/**
+ * "My Tasks · Overdue": the app's name, a dot, and the state of the card. The
+ * why line of a task due today says "Due today.", so the state stays out, and
+ * the row does not say it twice (RX-5).
+ */
 export function sourceLine(card: Pick<FeedCard, "app" | "kind">): string {
   const app = FEED_APP_NAMES[card.app as FeedApp] ?? card.app;
-  const state = FEED_KIND_LABELS[card.kind];
+  const state = card.kind === "due_today" ? null : FEED_KIND_LABELS[card.kind];
   return state ? `${app} · ${state}` : app;
 }
 
 /**
  * The time at the right of the source line: WHEN, never how long. The why
- * line already says "Due in 1 h 5 min.", so a duration here only repeats it
+ * line already says "Starts in 20 min.", so a duration here only repeats it
  * in a second format (MD-1b visual review).
  *
  * The member's own day gives the clock, through `fmtClock`, the one clock
  * that Today draws. Yesterday and tomorrow give the word. Six days either
  * side give the short weekday, such as "Mon", and older gives "12 Oct".
+ *
+ * A due date is a day, so a task due today gives no clock (RX-5). The stored
+ * hour means nothing, and the why line says "Due today".
  */
 export function cardTime(card: Pick<FeedCard, "kind" | "at">, nowMs: number): string {
   if (!card.at) return "";
@@ -981,7 +1097,7 @@ export function cardTime(card: Pick<FeedCard, "kind" | "at">, nowMs: number): st
   const now = new Date(nowMs);
   const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((day(at) - day(now)) / 86_400_000);
-  if (days === 0) return fmtClock(at);
+  if (days === 0) return card.kind === "due_today" ? "" : fmtClock(at);
   if (days === -1) return "Yesterday";
   if (days === 1) return "Tomorrow";
   if (Math.abs(days) <= 6) return at.toLocaleDateString(undefined, { weekday: "short" });
@@ -1006,12 +1122,13 @@ export function feedFailedLines(
   sources: FeedAnswer["sources"],
   sourceApps?: Readonly<Record<string, string>>,
 ): string[] {
-  const needsFailed: Partial<Record<NeedsApp, SourceState>> = {};
+  const needsFailed: Partial<Record<FailedSource, SourceState>> = {};
   const others = new Set<string>();
   for (const [source, state] of Object.entries(sources)) {
     if (state !== "failed") continue;
     const app = sourceApp(sourceApps, source);
-    if (Object.hasOwn(APP_NAMES, app)) needsFailed[app as NeedsApp] = "failed";
+    // The noun follows the SOURCE (reminders, time blocks), the name its app.
+    if (Object.hasOwn(APP_NAMES, app)) needsFailed[isFailedSource(source) ? source : (app as FailedSource)] = "failed";
     else others.add(app);
   }
   const lines = failedLines(needsFailed);

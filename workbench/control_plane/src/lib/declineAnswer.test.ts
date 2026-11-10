@@ -75,7 +75,7 @@ describe("the decline envelope", () => {
     }) as unknown as typeof fetch;
     const out = await sendRespondInputResult({ ...declineBody(RID), thread_id: "t1" }, fetchFn);
     expect(calls[0].body).toMatchObject({ request_id: RID, answer: "", declined: true, thread_id: "t1" });
-    expect(out).toEqual({ outcome: "drop", resend: null });
+    expect(out).toEqual({ outcome: "drop", resend: null, reason: "Nothing waits on this answer now. The run ended, or someone answered it." });
   });
 });
 

@@ -20,6 +20,12 @@ dependencies = [
     # only its RESULT crosses the wire (customer_console.md §6(d)). Fenced by
     # `tests/unit/test_console_dependency_boundary.py`.
     "httpx>=0.27",
+    # MCP-P1a (external_agent_access.md §19.7, AD-14): branch 0 writes one
+    # audit row for each call of the app door, through `acb_audit.record`. The
+    # import is lazy, inside `deps._audit_door`, and a failed write never
+    # refuses the call. Declared here, so the package does not rely on the
+    # gateway to bring it.
+    "acb-audit",
 ]
 
 [build-system]

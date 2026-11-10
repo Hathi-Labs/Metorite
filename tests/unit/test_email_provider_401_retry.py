@@ -979,7 +979,7 @@ async def test_a_refresh_in_phase_e_is_written_after_a_successful_sync(
 
     res = await sched._sync_account("acc-1", organization_id="org-1")
 
-    assert res == {"synced": 2, "history_id": None}
+    assert res == {"synced": 2, "history_id": None, "changed": 2}
     assert service.refreshes == 1
     assert _error_blocks(log) == []
     [body_block] = [block for block, sql, _ in log if "SET body_text" in sql]
@@ -1009,7 +1009,7 @@ async def test_a_sync_with_no_refresh_writes_no_credentials(monkeypatch, wire):
 
     res = await sched._sync_account("acc-1", organization_id="org-1")
 
-    assert res == {"synced": 2, "history_id": None}
+    assert res == {"synced": 2, "history_id": None, "changed": 2}
     assert service.token_posts == 0
     assert _credential_writes(log) == []
 
@@ -1033,7 +1033,7 @@ async def test_a_refresh_before_phase_d_is_written_once(monkeypatch, wire):
 
     res = await sched._sync_account("acc-1", organization_id="org-1")
 
-    assert res == {"synced": 2, "history_id": None}
+    assert res == {"synced": 2, "history_id": None, "changed": 2}
     assert service.refreshes == 1
     [phase_d] = [block for block, sql, _ in log if "sync_status = 'idle'" in sql]
     assert _credential_writes(log) == [
@@ -1093,7 +1093,7 @@ async def test_a_refresh_before_phase_d_and_one_in_phase_e_are_both_written(
 
     res = await sched._sync_account("acc-1", organization_id="org-1")
 
-    assert res == {"synced": 2, "history_id": None}
+    assert res == {"synced": 2, "history_id": None, "changed": 2}
     assert service.refreshes == 2
     assert _credential_writes(log) == [
         (_block_of(log, "sync_status = 'idle'"),
@@ -1118,7 +1118,7 @@ async def test_a_failed_write_after_phase_e_goes_again_and_the_sync_succeeds(
     with caplog.at_level("INFO", logger=sched.logger.name):
         res = await sched._sync_account("acc-1", organization_id="org-1")
 
-    assert res == {"synced": 2, "history_id": None}
+    assert res == {"synced": 2, "history_id": None, "changed": 2}
     assert service.refreshes == 1
     assert _error_blocks(log) == []
     body = _block_of(log, "SET body_text")
@@ -1143,7 +1143,7 @@ async def test_two_failed_writes_after_phase_e_leave_the_sync_a_success(
     with caplog.at_level("INFO", logger=sched.logger.name):
         res = await sched._sync_account("acc-1", organization_id="org-1")
 
-    assert res == {"synced": 2, "history_id": None}
+    assert res == {"synced": 2, "history_id": None, "changed": 2}
     assert service.refreshes == 1
     assert _error_blocks(log) == []
     body = _block_of(log, "SET body_text")
@@ -1315,7 +1315,7 @@ class TestRefreshedTokensReachTheDatabase:
             async with tenant_engine_scope(app_dsn):
                 res = await sched._sync_account(account_id,
                                                 organization_id=p.org_b)
-            assert res == {"synced": 2, "history_id": None}
+            assert res == {"synced": 2, "history_id": None, "changed": 2}
             assert service.refreshes == 1
             with p.admin_engine.connect() as c:
                 acct = c.execute(text(

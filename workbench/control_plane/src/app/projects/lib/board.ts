@@ -10,7 +10,7 @@
  */
 
 import { UNSET } from "./grouping";
-import { type Placeable, landingLane } from "./statusOrder";
+import { type Placeable, landingLane, statusLaneOf } from "./statusOrder";
 import { taskCell } from "./matrix";
 
 export interface PositionedTask {
@@ -242,6 +242,8 @@ export function dropRefusal(
 export function currentAxisKey(
   task: {
     status_id?: string | null;
+    /** The stage of the row's status, as the server stamps it (#834). */
+    status_category?: string | null;
     type_id?: string | null;
     project_id?: string | null;
     importance?: number | null;
@@ -254,7 +256,11 @@ export function currentAxisKey(
 ): string | null {
   switch (axis) {
     case "status":
-      return task.status_id ?? null;
+      // #834. A subproject's own lane draws in the board lane of its stage
+      // (`statusLaneOf`). A reorder inside that column is no move, so it must
+      // not write the board's lane over the task's own.
+      if (!task.status_id || !statuses) return task.status_id ?? null;
+      return statusLaneOf(statuses)(task) ?? task.status_id;
     case "category": {
       // ⚠️ Without this a same-stage drop is not recognised as a no-op, and the
       // card is PATCHED onto the stage's first lane — so dragging a "Blocked"
@@ -262,7 +268,7 @@ export function currentAxisKey(
       // "In progress". The skip in `buildCellDropPatch` is the only thing
       // standing between a reorder and a status write.
       if (!task.status_id || !statuses) return null;
-      return statuses.find((s) => s.id === task.status_id)?.category ?? null;
+      return statuses.find((s) => s.id === task.status_id)?.category ?? task.status_category ?? null;
     }
     case "type":
       return task.type_id ?? null;

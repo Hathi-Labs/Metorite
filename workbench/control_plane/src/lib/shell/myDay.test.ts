@@ -20,6 +20,7 @@ import {
   emptyNeedsLine,
   failedLines,
   firstName,
+  GREETING_TABLE,
   greeting,
   greetingLine,
   groupNeeds,
@@ -56,12 +57,17 @@ const row = (id: string, kind: NeedsKind, extra: Partial<NeedsItem> = {}): Needs
 
 describe("the header", () => {
   it("greets by the member's local hour", () => {
-    expect(greeting(0)).toBe("Good morning");
+    expect(greeting(2)).toBe("Hello");
+    expect(greeting(4)).toBe("Hello");
+    expect(greeting(5)).toBe("Good morning");
     expect(greeting(11)).toBe("Good morning");
     expect(greeting(12)).toBe("Good afternoon");
-    expect(greeting(17)).toBe("Good afternoon");
-    expect(greeting(18)).toBe("Good evening");
-    expect(greeting(23)).toBe("Good evening");
+    expect(greeting(16)).toBe("Good afternoon");
+    expect(greeting(17)).toBe("Good evening");
+    expect(greeting(20)).toBe("Good evening");
+    expect(greeting(21)).toBe("Hello");
+    expect(greeting(23)).toBe("Hello");
+    expect(GREETING_TABLE).toHaveLength(4);
   });
 
   it("uses the first word of a display name, and never an address", () => {
@@ -198,7 +204,9 @@ describe("Needs you", () => {
   it("says when a row is due, and how long ago anything else came", () => {
     const now = Date.parse("2026-10-09T12:00:00Z");
     expect(rowTime({ kind: "overdue", at: "2026-10-07T12:00:00Z" }, now)).toBe("Due 2d ago");
-    expect(rowTime({ kind: "due_today", at: "2026-10-09T15:00:00Z" }, now)).toBe("Due in 3h");
+    // The group heading says "Due today", and a date has no hour (RX-5).
+    expect(rowTime({ kind: "due_today", at: "2026-10-09T15:00:00Z" }, now)).toBe("");
+    expect(rowTime({ kind: "due_today", at: "2026-10-09T09:00:00Z" }, now)).toBe("");
     expect(rowTime({ kind: "notification", at: "2026-10-09T11:55:00Z" }, now)).toBe("5m ago");
     expect(rowTime({ kind: "needs_reply", at: null }, now)).toBe("");
   });
@@ -214,6 +222,18 @@ describe("Needs you", () => {
     ]);
     // An approver without the feature reads "absent", which is no gap.
     expect(failedLines({ approvals: "absent" })).toEqual([]);
+  });
+
+  it("words a failed reminders source, which the server keys by source and not by app", () => {
+    // WS-66 RM-2b repair: `reminders` is a source of the Calendar app.
+    const sources = { tasks: "ok", projects: "ok", email: "ok", reminders: "failed" } as const;
+    expect(failedLines(sources)).toEqual([
+      "Calendar did not answer, so its reminders may be missing.",
+    ]);
+    // With no rows, the card must say the gap and never the all-clear.
+    const failed = failedLines(sources).length > 0;
+    expect(emptyNeedsLine(failed)).not.toBe("Nothing needs you right now.");
+    expect(summaryLine(0, 0, failed)).toBe("Your calendar is clear.");
   });
 
   it("draws each app with its own manifest icon", () => {

@@ -116,6 +116,10 @@ export interface AgentActivity {
     parameters?: Record<string, string> | null;
     /** EA-6g: the member's answer to an archive request archived the task. */
     archived?: boolean | null;
+    /** SW-43. The member took this answer back. The server hides such a row. */
+    withdrawn?: { at?: string | null; by?: string | null } | null;
+    /** SW-43. On the marker prompt of a withdraw: the id of the answer it took back. */
+    withdraws?: string | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -171,6 +175,11 @@ export interface AgentRun {
    */
   open_elicitation?: AgentActivity | null;
   elicitation?: AgentActivity | null;
+  /**
+   * SW-43. The live answer of the member, and whether the member may still
+   * take it back. The key is there only while the gateway flag is on.
+   */
+  answer?: { id: string; seq: number; changeable: boolean } | null;
 }
 
 /** What `GET /projects/agent-runs/{run_id}` gives, after `normalizeRunDetail`. */
@@ -257,13 +266,29 @@ export const CLIENT_LABELS: Readonly<Record<string, string>> = {
   "claude.ai": "Claude",
 };
 
+/** WS-55 EA-19b (spec §10.9). The start of a box stamp. */
+export const BOX_STAMP_PREFIX = "mcp:box:";
+
+/** True for a box stamp, `mcp:box:<slug>-<8 hex>` (EA-19b). */
+export function isBoxStamp(via?: string | null): boolean {
+  return (via ?? "").trim().toLowerCase().startsWith(BOX_STAMP_PREFIX);
+}
+
 /**
  * The name of a client stamp. A known stamp reads its label. Else the label
  * of its host, else the host itself, so `mcp:evil.example:claude-code` reads
- * "evil.example". An empty value reads "Agent".
+ * "evil.example". An empty value reads "Agent". EA-19b: a box stamp
+ * `mcp:box:<slug>-<8 hex>` reads "Box <slug>", and `mcp:box:<8 hex>` reads
+ * "Box". The rule of `agent_oauth.client_label`.
  */
 export function clientName(via?: string | null): string {
   const raw = (via ?? "").trim().toLowerCase();
+  if (raw.startsWith(BOX_STAMP_PREFIX)) {
+    const tail = raw.slice(BOX_STAMP_PREFIX.length);
+    const named = /^(.+)-[0-9a-f]{8}$/.exec(tail);
+    if (named) return `Box ${named[1]}`;
+    return !tail || /^[0-9a-f]{8}$/.test(tail) ? "Box" : `Box ${tail}`;
+  }
   const body = raw.startsWith("mcp:") ? raw.slice(4) : raw;
   // An own key only: `mcp:constructor` must not read a property of Object.
   const label = (key: string) =>
@@ -554,13 +579,44 @@ export function answerTo(
   activities: readonly AgentActivity[],
   elicitation: AgentActivity,
 ): AgentActivity | null {
+  // SW-43. An answer that a marker prompt took back is no answer.
+  const taken = new Set(
+    activities.map((a) => a.content.withdraws).filter((id): id is string => Boolean(id)),
+  );
   for (let i = activities.length - 1; i >= 0; i -= 1) {
     const a = activities[i];
-    if (a.type === "prompt" && a.in_reply_to === elicitation.id && a.signal !== "stop") {
+    if (
+      a.type === "prompt" &&
+      a.in_reply_to === elicitation.id &&
+      a.signal !== "stop" &&
+      !a.content.withdrawn &&
+      !taken.has(a.id)
+    ) {
       return a;
     }
   }
   return null;
+}
+
+/** SW-43. The body of a withdraw: the answer to take back, and a fresh key. */
+export interface WithdrawBody {
+  answer_id: string;
+  idempotency_key: string;
+}
+
+export function withdrawPayload(
+  answerId: string,
+  idempotencyKey: string = newIdempotencyKey(),
+): WithdrawBody {
+  return { answer_id: answerId, idempotency_key: idempotencyKey };
+}
+
+/**
+ * SW-43. The line when the answer can no longer be taken back, because the
+ * agent has read it. The member sends a comment to change the course.
+ */
+export function answerHeldLine(clientLabel: string): string {
+  return `${clientLabel} has your answer. Reply below to change it.`;
 }
 
 /** The elicitation as the chat's question card reads it. */
@@ -712,7 +768,8 @@ export interface AgentRowFacts {
 /**
  * §12.1: a task whose `agent_state` is `awaiting`, and whose run member is
  * the caller, or whose assignees include the caller. This slice filters the
- * rows already loaded, so a task on a page not yet read does not show.
+ * rows already loaded. The server filters by the same rule (`agent_focus=waiting`),
+ * so this is a paint-time guard (task #986).
  */
 export function isWaitingOnMe(task: AgentRowFacts, me: string): boolean {
   if (task.agent_state !== "awaiting") return false;
@@ -745,6 +802,8 @@ export function runIdentity(
   run: Pick<AgentRun, "client_via" | "client_name" | "client_host">,
 ): string {
   const name = run.client_name?.trim() || clientName(run.client_via);
+  // EA-19b: the pill of a box reads the label only. Its host is `box`.
+  if (isBoxStamp(run.client_via)) return name;
   const host = run.client_host?.trim() || hostOfStamp(run.client_via);
   return host && host.toLowerCase() !== name.toLowerCase() ? `${name} \u00b7 ${host}` : name;
 }
@@ -829,8 +888,8 @@ export interface AgentOversightFacts extends AgentRowFacts {
 
 /**
  * "Agent work" (EA3-49): the gateway's `agent_worked` flag, which reads the one
- * predicate of `agent_worked.py`. The toggle filters the loaded rows, as
- * "Waiting on me" does.
+ * predicate of `agent_worked.py`. The toggle sends `agent_worked` to the
+ * server, and this guards the paint of rows held from before a switch.
  */
 export function isAgentWork(task: AgentOversightFacts): boolean {
   return task.agent_worked === true;
@@ -838,8 +897,10 @@ export function isAgentWork(task: AgentOversightFacts): boolean {
 
 /**
  * The rows that a count button of the strip stands for. The strip counts over
- * the whole project on the server, and the board shows the loaded rows, so the
- * number and the rows agree except on a page not yet read.
+ * the whole project on the server. The list filters by the SAME rule on the
+ * server too (`agent_focus`, `filters.agent_focus_clause`), so the number and
+ * the rows agree. This function only guards the paint: it drops a row held from
+ * the read before a switch of focus (task #986).
  */
 export function matchesAgentFocus(
   task: AgentOversightFacts,
@@ -1039,4 +1100,26 @@ export function archiveWaitingText(
 ): string {
   const who = firstName(run.member_email, labels);
   return who ? `Waiting for ${who}` : "Waiting for the member of this run";
+}
+
+/**
+ * SW-43. What the panel shows under an answer: the Withdraw button, the held
+ * line, or nothing. Only the run's member sees either, because no other
+ * member may withdraw. The held line shows only when a reply box shows too,
+ * since it says "Reply below".
+ */
+export function withdrawShown(
+  run: AgentRun,
+  answer: AgentActivity | null | undefined,
+  isMember: boolean,
+  canReply: boolean,
+): boolean {
+  if (!answer || !run.answer || !isMember) return false;
+  return run.answer.changeable || canReply;
+}
+
+/** SW-43. The id to withdraw: the live answer that the server names, never a local guess. */
+export function withdrawTarget(run: AgentRun): string | null {
+  const id = run.answer?.id;
+  return id && !id.startsWith("local:") ? id : null;
 }

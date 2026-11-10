@@ -37,13 +37,14 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
-import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
+import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
+import { noteToolEnd, noteToolStart } from "@/lib/assistantWrites";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
@@ -51,7 +52,6 @@ import { isInterruptedReply } from "@/lib/chatInterrupted";
 import {
   RUN_CAP_NOTICE_ID,
   settleFailedTurn,
-  type RunCappedHandler,
   type SessionRefusedHandler,
 } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
@@ -68,6 +68,7 @@ import {
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
 import { surfaceField } from "@/lib/shell/surface";
+import { typedField } from "@/lib/typedMark";
 import {
   cancelFollowUp, followUpDue, owedAfterSteer, scheduleFollowUpRetry, sendSteer,
   settleFollowUpAnswer, type SteerOutcome,
@@ -76,7 +77,9 @@ import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
 import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
+import type { CardDraft } from "@/lib/redraftCard";
 import { isQuietArtifact } from "@/lib/artifactCards";
+import { cancelRun, stopConfirmed, stopFailed, stopStarted } from "@/lib/chatStop";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -112,6 +115,34 @@ const HITL_CONTROL_EVENTS = new Set([
  * in the transcript. The replay loop never emits it: a refresh moves no page.
  */
 const NAVIGATE_EVENT = "navigate";
+
+/**
+ * The server named a guide (WS-OB GD-4). Like `navigate`, the live loop emits
+ * `onGuide` and the event draws nothing in the transcript.
+ */
+const GUIDE_EVENT = "guide";
+
+/** Tell the run state that a tool began or ended, so a Stop can say how many
+ *  changes the run made (`lib/runStatus.ts`, UXD-4b). */
+function noteToolForRun(threadId: string, evt: { type?: unknown; id?: unknown; name?: unknown; success?: unknown }): void {
+  const id = String(evt.id ?? "");
+  if (!id) return;
+  if (evt.type === "tool_start") {
+    dispatchRun(threadId, { type: "toolStart", at: Date.now(), id, name: String(evt.name ?? "") });
+  } else if (evt.type === "tool_end") {
+    // `tool_end` may carry no name: read it from the thread's tool event.
+    const name = String(evt.name ?? "") || toolNameOf(threadId, id);
+    dispatchRun(threadId, { type: "toolDone", at: Date.now(), id, name, ok: !!evt.success });
+  }
+}
+
+function toolNameOf(threadId: string, id: string): string {
+  for (const m of getSessionState(threadId).messages) {
+    const t = (m.toolEvents ?? []).find((x) => x.id === id);
+    if (t) return t.name;
+  }
+  return "";
+}
 
 /** The `cardAnswer` field of a chat request: the answered card that the
  *  turn carries (`lib/cardAnswer.ts`), or nothing. Exported for its test. */
@@ -206,8 +237,16 @@ interface UseAgentChatOptions {
    * The run cap refused the send (WS-51 D-3, 429 `too_many_runs`). The turn
    * has left the thread, and the surface puts these words back in its
    * composer. Nothing is held, and nothing sends again by itself.
+   * `typed` is the typed mark of that send (WS-63 D-PZ-37), so the box
+   * keeps the mark only for words that the member typed.
    */
-  onRunCapped?: RunCappedHandler;
+  onRunCapped?: (pendingText: string, typed: boolean) => void;
+  /**
+   * §18.11: the member's version of EACH open new-mail card, edited or not
+   * (`lib/redraftCard.ts`). Each steer asks it once, and carries the answer
+   * as `cardDraft`. A send that starts a run never carries it.
+   */
+  cardDraft?: () => CardDraft[];
 }
 
 interface UseAgentChatReturn {
@@ -222,12 +261,19 @@ interface UseAgentChatReturn {
   /** Send words into the live run (owner, 2026-10-12, `lib/chatSteer.ts`).
    *  It never stops the run and never opens a second stream. A refusal
    *  resolves with the notice, and the caller puts the words back. */
-  /** `opts.cardAnswer`: a card answer's resend steers with its display. */
-  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null }) => Promise<SteerOutcome>;
+  /** `opts.cardAnswer`: a card answer's resend steers with its display.
+   *  `opts.typed`: the member typed the words in the message box, so the
+   *  steer carries the typed mark (WS-63 D-PZ-37, `lib/typedMark.ts`). */
+  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null; typed?: boolean }) => Promise<SteerOutcome>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
-   *  for the old run to stop before it starts the new one. */
-  stopGeneration: () => Promise<void>;
+   *  for the old run to stop before it starts the new one. It resolves with
+   *  the reason of a failed cancel, else null (UXD-4). */
+  stopGeneration: () => Promise<string | null>;
+  /** A Stop waits for the server's answer (UXD-4). */
+  stopping: boolean;
+  /** Why the last Stop did not stop the run, or null. */
+  stopError: string | null;
   /** Replace the messages array (used to hydrate from Postgres on mount). */
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   /** True while polling is actively recovering a stream that was interrupted
@@ -260,9 +306,12 @@ export function useAgentChat({
   onArtifact,
   onSessionRefused,
   onRunCapped,
+  cardDraft,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
+  const cardDraftRef = useRef(cardDraft);
+  useEffect(() => { cardDraftRef.current = cardDraft; }, [cardDraft]);
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
   const onRunCappedRef = useRef(onRunCapped);
@@ -404,12 +453,12 @@ export function useAgentChat({
           ...(modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
-        holdForUpdate(threadId, text, { resume: opts?.resume });
+        holdForUpdate(threadId, text, { resume: opts?.resume, typed: opts?.typed });
         settleSend("held");
         return;
       }
       if (plan === "requeue") {
-        holdForUpdate(threadId, text, { front: true, resume: opts?.resume });
+        holdForUpdate(threadId, text, { front: true, resume: opts?.resume, typed: opts?.typed });
         settleSend("held");
         return;
       }
@@ -459,7 +508,7 @@ export function useAgentChat({
       // effect writes, exactly as they were. Only the loading state moves.
       setSessionState(threadId, (prev) => {
         if (supersedes) {
-          return { ...prev, isLoading: true, error: null, abortController: controller };
+          return { ...prev, isLoading: true, error: null, abortController: controller, stopError: null };
         }
         if (!held) {
           return {
@@ -479,7 +528,7 @@ export function useAgentChat({
         const idx = prev.messages.findIndex((m) => m.id === userMsg.id);
         const messages = prev.messages.map((m) => (m.id === userMsg.id ? userMsg : m));
         messages.splice(idx + 1, 0, assistantMsg);
-        return { ...prev, messages, isLoading: true, error: null, abortController: controller };
+        return { ...prev, messages, isLoading: true, error: null, abortController: controller, stopError: null };
       });
 
       // The one run state: a run starts (`lib/runStatus.ts`). A card of an
@@ -589,6 +638,10 @@ export function useAgentChat({
             // The answered card of a card answer, for the turn the gateway
             // saves at run start. It never reaches the model.
             ...cardAnswerField(userMsg),
+            // WS-63 D-PZ-37: the ONE typed mark. Only the composer's send
+            // sets it. A pill, a choice, a card action, a feed starter and
+            // the Fix prompt send none (`lib/typedMark.ts`).
+            ...typedField(opts?.typed),
           }),
         });
         gotResponse = true;
@@ -712,12 +765,20 @@ export function useAgentChat({
               case "tool_args":
               case "tool_partial":
                 upd((m) => applyStreamEvent(m, evt, fold));
+                noteToolForRun(threadId, evt);
                 // D99: the one assistant moves the page to the app whose
                 // specialist it calls (`lib/shell/assistant.ts`). Live loop
                 // ONLY: a reconnect replays old events, and a replay must not
                 // move the page again.
                 if (evt.type === "tool_start") {
                   emitAgentEvent("onDelegate", { name: String(evt.name ?? ""), threadId });
+                  noteToolStart(String(evt.id ?? ""), String(evt.name ?? ""));
+                }
+                // Task #124: a write that ended tells the open app to read
+                // again. Live loop ONLY, so a replay never does.
+                if (evt.type === "tool_end") {
+                  const endId = String(evt.id ?? "");
+                  noteToolEnd(endId, String(evt.name ?? "") || toolNameOf(threadId, endId), !!evt.success);
                 }
                 break;
               // Nested delegation timeline — shared reducer (also used by the
@@ -728,6 +789,12 @@ export function useAgentChat({
               case "sub_agent_error":
                 upd((m) => applySubAgentEvent(m, evt));
                 emitAgentEvent("onDelegate", { name: String(evt.agentName ?? ""), threadId });
+                // Task #124: a specialist's step is a tool call too.
+                if (evt.type === "sub_agent_tool_start") {
+                  noteToolStart(String(evt.id ?? ""), String(evt.name ?? ""));
+                } else if (evt.type === "sub_agent_tool_end") {
+                  noteToolEnd(String(evt.id ?? ""), undefined, evt.success !== false);
+                }
                 break;
               case "done":
                 sawDone = true;
@@ -769,13 +836,17 @@ export function useAgentChat({
                     threadId,
                   });
                 }
+                if (evtName === GUIDE_EVENT) {
+                  const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
+                  emitAgentEvent("onGuide", { guideId: String(data?.guide_id ?? ""), threadId });
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -835,7 +906,7 @@ export function useAgentChat({
           }));
           if (followUp) { heldAgain = true; return; }
           holdForUpdate(threadId, userMsg.content, {
-            userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
+            userMsgId: userMsg.id, front: !!held, resume: opts?.resume, typed: opts?.typed,
           });
           heldAgain = true;
           settleSend("held");
@@ -896,7 +967,10 @@ export function useAgentChat({
           onSessionRefused: onSessionRefusedRef.current,
           // A card answer's words are the envelope the model reads: they
           // never go back to the composer. Its card stays open instead.
-          onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,
+          // The words go back with their typed mark (D-PZ-37).
+          onRunCapped: opts?.cardAnswer || !onRunCappedRef.current
+            ? undefined
+            : (words: string) => onRunCappedRef.current?.(words, opts?.typed === true),
         });
         capped = outcome === "capped";
         settleSend("refused");
@@ -946,11 +1020,13 @@ export function useAgentChat({
   // going. If the run had ended, the server starts a new one, and this
   // follows its stream as a normal turn, in place of the steer's bubble.
   const steerMessage = useCallback(async (
-    content: string, opts?: { cardAnswer?: CardAnswer | null },
+    content: string, opts?: { cardAnswer?: CardAnswer | null; typed?: boolean },
   ): Promise<SteerOutcome> => {
     // One id for the reply row, whether the steer folds in or starts a run.
     const replyId = nanoid();
     const card = opts?.cardAnswer ?? null;
+    // §18.11 step 1: the member's own version of an open new-mail card.
+    const draft = cardDraftRef.current?.() ?? [];
     const out = await sendSteer({
       threadId,
       text: content,
@@ -973,12 +1049,17 @@ export function useAgentChat({
         userMessageId,
         userMessageTs,
         ...(card ? { cardAnswer: card } : {}),
+        ...(draft.length ? { cardDraft: draft } : {}),
+        // WS-63 D-PZ-37: a steer carries the typed mark the same way a send
+        // does. Only the composer sets it (`lib/typedMark.ts`).
+        ...typedField(opts?.typed),
       }),
     });
     if (out.kind === "started") {
       void sendMessage(content, {
         heldId: out.bubbleId,
         adopt: { response: out.response, controller: out.controller, assistantId: replyId },
+        ...typedField(opts?.typed),
       });
     }
     return out;
@@ -1241,6 +1322,7 @@ export function useAgentChat({
               case "tool_args":
               case "tool_partial":
                 updLast((m) => applyStreamEvent(m, evt, fold));
+                noteToolForRun(threadId, evt);
                 break;
               // Nested delegation timeline — same shared reducer as the live
               // loop.  Without these cases a refresh mid-delegation dropped
@@ -1273,7 +1355,7 @@ export function useAgentChat({
                 }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
                 // and it draws nothing either.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -1442,6 +1524,7 @@ export function useAgentChat({
   }, [threadId]);
 
   const runPhase = sessionState.run.phase;
+  const restBlind = sessionState.run.restBlind;
   // A remount's "checking" was seen, so the cards on screen came from the log.
   const wasCheckingRef = useRef(false);
   const checkingNow = sessionState.run.checking;
@@ -1470,7 +1553,7 @@ export function useAgentChat({
     // more: the run is finalized here, as its `done` would have done. A cut
     // stream with NO remount keeps its card, so an answer still goes
     // (the restart path, `chat-card-restart.spec.ts`).
-    const resting = runPhase === "done" || runPhase === "stopped" || runPhase === "failed" || runPhase === "idle";
+    const resting = isRestingPhase(runPhase);
     if (runPhase === "working" || runPhase === "waiting_for_you") wasCheckingRef.current = false;
     if (resting && wasCheckingRef.current) {
       wasCheckingRef.current = false;
@@ -1484,7 +1567,12 @@ export function useAgentChat({
     // rest then redraws no stale card. The card on screen now stays: a cut
     // stream's answer still goes by the restart path.
     if (resting) clearCardLog(threadId);
-  }, [runPhase, threadId]);
+    // §18.11 step 7: a slot of a redraft ends with ANY end of a run. A Stop, a
+    // failed model call and an end on the attach stream emit no
+    // `onRunFinalized`, and the slot would then spin with no button. A rest
+    // that only the settle of `FINISH_MAX_MS` made waits for a server list.
+    if (restConfirmed({ phase: runPhase, restBlind })) emitAgentEvent("onRunRested", { threadId });
+  }, [runPhase, restBlind, threadId]);
   // A new run (another run key) has none of the old run's cards.
   const runKeyNow = sessionState.run.runKey;
   const runKeyRef = useRef<string | null>(runKeyNow);
@@ -1500,38 +1588,39 @@ export function useAgentChat({
     void attach(ctrl, () => ctrl.signal.aborted);
   }, [wantAttach, attach]);
 
-  const stopGeneration = useCallback((): Promise<void> => {
-    const current = getSessionState(threadId);
-    // 1. Abort the local SSE fetch (stops the browser reading the stream).
-    current.abortController?.abort();
-    // 2. Tell the backend to ACTUALLY cancel the run.  Without this the agent
+  const stopGeneration = useCallback((): Promise<string | null> => {
+    // 1. Tell the backend to ACTUALLY cancel the run.  Without this the agent
     //    keeps executing detached server-side (burning tokens, writing files)
-    //    because it's decoupled from the HTTP response lifecycle.  The Stop
-    //    button does not wait on it. An edit awaits the returned promise, so
-    //    the new run starts only after the old one stopped.
-    const settled = fetch("/api/agent/cancel", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threadId }),
-      keepalive: true,
-    }).then(() => undefined, () => undefined);
-    // 3. Immediately clear loading/recovering state so the UI reflects idle
-    //    (don't wait for the next polling tick to clear the stale flag).
-    setSessionState(threadId, (prev) => ({
-      ...prev,
-      abortController: null,
-      isLoading: false,
-      recovering: false,
-      runStatus: "idle",
-      // A Stop asks for no follow-up, and a steer answer still on its way
-      // owes none (`stopEpoch`). The server answers every tab "stopped".
-      steerOwed: false,
-      stopEpoch: (prev.stopEpoch ?? 0) + 1,
-    }));
-    cancelFollowUp(threadId);
-    dispatchRun(threadId, { type: "stop", at: Date.now() });
-    clearCardLog(threadId);
-    return settled;
+    //    because it's decoupled from the HTTP response lifecycle. The chat
+    //    says "Stopping" until the server answers, and never says "stopped"
+    //    for a cancel that failed (UXD-4, `lib/chatStop.ts`). An edit awaits
+    //    the returned promise, so the new run starts only after the old one
+    //    stopped. It resolves with the reason of a failure, else null.
+    // The stream this Stop is for. A run that ends by itself in the wait,
+    // and a new send after it, must not be stopped by this late answer.
+    const stoppedStream = getSessionState(threadId).abortController;
+    setSessionState(threadId, stopStarted);
+    return cancelRun(threadId).then((out) => {
+      if (!out.ok) {
+        // The run stays live: its stream keeps reading, and Stop tries again.
+        setSessionState(threadId, (prev) => stopFailed(prev, out.reason));
+        return out.reason;
+      }
+      const streamNow = getSessionState(threadId).abortController;
+      if (streamNow && streamNow !== stoppedStream) {
+        setSessionState(threadId, (prev) => ({ ...prev, stopping: false }));
+        return null;
+      }
+      // 2. Abort the local SSE fetch (stops the browser reading the stream).
+      getSessionState(threadId).abortController?.abort();
+      // 3. Clear loading/recovering state so the UI reflects idle (don't wait
+      //    for the next polling tick to clear the stale flag).
+      setSessionState(threadId, stopConfirmed);
+      cancelFollowUp(threadId);
+      dispatchRun(threadId, { type: "stop", at: Date.now() });
+      clearCardLog(threadId);
+      return null;
+    });
   }, [threadId]);
 
   // ── Reconnection & cross-device polling ─────────────────────────────
@@ -1858,5 +1947,6 @@ export function useAgentChat({
   return {
     messages, isLoading, error, sendMessage, steerMessage, clearMessages, stopGeneration, setMessages,
     recovering, runStatus, outage, retryHeld, run: sessionState.run,
+    stopping: !!sessionState.stopping, stopError: sessionState.stopError ?? null,
   };
 }

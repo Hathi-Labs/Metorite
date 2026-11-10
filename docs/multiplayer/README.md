@@ -80,7 +80,7 @@ Interactive mockups live alongside this doc:
 
 **Companion docs:**
 
-- `../../project-docs/specs/agent_platform_hardening_2026-07.md`
+- `../../project-docs/research/agent_platform_hardening_2026-07.md`
   — **adversarial review of everything below.** 20 findings, the container-isolation
   decision, and the ordered fix list. Two of them change this document's design rather than
   its implementation: participant input must be **user-role** (steer is otherwise a
@@ -99,7 +99,7 @@ Interactive mockups live alongside this doc:
   one-per-person (coach, email) and which are one-brain-for-a-team (sales assistant).
   Read this first: instancing decides what a memory compartment even is, and whether an
   agent's sessions may become rooms at all.
-- `../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md`
+- `../../project-docs/research/multiplayer_prior_art_qm_2026-08.md`
   — **prior art: `yc-software/qm`, read 2026-08-01.** An outside team reached this document's
   intersection rule independently and applied it to three resources. Three of its findings change
   what is written below rather than confirming it: **steer should be built before floor control**
@@ -180,7 +180,7 @@ This is the plumbing referred to in the framing. It is genuinely most of the pro
 | **Authoritative run-end persistence** | `gateway/chat_fold.py:410` `persist_final_assistant_message` | The transcript is folded and written server-side at the run boundary, independent of any browser. A room's history does not depend on a participant staying connected. |
 | **Identity at the edge** | `packages/acb_auth/acb_auth/deps.py` — `UserContext(email, role)`, internal-bearer-verified SSO headers | Every request already carries a verified actor. Membership checks have something to check against. |
 | **Cost & activity feed** | `packages/acb_common` Redis activity/cost feed; live token tracking (Custom Apps) | Per-participant cost attribution in a room is a re-key, not a new system. |
-| **Org/RBAC design already researched** | `project-docs/specs/multi_user_organization_research.md` | Orgs, memberships, permission vocabulary, agent visibility, memory scoping. **This RFC is the session-level layer on top of it**, and deliberately does not re-litigate the org model. |
+| **Org/RBAC design already researched** | `project-docs/research/multi_user_organization_research.md` | Orgs, memberships, permission vocabulary, agent visibility, memory scoping. **This RFC is the session-level layer on top of it**, and deliberately does not re-litigate the org model. |
 
 **Relationship to the org research doc.** That doc answers *"who can access which agents and
 data across the company"* — a static, org-shaped question. This doc answers *"how do several

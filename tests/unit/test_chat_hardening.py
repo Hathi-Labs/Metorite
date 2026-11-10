@@ -111,10 +111,13 @@ def test_delegation_paths_have_wallclock_timeouts():
     from acb_skills import agent_tools as at
 
     assert at._SUB_AGENT_TIMEOUT > 0
-    for fn in (at.call_agent, at.call_agents_parallel):
-        src = inspect.getsource(fn)
-        assert "wait_for" in src, f"{fn.__name__} lacks a delegation timeout"
-        assert "_SUB_AGENT_TIMEOUT" in src
+    src = inspect.getsource(at.call_agent)
+    assert "wait_for" in src, "call_agent lacks a delegation timeout"
+    assert "_SUB_AGENT_TIMEOUT" in src
+    # WS-67 OA-9b: the fan-out runs each branch through `_run_branch`, which
+    # holds the wait_for. The tool passes the clock in.
+    assert "_SUB_AGENT_TIMEOUT" in inspect.getsource(at.call_agents_parallel)
+    assert "wait_for" in inspect.getsource(at._run_branch)
 
 
 @pytest.mark.asyncio
@@ -171,7 +174,10 @@ def test_sub_agent_events_persisted_and_replayed():
     route = (REPO / "workbench/control_plane/src/app/api/agent/chat/route.ts").read_text(encoding="utf-8")
     # Server-side accumulation + attachment to the persisted delegate tool.
     assert "subAgent.text +=" in route
-    assert "subAgentTools: subAgent.tools" in route
+    # WS-67 OA-9b hardening: the fold moved into ``takeHandoff`` (chatStream.ts).
+    assert "takeHandoff(name, subAgent)" in route
+    stream = (REPO / "workbench/control_plane/src/lib/chatStream.ts").read_text(encoding="utf-8")
+    assert "subAgentTools: acc.tools" in stream
     assert "...subAgentFields," in route
 
     hook = (REPO / "workbench/control_plane/src/hooks/useAgentChat.ts").read_text(encoding="utf-8")

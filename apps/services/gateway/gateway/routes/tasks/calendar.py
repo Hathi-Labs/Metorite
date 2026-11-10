@@ -33,7 +33,9 @@ from acb_auth import UserContext, get_current_user
 from acb_common.db import TenantUnbound
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
+from gateway.routes.tasks import calendar_decide as _calendar_decide
 from gateway.routes.tasks.core import (
+    NO_THINKING,
     # `_get_db` is used ONLY by the auto-rollover sweep's org enumeration at the
     # bottom of this file (H4 — the RLS-EXEMPT `organization` read; see the
     # comment there); every request handler AND per-user rollover uses
@@ -383,6 +385,38 @@ DEFAULT_PLANNING_PROMPT = (
     "constraints or mood I give for today."
 )
 
+# The day plan is a fast, structured choice: which candidates go today, in what
+# order, at what energy. The packer places them. So the call asks for no
+# reasoning, on the fast tier, with a cap that fits the JSON answer (about
+# 1000 tokens). History (task 1123): at a cap of 1200 on tier-powerful, the
+# thinking used the cap and the answer was empty. At 8000 with thinking on, one
+# call on 2026-11-01 still used all 8000 tokens and another 6023, and the plan
+# outran the 30 s limit of the BFF (`api/projects/[...path]/route.ts`), so the
+# member saw "Projects gateway unreachable". Fences:
+# tests/unit/test_calendar_plan_llm.py and tests/unit/test_tasks_ai_no_thinking.py.
+PLAN_MODEL = "tier-fast"
+PLAN_MAX_TOKENS = 2000
+#: The reason of a block that the plan ruled out for today (task 1338).
+NOT_TODAY_REASON = "Not today, by your plan."
+#: The BFF proxy gives up at 30 s (`api/projects/[...path]/route.ts`). The rank
+#: stops well before that, and the plan falls to the priority order.
+PLAN_RANK_BOUND_S = 20
+
+
+def _empty_plan_reason(choice: Any, raw: str) -> str | None:
+    """The human reason when the plan answer holds no JSON at all, else None.
+
+    Names the cause instead of a JSONDecodeError: a finish reason of "length"
+    means the model used the whole cap, its thinking included."""
+    if "{" in raw:
+        return None
+    finish = getattr(choice, "finish_reason", None)
+    _log.warning("tasks.calendar.plan_llm_empty", finish_reason=finish,
+                 content_len=len(raw))
+    if finish == "length":
+        return "the AI model used its whole answer budget before it gave a plan"
+    return "the AI model gave no plan"
+
 
 async def _llm_rank_day(
     cands: list[dict], energy_note: str | None, capacity_mins: int, model: str,
@@ -481,10 +515,15 @@ async def _llm_rank_day(
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.2, max_tokens=1200,
+            temperature=0.2, max_tokens=PLAN_MAX_TOKENS,
+            thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
-        raw = resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        empty = _empty_plan_reason(choice, raw)
+        if empty:
+            return None, None, empty
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
     except Exception as exc:
         _log.warning("tasks.calendar.plan_llm_failed", error=str(exc)[:160])
@@ -565,11 +604,14 @@ async def _planning_prefs(db: Any, uid: str) -> dict[str, Any]:
     missing row / pre-migration DB returns the humane defaults."""
     out = {"planning_prompt": "", "max_focus_run_mins": 90, "break_mins": 10,
            "lunch_start_hour": None, "lunch_end_hour": None}
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     try:
         row = (await db.execute(text(
             "SELECT planning_prompt, max_focus_run_mins, break_mins, "
             "lunch_start_hour, lunch_end_hour FROM user_settings "
-            "WHERE user_id = :uid"), {"uid": uid})).first()
+            f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
+            {"uid": uid})).first()
         if row:
             out["planning_prompt"] = str(row.planning_prompt or "")
             if row.max_focus_run_mins is not None:
@@ -603,9 +645,12 @@ def _theme_energy(theme: str | None) -> str:
 
 async def _day_templates(db: Any, uid: str) -> list[dict]:
     """The user's recurring windows (migration 94). Never raises."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     try:
         row = (await db.execute(text(
-            "SELECT day_templates FROM user_settings WHERE user_id = :uid"),
+            "SELECT day_templates FROM user_settings "
+            f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
             {"uid": uid})).first()
         if row:
             from gateway.routes.tasks.settings import _day_templates as _norm
@@ -845,11 +890,23 @@ async def _replan_core(
     ranked_by = "ai"
     rank_note: str | None = None
     if cands:
-        from gateway.routes.tasks.settings import task_models
-        model = (await task_models(db, uid))["chat"]
-        ordered_res, notes, rank_note = await _llm_rank_day(
-            cands, req.energy_note, req.capacity_mins, model, one_thing_id,
-            prefs["planning_prompt"], tflines)
+        async def _old_rank() -> tuple[list[dict] | None, str | None, str | None]:
+            return await _llm_rank_day(
+                cands, req.energy_note, req.capacity_mins, PLAN_MODEL, one_thing_id,
+                prefs["planning_prompt"], tflines)
+
+        # The decision tier ranks the day when `my_day.day_plan` is on (task
+        # 1338). In `off` (the default) this is the one call of before. The
+        # bound covers decide and its fallback together.
+        try:
+            ordered_res, notes, rank_note = await asyncio.wait_for(
+                _calendar_decide.rank_day(
+                    _old_rank, cands, req.energy_note, req.capacity_mins, one_thing_id,
+                    prefs["planning_prompt"], tflines, member=uid,
+                    default_prompt=DEFAULT_PLANNING_PROMPT, rank_fallback=_rank_fallback),
+                PLAN_RANK_BOUND_S)
+        except TimeoutError:
+            ordered_res, rank_note = None, "the AI model took too long"
         if ordered_res is not None:
             ordered = ordered_res
     if not ordered:
@@ -890,6 +947,10 @@ async def _replan_core(
         if not c:
             continue
         was_scheduled = c["id"] in movable_ids
+        if o.get("not_today"):
+            # The plan ruled it out for today. Not a lack of time.
+            _miss(c["id"], c["title"], was_scheduled, NOT_TODAY_REASON)
+            continue
         is_one_thing = c["id"] == one_thing_id
         dur = max(5, int(c["estimate_mins"]))
         if used + dur > cap and not is_one_thing:
@@ -935,8 +996,15 @@ async def _replan_core(
     carried_placed = sum(1 for b in blocks if b.carried_over)
     carry_note = (f"Carried {carried_placed} unfinished task(s) forward from an "
                   "earlier day." if carried_placed else None)
-    evict_note = (f"{len(evicted)} block(s) moved back to your list — not enough "
-                  "time." if evicted else None)
+    # A block the plan ruled out for today is no lack of time (task 1338).
+    not_today = sum(1 for ev in evicted if ev.reason == NOT_TODAY_REASON)
+    short = len(evicted) - not_today
+    parts = []
+    if short:
+        parts.append(f"{short} block(s) moved back to your list — not enough time.")
+    if not_today:
+        parts.append(f"{not_today} block(s) moved back to your list — not today, by your plan.")
+    evict_note = " ".join(parts) or None
     return DayPlan(
         blocks=blocks, unplaced=unplaced, evicted=evicted,
         notes=_join_notes(notes, carry_note, lunch_note, template_note,
@@ -1167,8 +1235,11 @@ _SETTINGS_COLS = (
 
 
 async def _load_settings_row(db: Any, uid: str) -> Any:
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     return (await db.execute(
-        text(f"SELECT {_SETTINGS_COLS} FROM user_settings WHERE user_id = :uid"),
+        text(f"SELECT {_SETTINGS_COLS} FROM user_settings "
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
         {"uid": uid})).first()
 
 

@@ -123,6 +123,10 @@ export function AppTopBar({
   const { isMobile } = useViewMode();
   const glyph = icon === undefined ? appBarIcon(pathname) : icon;
 
+  // Both bars end in a hairline, in glass too (owner, 2026-11-01: "a
+  // horizontal separator line under the app headings, so that the cutoff
+  // scroll is more deliberate"). The bar stays clear: a fill drew a band.
+  //
   // The name and the scope line, one spelling in both bars. ⚠️ The order of
   // giving way is the point (round 2, measured at 1024px). The scope line
   // shrinks first, to nothing. Only then does the name give way, and it
@@ -139,11 +143,11 @@ export function AppTopBar({
 
   if (compact || isMobile) {
     return (
-      <div data-app-bar="compact" className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
+      <div data-app-bar="compact" className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2 glass:relative glass:z-10 glass:bg-transparent">
         {back ? <BackLink back={back} /> : null}
         <div className="flex min-w-0 flex-1">{name}</div>
         {actions || tools ? (
-          <div className="flex shrink-0 items-center gap-0.5">
+          <div data-app-bar-actions className="flex shrink-0 items-center gap-0.5">
             {actions}
             {tools}
           </div>
@@ -161,7 +165,7 @@ export function AppTopBar({
   return (
     <div
       data-app-bar="desktop"
-      className="flex min-h-10 min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-card px-2 py-1"
+      className="flex min-h-10 min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-card px-2 py-1 glass:relative glass:z-10 glass:bg-transparent"
     >
       {/* ⚠️ The LEFT group is ONE flex item that never wraps (round 3): the
           way back or the rail toggle, the divider, the icon and the name.
@@ -175,7 +179,7 @@ export function AppTopBar({
             <Button
               variant="ghost"
               size="icon-sm"
-              selected={rail.open}
+              aria-expanded={rail.open}
               icon={rail.open ? "PanelLeftClose" : "PanelLeftOpen"}
               aria-label={railLabel(rail)}
               title={railLabel(rail)}
@@ -190,7 +194,7 @@ export function AppTopBar({
         ) : null}
         {name}
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+      {actions ? <div data-app-bar-actions className="flex shrink-0 items-center gap-1">{actions}</div> : null}
       {tools ? (
         <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1">{tools}</div>
       ) : null}

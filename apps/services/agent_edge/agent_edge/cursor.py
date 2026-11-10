@@ -15,6 +15,11 @@ A cursor is ``<payload>.<tag>``.
 * ``<tag>`` is the base64url HMAC-SHA256 of the ``<payload>`` text. Its key is
   the HMAC-SHA256 of ``agent_edge_signing_key`` over the label ``cursor-v1``.
 
+MCP-P1a (spec §19.4). A cursor of ``app_read`` also holds ``after``: the
+cursor of the next page that the app's route gave. The tag covers it, so an
+agent cannot send a route cursor of its own. A cursor of another tool holds
+no ``after``, and its payload is the same as before MCP-P1a.
+
 A cursor fixes the page size, so a ``limit`` sent with a cursor is ignored.
 A cursor with a bad tag, another tool, another filter or another connection
 is refused,
@@ -48,12 +53,18 @@ class BadCursor(ValueError):
     """The cursor is malformed, forged, or belongs to another list."""
 
 
+#: The longest route cursor that a cursor may hold (MCP-P1a).
+MAX_AFTER_CHARS = 512
+
+
 @dataclass(frozen=True)
 class Position:
-    """Where a cursor points: a 1-based page of a fixed size."""
+    """Where a cursor points: a 1-based page of a fixed size. ``after`` is
+    the route cursor of a door read, or ``None``."""
 
     page: int
     size: int
+    after: str | None = None
 
 
 def _b64(raw: bytes) -> str:
@@ -88,15 +99,26 @@ def filter_hash(arguments: Mapping[str, Any]) -> str:
 
 
 def encode(signing_key: str, *, tool: str, page: int, size: int,
-           arguments: Mapping[str, Any], connection_id: str) -> str:
-    """A cursor for *page* of *size* rows of this tool, list and connection."""
-    body = {
+           arguments: Mapping[str, Any], connection_id: str,
+           after: str | None = None) -> str:
+    """A cursor for *page* of *size* rows of this tool, list and connection.
+
+    *after* is the route cursor of a door read (MCP-P1a). A value that is
+    not a string of at most :data:`MAX_AFTER_CHARS` ASCII characters raises
+    ``ValueError``.
+    """
+    body: dict[str, Any] = {
         "tool": tool,
         "page": int(page),
         "size": int(size),
         "filter": filter_hash(arguments),
         "connection": connection_id,
     }
+    if after is not None:
+        if (not isinstance(after, str) or not after or len(after) > MAX_AFTER_CHARS
+                or not after.isascii()):
+            raise ValueError("the route cursor has the wrong form")
+        body["after"] = after
     payload = _b64(json.dumps(body, sort_keys=True, separators=(",", ":"))
                    .encode("ascii"))
     return f"{payload}.{_tag(signing_key, payload)}"
@@ -132,11 +154,16 @@ def decode(signing_key: str, cursor: str, *, tool: str,
     if (not isinstance(page, int) or isinstance(page, bool) or page < 1
             or not isinstance(size, int) or isinstance(size, bool) or size < 1):
         raise BadCursor("malformed")
-    return Position(page=page, size=size)
+    after = body.get("after")
+    if after is not None and (not isinstance(after, str) or not after
+                              or len(after) > MAX_AFTER_CHARS):
+        raise BadCursor("malformed")
+    return Position(page=page, size=size, after=after)
 
 
 __all__ = [
     "LABEL",
+    "MAX_AFTER_CHARS",
     "MAX_CHARS",
     "BadCursor",
     "Position",

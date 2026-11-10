@@ -76,11 +76,11 @@ const FRACKTAL: PipelineLane[] = [
 
 const names = (lanes: readonly { status: Status }[]) => lanes.map((l) => l.status.name);
 
-describe("orderLanes in Mirror mode - the source order, never the probability", () => {
-  it("puts open stages by source position, then on hold, then won, then lost", () => {
+describe("orderLanes in Mirror mode - the pipeline place first, never the probability (D137)", () => {
+  it("puts the pipeline stages by place, then the others by source position, with no type group", () => {
     expect(names(orderLanes(FRACKTAL, "mirror"))).toEqual([
-      // Open and ongoing, by the source position. The win chance plays no part.
-      "New Lead",
+      // The twelve stages of the pipeline, in its order. A won or a lost
+      // stage keeps its place: no type group moves it.
       "New Deal",
       "Discovery Meeting",
       "Qualified",
@@ -88,17 +88,18 @@ describe("orderLanes in Mirror mode - the source order, never the probability", 
       "Proposal",
       "Negotiation/Review",
       "Confirmation and Advance",
-      "Discovery Meeting Done",
-      "Negotiation / Tendering",
       "Order Received",
-      "Delivered & Installed",
-      // On hold is its own group, whatever its probability.
-      "Parked",
       "Closed Won",
       "Payment Complete",
-      // Lost closes the board.
       "Re-Evaluate",
       "Closed Lost",
+      // The stages with no place, by the source position. On hold is not a
+      // group of its own.
+      "New Lead",
+      "Discovery Meeting Done",
+      "Negotiation / Tendering",
+      "Parked",
+      "Delivered & Installed",
     ]);
   });
 
@@ -107,12 +108,14 @@ describe("orderLanes in Mirror mode - the source order, never the probability", 
     expect(names(orderLanes(lanes, "mirror"))).toEqual(["High", "Low"]);
   });
 
-  it("uses the pipeline place only to break a tie of source position", () => {
-    const lanes = [lane("B", "open", 10, 2, 0, 5), lane("A", "open", 90, 1, 0, 5)];
-    expect(names(orderLanes(lanes, "mirror"))).toEqual(["A", "B"]);
+  it("puts the pipeline place before the source position", () => {
+    // The old rule (source position, then the place) gave A, B.
+    const lanes = [lane("A", "open", 90, 2, 0, 1), lane("B", "open", 10, 1, 0, 9)];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["B", "A"]);
   });
 
-  it("breaks a tie with no pipeline place by the global position", () => {
+  it("orders the stages with no pipeline place by source position, and a lost one stays there", () => {
+    // The old rule put both lost stages at the end of the board.
     const lanes = [
       lane("Later", "open", 30, null, 0, 9),
       lane("Earlier", "open", 30, null, 0, 2),
@@ -120,7 +123,7 @@ describe("orderLanes in Mirror mode - the source order, never the probability", 
       lane("Lost early", "lost", 0, null, 0, 1),
     ];
     expect(names(orderLanes(lanes, "mirror"))).toEqual([
-      "Earlier", "Later", "Lost early", "Lost late",
+      "Lost early", "Earlier", "Lost late", "Later",
     ]);
   });
 
@@ -131,7 +134,7 @@ describe("orderLanes in Mirror mode - the source order, never the probability", 
 });
 
 describe("orderLanes in Native mode — the admin's stage order", () => {
-  it("orders by position inside each group, and probability reorders nothing", () => {
+  it("orders by position with no type group, and probability reorders nothing (D137)", () => {
     expect(names(orderLanes(FRACKTAL, "native"))).toEqual([
       "New Lead",
       "New Deal",
@@ -144,8 +147,9 @@ describe("orderLanes in Native mode — the admin's stage order", () => {
       "Discovery Meeting Done",
       "Negotiation / Tendering",
       "Order Received",
-      "Delivered & Installed",
+      // The old rule moved Parked, the on-hold stage, after every open stage.
       "Parked",
+      "Delivered & Installed",
       "Closed Won",
       "Payment Complete",
       "Re-Evaluate",
@@ -153,16 +157,18 @@ describe("orderLanes in Native mode — the admin's stage order", () => {
     ]);
   });
 
-  it("keeps a new stage with probability 0 where the admin put it", () => {
+  it("keeps a stage where the admin put it, after Won too", () => {
+    // The old rule moved "Brand new" before Won. D137: the list is the board,
+    // and "Add stage" (not this sort) puts a new stage before Won.
     const lanes = [
       lane("Qualify", "open", 20, 0, 0, 1),
       lane("Proposal", "open", 50, 1, 0, 2),
       lane("Won", "won", 100, 2, 0, 3),
       lane("Brand new", "open", 0, 3, 0, 4),
     ];
-    expect(names(orderLanes(lanes, "native"))).toEqual(["Qualify", "Proposal", "Brand new", "Won"]);
-    // A Mirror board keeps the same place. The win chance never reorders it.
-    expect(names(orderLanes(lanes, "mirror"))).toEqual(["Qualify", "Proposal", "Brand new", "Won"]);
+    expect(names(orderLanes(lanes, "native"))).toEqual(["Qualify", "Proposal", "Won", "Brand new"]);
+    // A Mirror board reads the same places. The win chance never reorders it.
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["Qualify", "Proposal", "Won", "Brand new"]);
   });
 
   it("treats a mode not yet known as Native", () => {
@@ -300,7 +306,9 @@ describe("the page wires the toggle through the shared Button", () => {
   });
 
   it("hands the Deals board the visible lanes, and the Leads board its own", () => {
-    expect(page).toContain("const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty)");
+    // D137: the board passes the places of the pipeline on screen.
+    expect(page).toContain("const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode, places), showEmpty)");
+    expect(page).toContain("const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);");
     expect(page).toContain('lanes={view.tab === "leads" ? store.leadLanes : dealLanes}');
   });
 });

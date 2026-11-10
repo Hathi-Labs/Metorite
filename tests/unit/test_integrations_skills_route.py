@@ -62,7 +62,7 @@ def _hermetic(monkeypatch):
         lambda: frozenset(sf.SKILL_FAMILIES["core"]["tools"]),
     )
     # S2: no stored skill settings unless a test injects them.
-    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda: {})
+    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda _org: {})
     yield
     sf.clear_cost_cache()
 
@@ -86,7 +86,7 @@ async def test_catalog_shape_and_costs(monkeypatch):
     assert out["total_injected_tokens"] > 0
     by_slug = {f["slug"]: f for f in out["families"]}
     assert by_slug["core"]["token_cost"] > 0
-    assert by_slug["core"]["tool_count"] == 22  # decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11)
+    assert by_slug["core"]["tool_count"] == 23  # decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11), analyze_image (WS-VOX VOX-3)
     assert by_slug["apps"]["dynamic"] is True
     assert by_slug["apps"]["token_cost"] == 0
     assert out["agents"] == []
@@ -129,7 +129,7 @@ async def test_matrix_reflects_stored_skill_settings(monkeypatch):
     _agents(monkeypatch, [{"name": "orchestrator"}], {"orchestrator": None})
     monkeypatch.setattr(
         sk, "_disabled_families_by_agent",
-        lambda: {"orchestrator": frozenset({"memory", "workflows"})},
+        lambda _org: {"orchestrator": frozenset({"memory", "workflows"})},
     )
     out = await sk.skills_catalog(user=USER)
     row = out["agents"][0]

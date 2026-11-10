@@ -44,6 +44,7 @@ from acb_common.priority import importance_for, important_from_importance
 
 from skill_projects import choices
 from skill_projects.client import GatewayRefusal, data, get, post, put, uuid_of
+from skill_projects.hues import hue_of
 from skill_projects.priority import (
     card_view,
     flag,
@@ -59,11 +60,13 @@ from skill_projects.writes import (
     CASCADE_DEFAULTS,
     MAX_BATCH,
     AgentAssigneeRefused,
+    _access_lines,
     _confirm,
     _date_arg,
     _fields_block,
     _fits_on_card,
     _follow_new_task,
+    _held_chat,
     _matches_by_name,
     _NewTask,
     _node,
@@ -164,7 +167,7 @@ def _clean(value: Any) -> str:
 # ── Edit a task ──────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_task(task_id: str) -> str:
     """Open an editable form for a task in the chat: title, description,
     status (by name), due, start, the Important and Leveraged flags,
@@ -387,13 +390,16 @@ def _ref(task: dict[str, Any]) -> str:
 # ── Edit a project ───────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_project(project_id: str) -> str:
     """Open an editable form for a space, folder or project: name,
     description, run state (active, paused, stopped), lead. The member
     edits and submits; the changes then go through update_project's
     confirmation card. Nothing is written until that card is approved."""
     pid, node = await _node(project_id)
+    # RX-1: `lead` is a grant write (D-OP-11), so a held chat offers no such
+    # field. `update_project` refuses it too, for a form answer that names it.
+    held = await _held_chat()
     fields = [
         {
             "name": "name",
@@ -422,6 +428,8 @@ async def edit_project(project_id: str) -> str:
             "value": node.get("lead") or "",
         },
     ]
+    if held:
+        fields = [f for f in fields if f["name"] != "lead"]
     values = await _ask(
         _template(
             "formCard",
@@ -997,7 +1005,7 @@ def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
     ))
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @agent_assignee_refusal_as_text
 async def propose_plan(
     name: str,
@@ -1109,6 +1117,8 @@ async def propose_plan(
     card["capacity"] = _with_unassigned(capacity_line, final)
     if checks or warnings:
         card["note"] = WARNS_NOT_BLOCKS
+    if await _held_chat():
+        card.update(await _plan_access(parent_id, list(owners.values())))
     if not _fits_on_card(card):
         return (
             f"The plan does not fit on one confirmation card ({len(final)} tasks, "
@@ -1124,6 +1134,16 @@ async def propose_plan(
     ):
         return CANCELLED
     return await _write_plan(label, parent_id, parent_label, about, final, owners, links, titles)
+
+
+async def _plan_access(parent_id: str, owners: list[str]) -> dict[str, Any]:
+    """Who a new plan reaches, for a held card (RX-1). A new project takes the
+    grants of its parent, and an owner opens each task that they hold. A new
+    space has no parent, so only its owners and the member see it."""
+    if parent_id:
+        return await _access_lines(parent_id, owners)
+    who = ", ".join(dict.fromkeys(o for o in owners if not o.startswith("agent:")))
+    return {"seen by": "you and each task's owner", **({"gives access to": who} if who else {})}
 
 
 async def _write_plan(
@@ -1451,14 +1471,21 @@ async def _batch_row(
     return _BatchRow(index, title, item, new)
 
 
-def _first_lane(statuses: list[dict[str, Any]]) -> str:
-    """The lane a task with no status lands in: the first by position, never
-    triage (``core.load_default_status``)."""
-    lanes = [s for s in statuses if s.get("category") != "triage"]
-    if lanes and all(s.get("position") is not None for s in lanes):
-        lanes.sort(key=lambda s: (int(s["position"]), str(s.get("name") or "")))
-    # With no position on the rows, the route's own order stands.
-    return str(lanes[0].get("name") or "") if lanes else ""
+def _first_lane(statuses: list[dict[str, Any]]) -> str | None:
+    """The lane a task with no status lands in, as ``core.load_default_status``
+    picks it: the first OPEN lane in the route's own order (stage, position,
+    name). Triage, Done and Cancelled never take a new task.
+
+    ``""`` when the read gave no rows, so the card says "the first lane".
+    ``None`` when the set holds no open lane, so the card says so and names
+    no lane (task 1792).
+    """
+    if not statuses:
+        return ""
+    for s in statuses:
+        if s.get("category") not in ("triage", "done", "cancelled"):
+            return str(s.get("name") or "")
+    return None
 
 
 def _day_words(value: str) -> str:
@@ -1546,13 +1573,15 @@ def _recent_note(row: dict[str, Any]) -> str:
 
 
 def _describe(
-    p: _BatchRow, names: dict[str, str], first_lane: str
+    p: _BatchRow, names: dict[str, str], first_lane: str | None
 ) -> None:
     """Fill the row's facts and its confirmation line."""
     payload = p.new.payload
     due = str(payload.get("due_at") or "")
     if "status_id" in payload or "parent_task_id" in payload:
         lane = p.new.status_label
+    elif first_lane is None:
+        lane = "no open status in this project, so the create is refused"
     else:
         lane = f"{first_lane} (the first lane)" if first_lane else "the first lane"
     # `_parent_lane_label` fences the lane name itself. Fence a bare name
@@ -1625,31 +1654,40 @@ def _card_row(p: _BatchRow) -> dict[str, Any]:
     return {"id": _row_id(p), "label": _plain(p.title), "hint": hint, "checked": p.recent is None}
 
 
-def _batch_card(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str]) -> dict[str, Any]:
+def _batch_card(
+    node: dict[str, Any], rows: list[_BatchRow], strangers: list[str],
+    held: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The confirmation card's body. The rows themselves are its checkboxes.
 
     The title names the project and the count, and the rows carry every
     fact, so the body repeats neither (PR #691 review: "Tasks 4" read wrong
     once a row was unticked). It keeps a warning about an unknown address.
-    A row from a mail (WS-46 P9) puts the mailbox line first.
+    A row from a mail (WS-46 P9) puts the mailbox line first. *held* is the
+    audience lines of a held chat (RX-1), and a held chat always has the
+    mailbox line, because a steered model would leave out ``source``.
     """
     card: dict[str, Any] = {}
-    if any(p.new.payload.get("source") == "email" for p in rows):
+    if held is not None or any(p.new.payload.get("source") == "email" for p in rows):
         # WS-46 P9: the first line says that mail text leaves the mailbox.
         card["mailbox"] = mailbox_line(data(node.get("name")))
+    card.update(held or {})
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
     return card
 
 
-def _fits(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str]) -> bool:
+def _fits(
+    node: dict[str, Any], rows: list[_BatchRow], strangers: list[str],
+    held: dict[str, Any] | None = None,
+) -> bool:
     """Does the whole batch, every row's facts included, fit on one card?
 
     A cut card is not consent (``projects_ai_chat.md`` §13.6 rule 8). The
     measure is the body and one line for each row, as ``_fits_on_card``
     counts a card.
     """
-    card = _batch_card(node, rows, strangers)
+    card = _batch_card(node, rows, strangers, held)
     for p in rows:
         card[f"row {p.index}"] = p.line
         if p.recent is not None:
@@ -1666,7 +1704,7 @@ FORGED_ROWS = (
 )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @agent_assignee_refusal_as_text
 async def create_tasks(project_id: str, tasks: str) -> str:
     """Create several new tasks in ONE project as one batch. Use it for 2 or
@@ -1724,7 +1762,10 @@ async def create_tasks(project_id: str, tasks: str) -> str:
             f"Row {long.index}: a title is at most {ROW_LABEL_MAX} characters, because the "
             "card shows each title whole. Put the rest in description. Nothing was created."
         )
-    if not _fits(node, rows, strangers):
+    held = None
+    if await _held_chat():
+        held = await _access_lines(pid, list(dict.fromkeys(w for p in rows for w in p.new.who)))
+    if not _fits(node, rows, strangers, held):
         return (
             f"These {len(rows)} tasks do not fit on one confirmation card. Split them into "
             "two calls. Nothing was created."
@@ -1733,7 +1774,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     ticked = await _confirm(
         title=f"Create {n} task{'s' if n != 1 else ''} in {data(node.get('name'))}?",
         detail=f"one batch in {data(node.get('name'))} · untick a task to leave it out",
-        context=_fields_block(_batch_card(node, rows, strangers)),
+        context=_fields_block(_batch_card(node, rows, strangers, held)),
         rows=[_card_row(p) for p in rows],
     )
     # The card answers with the ticked ids (`request_confirmation` rows). It
@@ -2057,6 +2098,8 @@ def _vocab_payload(spec: _VocabKind, item: dict[str, Any]) -> dict[str, Any]:
         if key in ("name", "is_epic"):
             continue
         value = str(item.get(key) or "").strip()
+        if key == "color":
+            value = hue_of(value) or ""
         if value:
             payload[key] = value
     if "is_epic" in spec.keys and _yes_no(str(item.get("is_epic") or ""), "is_epic"):
@@ -2267,7 +2310,7 @@ def _vocab_receipt(
     return "\n".join(lines)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_tags(project_id: str, tags: str) -> str:
     """Register several new tags on the project's tree as one batch. Use it
     for 2 or more new tags, with no picker first, and never call create_tag
@@ -2286,7 +2329,7 @@ async def create_tags(project_id: str, tags: str) -> str:
     return await _vocab_write(plan, ticked)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_types(project_id: str, types: str) -> str:
     """Add several new task types to the project's tree as one batch. Use it
     for 2 or more new types, with no picker first, and never call

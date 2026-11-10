@@ -49,7 +49,8 @@ export function atStorageLimit(account: MeterFields): boolean {
  * Which storage notice a mailbox earns, before any other surface wins:
  * - `limit` at or over the limit (scope item 1).
  * - `gap` in the phase `limit` under the limit (D2): the first import stopped
- *   at the limit, and nothing resumes it until EM-T6f.
+ *   at the limit. A loop cycle of the scheduler resumes it (EM-T6f), and the
+ *   phase then moves on, so this kind ends with no change here.
  * - `null` otherwise, and always when the gateway sends no limit.
  */
 export function storageNoticeKind(

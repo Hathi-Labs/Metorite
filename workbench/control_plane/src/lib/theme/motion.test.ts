@@ -37,10 +37,13 @@ const MOTION_EXEMPT: Record<string, string> = {
   "chat-pulse-dot": "status",
   // A status loop. The three dots say the agent is working.
   "chat-typing-dot": "status",
-  // `swapPanelForm` in `lib/panelMotion.ts` starts no view transition under
-  // reduced motion, so these two never run for that member.
+  // `swapPanelForm` and `morphAskBox` in `lib/panelMotion.ts` start no view
+  // transition under reduced motion, so these two never run for that member.
   "panel-swap-out": "gated in panelMotion.ts",
   "panel-swap-in": "gated in panelMotion.ts",
+  // `morphAskBox` again: the side panel's picture while the Ask bar's box
+  // flies into it.
+  "ask-panel-in": "gated in panelMotion.ts",
 };
 
 interface Block {
@@ -167,6 +170,7 @@ const RAW_MOTION = /cubic-bezier\(|duration-\[\d/g;
 const RAW_MOTION_EXEMPT: Record<string, string> = {
   "lib/panelMotion.ts": "the script mirror of --panel-easing. panelMotion.test.ts holds it to globals.css",
   "lib/theme/themes.ts": "the data mirror of globals.css. themes.test.ts holds it",
+  "lib/theme/glassTokens.ts": "the sandbox mirror of the glass --motion-easing. glassTokens.test.ts holds it to globals.css",
 };
 
 const RAW_MOTION_DEBT: Record<string, number> = {
@@ -215,13 +219,11 @@ const LAYOUT_MOTION_DEBT: Record<string, number> = {
   "app/email/components/automation/AnalyticsView.tsx": 1,
   "app/email/components/automation/ai-settings/RulesTab.tsx": 1,
   "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
-  "app/email/components/automation/ui.tsx": 1,
   "app/email/page.tsx": 2,
   // `.tech-transition` and `.cc-control`, the two token utilities.
   "app/globals.css": 2,
   "app/integrations/components/ApiKeysView.tsx": 3,
   "app/memory/page.tsx": 2,
-  "app/notes/components/MeetingPrep.tsx": 1,
   "app/observability/page.tsx": 1,
   "app/tasks/components/TaskListGrouped.tsx": 1,
   "components/AddAgentWizard.tsx": 1,
@@ -230,6 +232,10 @@ const LAYOUT_MOTION_DEBT: Record<string, number> = {
   "components/genUITemplates.tsx": 3,
   "components/ui/Collapsible.tsx": 1,
   "components/ui/ProgressBar.tsx": 1,
+  // The two classic knobs that slide by `left` (the email Toggle and the
+  // Meeting copilot). They moved here from `email/.../automation/ui.tsx` and
+  // `MeetingPrep.tsx` with GL-2, and the classic look keeps them.
+  "components/ui/Switch.tsx": 2,
   "lib/theme/sandbox-frame.ts": 1,
 };
 
@@ -240,7 +246,6 @@ const BARE_LOOP_DEBT: Record<string, number> = {
   "app/agents/page.tsx": 1,
   "app/artifacts/page.tsx": 1,
   "app/calendar/components/NowNextBar.tsx": 2,
-  "app/calendar/components/TimeGrid.tsx": 2,
   "app/email/components/automation/AISettingsView.tsx": 1,
   "app/email/components/automation/AnalyticsView.tsx": 4,
   "app/email/components/automation/ai-settings/TestTab.tsx": 1,
@@ -255,7 +260,7 @@ const BARE_LOOP_DEBT: Record<string, number> = {
   "app/page.tsx": 1,
   "app/tasks/components/FocusMode.tsx": 3,
   "app/workflows/components/WorkflowNode.tsx": 2,
-  "app/workflows/page.tsx": 1,
+  "app/studio/components/WorkflowsGallery.tsx": 1,
   "components/AgentChat.tsx": 3,
   "components/AppShell.tsx": 2,
   "components/ArtifactViewerModal.tsx": 2,

@@ -42,7 +42,7 @@ describe("the + Filter list of a module", () => {
   });
 
   it("groups them as the core lists do", () => {
-    expect(groupFields(fields).map((g) => g.group)).toEqual(["Dates", "Picklists", "Numbers", "Other"]);
+    expect(groupFields(fields).map((g) => g.group)).toEqual(["Dates", "Choices", "Numbers", "Other"]);
   });
 
   it("still offers Updated when the definitions did not load", () => {

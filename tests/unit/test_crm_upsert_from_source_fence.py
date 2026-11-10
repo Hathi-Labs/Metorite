@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -57,11 +58,13 @@ RESET_NAME = "reset_crm_from_admin"
 MERGE_NAME = "merge_status_from_source"
 #: CRM-Q7a adds the field-rule door, which only ``gateway/crm_sync/`` calls.
 RULE_NAME = "apply_field_rule_from_source"
+#: CRM-U14 adds the stage-time repair door. Only ``gateway/crm_sync/`` names it.
+RESTAMP_NAME = "restamp_deal_stage_from_source"
 NAMES = (
     NAME, "delete_from_source", "set_pipeline_stages_from_source",
     "set_deal_contacts_from_source",
     "upsert_module_records_from_source", "delete_module_records_from_source",
-    RESET_NAME, MERGE_NAME, RULE_NAME,
+    RESET_NAME, MERGE_NAME, RULE_NAME, RESTAMP_NAME,
 )
 
 GATEWAY = ROOT / "apps" / "services" / "gateway" / "gateway"
@@ -79,6 +82,7 @@ ALLOWED_CALLERS: dict[str, frozenset[Path]] = {
 #: folder is the sync package, so no route, agent or skill can merge stages.
 ALLOWED_DIRS: dict[str, Path] = {
     MERGE_NAME: GATEWAY / "crm_sync",
+    RESTAMP_NAME: GATEWAY / "crm_sync",
 }
 
 #: Where the start over may never be named: the whole gateway package (the
@@ -227,6 +231,7 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
     assert "async def reset_crm_from_admin" in definer_text
     assert "async def merge_status_from_source" in definer_text
     assert "async def apply_field_rule_from_source" in definer_text
+    assert "async def restamp_deal_stage_from_source" in definer_text
     assert SYNC.is_dir() and ALLOWED_CALLERS[RULE_NAME]
     assert GATEWAY.is_dir() and (GATEWAY / "crm_sync").is_dir()
     assert any(r.is_dir() for r in SCAN_ROOTS)
@@ -392,3 +397,90 @@ def test_a_status_merge_inside_the_allowed_folder_passes(tmp_path: Path) -> None
     )
     assert violations((tmp_path,), allowed_dirs=dirs, allowed={}) == [
         f"{sync / 'other.py'}:1"]
+
+
+# ── CRM-Z10b: the switch to Native ──────────────────────────────────────────
+
+#: The module of the switch. It defines the fold and the field step, and it is
+#: the only file that names them.
+CUTOVER = GATEWAY / "routes" / "crm" / "cutover.py"
+#: The two raw writes of phase 2 to guarded tables (THE FOLD and the fields).
+FOLD_NAMES = ("fold_cutover_overlay", "own_cutover_fields")
+
+
+def test_only_the_switch_names_the_fold() -> None:
+    """No route, agent, skill or shared package names the fold. The scan
+    covers the sync package too, because a sync that folded the overlay
+    would rewrite the board of a Mirror CRM."""
+    assert violations(RESET_SCAN_ROOTS, CUTOVER, names=FOLD_NAMES) == []
+    text = CUTOVER.read_text(encoding="utf-8")
+    for name in FOLD_NAMES:
+        assert f"async def {name}(" in text, name
+
+
+@pytest.mark.parametrize("source", [
+    "from gateway.routes.crm.cutover import fold_cutover_overlay\n",
+    "from gateway.routes.crm import cutover\n\nasync def go(db):\n"
+    "    await cutover.own_cutover_fields(db, 'o')\n",
+    "import importlib\n\nF = getattr(importlib.import_module('x'), 'fold_cutover_overlay')\n",
+])
+def test_the_fold_fence_refuses_any_other_caller(tmp_path: Path, source: str) -> None:
+    """Red-first proof for the CRM-Z10b fence."""
+    package = tmp_path / "routes" / "crm"
+    package.mkdir(parents=True)
+    (package / "settings.py").write_text(source, encoding="utf-8")
+    assert violations((tmp_path,), names=FOLD_NAMES), source
+
+
+def _names_the_seed(tree: ast.AST) -> list[int]:
+    return [line for line, _name in _names_it(tree, ("seed_native_pipeline",))]
+
+
+def test_the_switch_never_names_the_native_seed() -> None:
+    """The switch keeps the stages and the lost reasons of Zoho. A call to
+    ``seed_native_pipeline`` would add the Native seed beside them."""
+    tree = ast.parse(CUTOVER.read_text(encoding="utf-8"))
+    assert _names_the_seed(tree) == []
+
+
+def test_the_seed_fence_sees_a_planted_call() -> None:
+    planted = ast.parse(
+        "from gateway.routes.crm.seed import seed_native_pipeline as s\n"
+        "async def go(db):\n    await s(db, 'o')\n"
+    )
+    assert _names_the_seed(planted)
+
+
+def test_the_mode_change_list_has_no_mirror_to_native() -> None:
+    """``PATCH /crm/settings`` never moves Mirror to Native. Only the switch
+    does, through ``POST /crm/cutover``. The R8 suite sends the PATCH."""
+    from gateway.routes.crm.settings import ALLOWED_MODE_CHANGES
+
+    assert ("mirror", "native") not in ALLOWED_MODE_CHANGES
+    expected = frozenset({(None, "native"), ("native", None), ("mirror", None)})
+    assert expected == ALLOWED_MODE_CHANGES
+
+
+async def test_the_final_run_starts_no_step_after_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 1 runs the engine and nothing after it: not the labels, the
+    vectors, the mapping, the questions or the digest (``scheduler.spawn``
+    starts them). The run stops with the loop, as a scheduled run does."""
+    from gateway.crm_sync import engine, scheduler
+    from gateway.routes.crm import cutover
+
+    seen: list[Any] = []
+
+    async def _execute(handle: Any, *, should_stop: Any = None, **_kw: Any) -> str:
+        seen.append((handle, should_stop))
+        return "done"
+
+    def _never(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the final run started a step after it")
+
+    monkeypatch.setattr(engine, "execute", _execute)
+    for name in ("spawn", "start_labels", "start_vectors", "start_mapping",
+                 "start_questions", "start_digest"):
+        monkeypatch.setattr(scheduler, name, _never)
+    task = cutover._start_final_run("handle")
+    assert await task == "done"
+    assert seen == [("handle", scheduler._stopping.is_set)]

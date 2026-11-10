@@ -4,16 +4,22 @@
  * The AI agents view of /integrations (WS-55 EA-4b, D-EA-9).
  *
  * Spec: `project-docs/specs/external_agent_access.md` §5.4 and §15 EA-4b.
- * Every member sees it. Three parts:
+ * Every member sees it. Four parts:
  *
  * 1. **Connect an AI agent.** The MCP address with a copy button, one tab per
  *    client of §17.1, and what an agent can and cannot do.
  * 2. **My connected agents.** The member's own live connections, with Revoke.
  *    Above the list, the member's own switch "Let my AI agents delete tasks"
- *    (EA-6h, EA3-51), default off. The gateway checks it on each delete.
+ *    (EA-6h, EA3-51). It is on by default since EA-6i: the gateway answers
+ *    on for a member who has not chosen. The gateway checks it on each delete.
  * 3. **All agent connections.** Every live connection of the org, with the
  *    member's email and Revoke. Only with `integrations:manage`
  *    (`canManageOrg`), and the gateway checks it again.
+ * 4. **Waiting for you** (MCP-P1b-1, §19.5). The changes that an agent asks
+ *    to make, each on `AppRequestCard`, with Approve and Decline
+ *    (`WaitingRequests.tsx`). It shows no section when no request waits, and
+ *    while the store is dark. It comes last, so its arrival after a cold
+ *    fetch moves nothing above it (DESIGN_SYSTEM.md M1).
  *
  * Each row headlines the VERIFIED host and shows the claimed name second, as
  * the consent page does (§10.5). `last_used_at` is stamped on a token issue
@@ -36,6 +42,9 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
+
+import WaitingRequests from "./WaitingRequests";
+import { AGENT_SETUP_TEXT } from "../lib/agentSetupText";
 
 import {
   AGENT_ACCESS_KEY,
@@ -195,6 +204,28 @@ function ConnectCard() {
             ))}
           </ul>
         </div>
+      </div>
+      <div
+        data-testid="agents-setup-copy"
+        className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="min-w-0">
+          <h3 className="text-xs font-semibold text-foreground">Setup for your agent</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            The connection gives the agent its tools. It does not give the working rules for your computer.
+            Paste this text into the rules file of your agent, such as CLAUDE.md or AGENTS.md.
+          </p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Copy"
+          className="shrink-0 self-start sm:self-auto"
+          onClick={() => copy(AGENT_SETUP_TEXT, "Setup text")}
+          aria-label="Copy setup for your agent"
+        >
+          Copy setup for your agent
+        </Button>
       </div>
     </section>
   );
@@ -467,6 +498,10 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
           onRevoke={(row) => setAsking({ row, admin: true })}
         />
       ) : null}
+
+      {/* Last, so its arrival after a cold fetch moves nothing above it
+          (re-review P3, DESIGN_SYSTEM.md M1). */}
+      {off ? null : <WaitingRequests />}
 
       <ConfirmDialog
         open={asking !== null}

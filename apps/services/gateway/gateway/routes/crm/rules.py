@@ -43,7 +43,17 @@ steered``).
 ⚠️ Dark: an org outside ``CRM_ANSWER_FIRST_ORGS``
 (``flags.answer_first_allowed``) gets 404 ``rules_off`` from each route.
 
-Fences: ``tests/unit/test_crm_rules.py`` and ``tests/unit/test_crm_rules_r8.py``.
+**Change history** (WS-CRM CRM-M1, ``crm_conversational.md`` §8).
+:func:`add_rule` and :func:`change_rule_in` log one row each through
+``change_log.log_change``, in the transaction of the write. An org rule is
+at the ``team`` level of the ladder. A member's own rule is at the ``own``
+level, and its row is private to that member. The confirm of a held rule
+logs ``via`` ``chat`` or ``whatsapp``. The Undo of a new rule removes it, and
+the Undo of a change writes the old words, each through the helper of the
+route and its owner checks. ``DELETE /crm/rules/{id}`` logs in PR 2.
+
+Fences: ``tests/unit/test_crm_rules.py``, ``tests/unit/test_crm_rules_r8.py``
+and ``tests/unit/test_crm_change_history.py``.
 """
 
 from __future__ import annotations
@@ -59,10 +69,16 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException
+from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
+from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import _tenant_session, router
 from gateway.routes.crm.field_rules import _organization, _require_mirror
-from gateway.routes.crm.flags import answer_first_allowed, require_crm_mirror
+from gateway.routes.crm.flags import (
+    answer_first_allowed,
+    crm_mirror_allowed,
+    require_crm_mirror,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -341,12 +357,65 @@ async def add_rule(db: Any, org: str, user: Any, body: str, scope: str, origin: 
         raise _refuse(409, "too_many_rules",
                       f"A list holds at most {RULES_MAX} rules. Remove one first.")
     try:
-        return (await db.execute(text(_INSERT_SQL), {
+        row = (await db.execute(text(_INSERT_SQL), {
             "org": org, "scope": table_scope, "member": owner or None,
             "slug": slug_of(body, taken), "body": body, "origin": origin, "by": member,
         })).first()
     except IntegrityError as exc:
         raise _refuse(409, "rule_moved", "The rules changed. Try again.") from exc
+    await log_change(db, user, Change(
+        area="rule", action=change_log.CREATE,
+        summary=f"Added the business rule {quoted(body)}",
+        ladder=_ladder(scope), entity_id=str(row.id),
+        after={"scope": scope, "slug": str(row.slug), "body": body},
+        private_to=None if scope == SCOPE_ORG else member,
+    ), via=_VIA_OF_ORIGIN.get(origin, change_log.VIA_UI))
+    return row
+
+
+#: Where a member confirmed a rule → through what it came, in the Change history.
+_VIA_OF_ORIGIN: dict[str, str] = {
+    ORIGIN_SETTINGS: change_log.VIA_UI,
+    ORIGIN_CHAT: change_log.VIA_CHAT,
+    ORIGIN_WHATSAPP: change_log.VIA_WHATSAPP,
+}
+
+
+def _ladder(scope: str) -> str:
+    """An org rule is a team change, and a member's own rule is their own
+    space (D164)."""
+    return change_log.TEAM if scope == SCOPE_ORG else change_log.OWN
+
+
+async def change_rule_in(
+    db: Any, org: str, user: Any, rule_id: str, body: str,
+    *, undoes: str | None = None,
+) -> Any:
+    """The write of ``PATCH /crm/rules/{id}``, in the caller's transaction.
+    Returns the row. The route and the Undo of a change both call it, with
+    the owner checks of :func:`_owned`. It logs one row when the words
+    change (CRM-M1)."""
+    old = await _owned(db, org, user, rule_id)
+    row = (await db.execute(text(_UPDATE_SQL), {
+        "org": org, "id": rule_id, "body": body, "by": member_of(user)})).first()
+    if str(old.body) != body:
+        scope = _scope_word(old)
+        await log_change(db, user, Change(
+            area="rule", action=change_log.CHANGE,
+            summary=f"Changed the business rule {quoted(old.body)}",
+            ladder=_ladder(scope), entity_id=str(old.id),
+            before={"body": str(old.body)}, after={"body": body},
+            private_to=None if scope == SCOPE_ORG else str(old.member_email or ""),
+        ), undoes=undoes)
+    return row
+
+
+async def remove_rule_in(db: Any, org: str, user: Any, rule_id: str) -> Any:
+    """The write of ``DELETE /crm/rules/{id}``. Returns the rule that went.
+    The Undo of a new rule calls it too."""
+    row = await _owned(db, org, user, rule_id)
+    await db.execute(text(_DELETE_SQL), {"org": org, "id": rule_id})
+    return row
 
 
 async def _owned(db: Any, org: str, user: Any, rule_id: str) -> Any:
@@ -419,9 +488,7 @@ async def change_rule(rule_id: str, payload: RulePatch,
     body = _body_or_422(payload.body)
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        await _owned(db, org, user, rule_id)
-        row = (await db.execute(text(_UPDATE_SQL), {
-            "org": org, "id": rule_id, "body": body, "by": member_of(user)})).first()
+        row = await change_rule_in(db, org, user, rule_id, body)
         names = await _names(db, [row])
     return _model(row, user, names)
 
@@ -432,9 +499,43 @@ async def remove_rule(rule_id: str, user: UserContext = Depends(get_current_user
     org = _org_or_off(user)
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        await _owned(db, org, user, rule_id)
-        await db.execute(text(_DELETE_SQL), {"org": org, "id": rule_id})
+        await remove_rule_in(db, org, user, rule_id)
     return {"id": rule_id, "removed": True}
+
+
+@change_log.undoes("rule")
+async def _undo_rule(db: Any, user: Any, logged: Logged) -> None:
+    """A new rule goes, and a change takes the old words back. Each path
+    has the guards of the routes: the flags, Mirror mode and the owner.
+    Each path first checks that the rule still holds the values of this
+    change, so a rule that changed again since is a 409 and stays."""
+    org = _org_or_off(user)
+    if not crm_mirror_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    await _require_mirror(db, org)
+    rule_id = str(logged.entity_id or "")
+    # FOR UPDATE: the check of the values holds until the write.
+    current = (await db.execute(
+        text(_ONE_SQL + " FOR UPDATE"), {"org": org, "id": rule_id},
+    )).first()
+    if current is None:
+        raise change_log.gone(logged.area)
+    now = {"scope": _scope_word(current), "slug": str(current.slug), "body": str(current.body)}
+    if not change_log.same_values(now, logged.after):
+        raise change_log.changed_since()
+    if logged.action == change_log.CREATE:
+        row = await remove_rule_in(db, org, user, rule_id)
+        scope = _scope_word(row)
+        await log_change(db, user, Change(
+            area="rule", action=change_log.DELETE,
+            summary=f"Removed the business rule {quoted(row.body)}",
+            ladder=_ladder(scope), entity_id=str(row.id),
+            before={"scope": scope, "slug": str(row.slug), "body": str(row.body)},
+            private_to=None if scope == SCOPE_ORG else str(row.member_email or ""),
+        ), undoes=logged.id)
+        return
+    body = _body_or_422((logged.before or {}).get("body"))
+    await change_rule_in(db, org, user, rule_id, body, undoes=logged.id)
 
 
 # ── The member purge (CRM-Q33 fix round 1, P2) ──────────────────────────────
@@ -625,6 +726,7 @@ __all__ = [
     "RulesOut",
     "add_rule",
     "change_rule",
+    "change_rule_in",
     "clean_body",
     "confirm",
     "confirm_question",
@@ -638,6 +740,7 @@ __all__ = [
     "propose",
     "propose_rule",
     "remove_rule",
+    "remove_rule_in",
     "rules_for",
     "rules_off",
     "scrub_member",

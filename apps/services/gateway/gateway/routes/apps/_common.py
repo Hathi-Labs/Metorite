@@ -17,12 +17,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext, UserRole, get_current_user
 from acb_common import get_logger, get_settings
+from acb_skills import safe_open
 from fastapi import APIRouter, Depends, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -36,7 +37,7 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # context — bound once in `_with_resolved_access` — so no call site passes
 # one (H2). A call outside a bound request raises `TenantUnbound` rather than
 # defaulting: fail closed, never "the usual org".
-from gateway.db import tenant_session as _tenant_session  # noqa: F401
+from gateway.db import tenant_session as _tenant_session
 from sqlalchemy import text
 
 _log = get_logger("gateway.apps")
@@ -226,13 +227,14 @@ def generate_slug(name: str, taken: Collection[str] = ()) -> str:
 
 # ── Path containment (mirrors workspace.py's _safe_resolve + blocked paths) ──
 
-def resolve_app_file(app_workspace: Path, rel: str) -> Path:
-    """Resolve *rel* inside *app_workspace* or raise 400.
+def clean_app_rel(rel: str) -> str:
+    """The clean relative path of an app file, or 400.
 
-    Refuses absolute paths, ``..`` traversal, and any dot-segment (which blocks
-    ``.git`` and dotfiles wholesale). The final ``resolve()`` follows symlinks,
-    so a link that points outside the workspace fails the containment check
-    even though its literal path looks safe.
+    No absolute path, no ``..`` and no part that starts with a dot, so
+    ``.git`` and every dotfile are refused. There is no ``resolve()``. The caller opens the
+    path through ``acb_skills.safe_open``, which refuses a link at any depth
+    (``maf_coding_engine.md`` §7.5 rule B). A sandbox container can write an
+    app dir (WS-43h), so a check that resolves and then opens is a race.
     """
     clean = (rel or "").replace("\\", "/").strip()
     if not clean or clean.startswith("/") or Path(clean).is_absolute():
@@ -240,13 +242,51 @@ def resolve_app_file(app_workspace: Path, rel: str) -> Path:
     segments = [s for s in clean.split("/") if s]
     if not segments or any(s == ".." or s.startswith(".") for s in segments):
         raise HTTPException(status_code=400, detail="Invalid path")
-    root = app_workspace.resolve()
-    resolved = (root / "/".join(segments)).resolve()
-    if resolved != root and not resolved.is_relative_to(root):
-        raise HTTPException(status_code=400, detail="Path escapes workspace")
-    if resolved == root:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return resolved
+    return "/".join(segments)
+
+
+def iter_app_files(
+    workspace: Path, keep_dir: Callable[[tuple[str, ...], str], bool],
+) -> Iterator[tuple[str, ...]]:
+    """The parts of each regular file below *workspace*, with no link followed.
+
+    The order of ``os.walk`` with sorted names: the files of a dir, then each
+    kept subdir. ``keep_dir(parent_parts, name)`` prunes a dir. A link, a
+    device, a socket and a FIFO are never listed (``safe_open.list_dir``).
+    """
+    def walk(parts: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
+        try:
+            listed = safe_open.list_dir(workspace, "/".join(parts))
+        except (safe_open.UnsafePath, OSError):
+            return
+        for name, kind in listed or []:
+            if kind == "file":
+                yield (*parts, name)
+        for name, kind in listed or []:
+            if kind == "dir" and keep_dir(parts, name):
+                yield from walk((*parts, name))
+
+    yield from walk(())
+
+
+def workspace_links(workspace: Path) -> list[str]:
+    """Each symbolic link (or junction) below *workspace*, as a rel path.
+
+    It follows no link. A host process that follows links, such as the host
+    T2 build, refuses a dir that holds one.
+    """
+    import os
+
+    found: list[str] = []
+    if not workspace.is_dir() or workspace.is_symlink():
+        return found
+    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
+        here = Path(dirpath)
+        for name in (*dirnames, *filenames):
+            entry = here / name
+            if entry.is_symlink() or entry.is_junction():
+                found.append(entry.relative_to(workspace).as_posix())
+    return sorted(found)
 
 
 # ── Visibility predicates (pure — the tests exercise the full matrix) ────────
@@ -348,10 +388,12 @@ def default_manifest(
 def read_workspace_manifest(workspace: Path) -> dict[str, Any] | None:
     """Parse ``{workspace}/app.json``; None when missing/unparseable."""
     try:
-        raw = (workspace / "app.json").read_text(encoding="utf-8")
-        data = json.loads(raw)
+        raw = safe_open.read_bytes(workspace, "app.json", limit=MAX_SOURCE_FILE_BYTES)
+        if raw is None:
+            return None
+        data = json.loads(raw.decode("utf-8"))
         return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # UnsafePath is a ValueError: a link refuses
         return None
 
 
@@ -432,8 +474,13 @@ def check_bundle_size(data: bytes, cap: int = MAX_BUNDLE_BYTES) -> bytes:
 # ── Row loading + gating (shared by every feature module) ────────────────────
 
 async def load_app(db: Any, slug: str) -> Any:
+    """The App Workshop app *slug*, or None. A Studio package (format
+    'manifest', WS-STU A3) answers None, so each slug route gives 404 for
+    it. NULL reads as code. Fence: test_studio_packages_r8.py."""
     return (await db.execute(
-        text("SELECT * FROM apps WHERE slug = :slug"), {"slug": slug},
+        text("SELECT * FROM apps WHERE slug = :slug "
+             "AND format IS DISTINCT FROM 'manifest'"),
+        {"slug": slug},
     )).fetchone()
 
 
@@ -488,11 +535,120 @@ async def load_live_version_scopes(
     return manifest_scopes(parse_db_manifest(vrow.manifest)), (vrow.scope_set_hash or "")
 
 
+def workspace_dir(value: object) -> Path | None:
+    """The folder that an ``apps.workspace_path`` names, or None when it is
+    empty or blank.
+
+    ⚠️ ``Path('')`` is ``.``, so it resolves to the working directory of the
+    process. An empty path must never mean that folder. A Studio package
+    (WS-STU A3) stores ``workspace_path = ''``. Each reader of the column
+    goes through here. Fence: ``tests/unit/test_studio_packages_store.py``.
+    """
+    raw = "" if value is None else str(value)
+    return Path(raw) if raw.strip() else None
+
+
+def app_workspace_or_none(row: Any) -> Path | None:
+    """The workspace folder of an app for a READ, or None when it has none.
+
+    A read path (the detail of an app, the effective manifest of a run)
+    falls back to the stored manifest on None, so a row with an empty
+    ``workspace_path`` still reads, and never from the working directory."""
+    return workspace_dir(_field(row, "workspace_path"))
+
+
 def app_workspace(row: Any) -> Path:
-    return Path(str(_field(row, "workspace_path") or ""))
+    """The workspace folder of an App Workshop app, for a WRITE or a file
+    operation: publish, the file routes, sync, delete and rehydrate.
+
+    An app with no folder (an empty or blank ``workspace_path``) answers 409,
+    never the working directory. A writer calls this BEFORE its statement
+    commits, so the 409 comes before any write. A read path calls
+    :func:`app_workspace_or_none` instead. See :func:`workspace_dir`."""
+    workspace = app_workspace_or_none(row)
+    if workspace is None:
+        raise HTTPException(status_code=409, detail="This app has no workspace.")
+    return workspace
 
 
 # ── Audit + activity (best-effort — never raise into the request path) ───────
+
+#: The one statement that writes an ``app_audit`` row. Both writers below run it.
+_APP_AUDIT_SQL = (
+    """INSERT INTO app_audit
+       (app_id, app_version, user_email, kind, detail,
+        tokens_in, tokens_out, cost_usd, model)
+       VALUES (:app_id, :app_version, :user_email, :kind,
+               :detail ::jsonb, :tokens_in, :tokens_out,
+               :cost_usd, :model)"""
+)
+
+
+def _app_audit_params(
+    *, app_id: str, user_email: str, kind: str, detail: dict[str, Any] | None,
+    app_version: int | None, tokens_in: int = 0, tokens_out: int = 0,
+    cost_usd: float = 0.0, model: str = "",
+) -> dict[str, Any]:
+    return {
+        "app_id": app_id,
+        "app_version": app_version,
+        "user_email": user_email,
+        "kind": kind,
+        "detail": json.dumps(detail or {}, default=str),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": cost_usd,
+        "model": model,
+    }
+
+
+async def record_app_audit_in(
+    db: Any,
+    *,
+    app_id: str,
+    user_email: str,
+    kind: str,
+    detail: dict[str, Any] | None = None,
+    app_version: int | None = None,
+) -> None:
+    """Append one ``app_audit`` row in the OPEN session *db*, and RAISE on a
+    failure (STU-B2c-1).
+
+    The twin of :func:`record_app_audit_bound` for a write that must not exist
+    without its audit row. It runs in the transaction of the caller, so the
+    write and the row commit together, and a failed insert propagates out of
+    ``tenant_session``, which rolls the write back. It never catches.
+    """
+    await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+        app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+        app_version=app_version))
+
+
+async def record_app_audit_bound(
+    *,
+    app_id: str,
+    user_email: str,
+    kind: str,
+    detail: dict[str, Any] | None = None,
+    app_version: int | None = None,
+) -> None:
+    """Append one ``app_audit`` row in the tenant that the request bound.
+
+    The twin of :func:`record_app_audit` for a caller in a request, such as
+    the Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row
+    needs a bound session. The unbound session of :func:`record_app_audit`
+    writes no row as a role without BYPASSRLS. Best-effort: it opens its own
+    ``tenant_session()``, and a failure logs and never raises. Call it after
+    the caller's own session closes, so a request holds one session at a time.
+    """
+    try:
+        async with _tenant_session() as db:
+            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                app_version=app_version))
+    except Exception as exc:
+        _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
+
 
 async def record_app_audit(
     *,
@@ -525,25 +681,11 @@ async def record_app_audit(
         db = await _get_db()
         try:
             await db.execute(
-                text(
-                    """INSERT INTO app_audit
-                       (app_id, app_version, user_email, kind, detail,
-                        tokens_in, tokens_out, cost_usd, model)
-                       VALUES (:app_id, :app_version, :user_email, :kind,
-                               :detail ::jsonb, :tokens_in, :tokens_out,
-                               :cost_usd, :model)"""
-                ),
-                {
-                    "app_id": app_id,
-                    "app_version": app_version,
-                    "user_email": user_email,
-                    "kind": kind,
-                    "detail": json.dumps(detail or {}, default=str),
-                    "tokens_in": tokens_in,
-                    "tokens_out": tokens_out,
-                    "cost_usd": cost_usd,
-                    "model": model,
-                },
+                text(_APP_AUDIT_SQL),
+                _app_audit_params(
+                    app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                    app_version=app_version, tokens_in=tokens_in,
+                    tokens_out=tokens_out, cost_usd=cost_usd, model=model),
             )
             await db.commit()
         finally:

@@ -32,6 +32,21 @@
 > registered in `_KNOWN_AGENTS` + `_AGENT_REGISTRY` + `agent_registry.json`; and `"crm"` added
 > to the WhatsApp `_KNOWN_SYSTEMS` allowlist **parse-only** (§6). The email-thread timeline
 > join, `CRM_AUTO_LEAD`, and every write tool are explicitly NOT in it — see §9.
+> **Report currencies (H-333, built on branch `crm-h333-currency`, 2026-10-28)** — the four report
+> routes in `routes/crm/reports.py` never add two currencies. Each money figure has a `currency`
+> and an `others` list. The Deals board lanes (`GET /crm/pipeline`) keep each currency apart the
+> same way (Metorite #887, built on branch `crm-887-lane-currency`, 2026-10-29). A lane has a
+> `currency`, and its `amount` and `weighted` are in that currency. A lane of one currency has
+> `others == []`. The lane header shows "plus ..." for the rest, and the app-bar subtitle adds
+> lanes of one currency only.
+>
+> **Same rule on three more surfaces (Metorite #888, built on branch `crm-888-currency`, 2026-10-29)** —
+> `GET /crm/aggregate` splits `sum_amount` and `weighted` on deals by currency. The value of each group
+> and the `total` hold the main currency, named in `currency`. The `others` list holds the rest.
+> The weekly digest has one money part for each currency, and each part has its own code. The AI tool
+> `crm_aggregate` prints each amount with its own code. One shared helper, `routes/crm/currency.py`,
+> normalises the code (`upper(trim(currency))`, with an empty code or NULL read as INR). The reports use
+> it too. A module `sum_amount` has no currency column, so it stays one sum.
 >
 > **Deployment state, measured 2026-08-06:** migrations **144 and 145 are applied on prod**
 > and `/crm` is **live**. The Zoho backfill has been **run and is complete** — 737
@@ -402,6 +417,7 @@ system of record, Zoho becomes an import source, then Zoho is retired.**
 - SLA/response-time engine, assignment rules, sequences/campaigns, marketing automation.
 - No-code custom-field or layout editors. Fields live in migrations; layouts in code.
 - Quoting/invoicing/taxes. Deal line items only (Phase C); billing stays out of scope.
+  - **D205.4 reverses this non-goal.** Quotes are now in scope. CRX-0 (task 2733) writes the catalog section.
 - Telephony SDKs (Twilio/Exotel). Manual call logging only.
 - A saved-views table. v1 view state lives in the URL (trycompai pattern); canned views are
   code.
@@ -1013,6 +1029,7 @@ WS-2 (the standing "rotate Zoho token" P0 becomes "revoke", strictly better).
   must represent Zoho's actual stage names, and the owner reshapes the pipeline without a
   deploy. Rejected: trycompai's hardcoded enum — their own docs show it froze their process
   into code.
+- *Amended by D165 (2026-11-02): scopes replace this decision for an org that turns them on. The default stays Everyone.*
 - **D-CRM-3 — CRM data is org-visible to `feature:crm` holders in v1; `owner_email` is
   assignment, not ACL.** A CRM is a shared team surface (both reference products agree);
   D11 records one org, and the workflows app's org-wide-read v1 is the shipped precedent
@@ -1071,6 +1088,7 @@ WS-2 (the standing "rotate Zoho token" P0 becomes "revoke", strictly better).
   lost-reason requirement, and drives funnel math. Zoho's `forecast_type`
   ("Open"/"Closed Won"/"Closed Lost") maps onto `type` at the WS-26f metadata pull; no
   parallel forecast-category enum is added.
+- *Amended by D166 (2026-11-02): Native mode now creates many pipelines. This decision is closed for Native mode.*
 - **D-CRM-11 — `DECISION (agent-proposed, owner may overrule)`: one pipeline until a
   second sales motion exists.** No `crm_pipelines` table now. The additive path when a
   second motion is real: `pipeline_id` FK on `crm_deal_statuses` + `crm_deals`, a board
@@ -2781,7 +2799,7 @@ before any build.)*
 > - **Saved views — NO-GO on point 3, and its persistence call is doc-blocked in the DB
 >   direction.** `serializeView`/`parseView` do round-trip the whole view, so "a saved view
 >   is a named URL" holds. But a table means migration 170 **and** pre-empts an owner call the
->   tenancy plan explicitly parks: `specs/multi_tenancy.md` §58-65 records that on `crm_*`,
+>   tenancy plan explicitly parks: `specs/archive/multi_tenancy.md` §58-65 records that on `crm_*`,
 >   `organization_id` already means the CUSTOMER COMPANY, and *"that must be decided before
 >   WS-29d touches `crm_*`"* — while `test_tenancy_boundary.py::test_a_new_table_must_carry_a_tenant_key`
 >   refuses the table without one. A genuine pincer, and a doc blocker rather than a build one.

@@ -74,8 +74,9 @@ def _one_instant(monkeypatch):
 
 
 #: The sources of a member with Projects, Email and the Calendar pane.
-SOURCES = {"tasks": "ok", "projects": "ok", "email": "ok", "approvals": "absent",
-           "calendar": "ok"}
+#: WS-66 RM-2b: `reminders` is a needs source, absent while the flag is off.
+SOURCES = {"tasks": "ok", "projects": "ok", "email": "ok", "reminders": "absent",
+           "approvals": "absent", "calendar": "ok"}
 
 
 def _member(email: str) -> UserContext:
@@ -253,4 +254,4 @@ class TestTheFeedOnARealDatabase:
         async with _as_member(promoted, promoted.org_b):
             alone = await shell.shell_needs(limit=shell.DEFAULT_LIMIT, user=_member(ME))
         assert answer["needs"] == alone
-        assert set(alone["sources"]) == {"tasks", "projects", "email", "approvals"}
+        assert set(alone["sources"]) == {"tasks", "projects", "email", "reminders", "approvals"}

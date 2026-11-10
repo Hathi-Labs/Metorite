@@ -106,7 +106,7 @@ export function pickable<T extends RetiredFlags & { id: string }>(
  * under those filters, so it is the right test, and `rows` is not.
  *
  * CRM-C3: a retired lane shows only when it holds records, whatever
- * `showEmpty` says. `orderLanes` puts it at the end of its group.
+ * `showEmpty` says. `orderLanes` puts it at the end.
  */
 export function visibleLanes<T extends { count: number; status?: RetiredFlags }>(
   lanes: readonly T[],

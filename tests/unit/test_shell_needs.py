@@ -156,7 +156,7 @@ class Fakes:
         self.slow_mailbox: set[str] = set()
         self.tasks: dict[str, list[dict]] = {
             ME: [
-                _task("t-late", "Ship the extruder", now - timedelta(hours=2)),
+                _task("t-late", "Ship the extruder", now - timedelta(days=1)),
                 _task("t-old", "File the VAT return", now - timedelta(days=3)),
                 _task("t-soon", "Call the supplier", later_today),
                 _task("t-next", "Plan the launch", now + timedelta(days=3)),
@@ -345,8 +345,9 @@ class TestTheFeatureGate:
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
         assert answer == {"count": 0, "total": 0, "items": [], "totals": {}, "capped": [],
-                          "sources": {"tasks": "absent", "approvals": "absent",
-                                      "projects": "absent", "email": "absent"}}
+                          "sources": {"tasks": "absent", "reminders": "absent",
+                                      "approvals": "absent", "projects": "absent",
+                                      "email": "absent"}}
         assert fakes.calls == []
 
     def test_a_member_without_approvals_gets_no_pending_action(self, fakes):
@@ -563,8 +564,10 @@ class TestTheAnswer:
     def test_the_count_is_the_length_of_the_list(self, fakes):
         answer = run(member(*ALL))
         assert answer["count"] == len(answer["items"]) == 7
-        assert answer["sources"] == {"tasks": "ok", "approvals": "absent",
-                                     "projects": "ok", "email": "ok"}
+        # RM-2b: `reminders` is a needs source, absent while the flag is off.
+        assert answer["sources"] == {"tasks": "ok", "reminders": "absent",
+                                     "approvals": "absent", "projects": "ok",
+                                     "email": "ok"}
 
 
 class TestTheClock:
@@ -593,9 +596,20 @@ class TestTheClock:
         ]
 
     def test_the_split_follows_the_routes_clock(self, monkeypatch, fakes):
-        # Non-vacuity: the freeze reaches the split. One minute past t-soon's
-        # deadline, the route calls it overdue. This was the CI failure.
+        # Non-vacuity: the freeze reaches the split, for a read that gives no
+        # date. Past the hour of t-soon it stays due today (RX-5). One minute
+        # into the next UTC day, the route calls it overdue.
+        real = fakes.my_due_tasks
+
+        async def no_date(user, *, limit):
+            answer = await real(user, limit=limit)
+            return {"rows": answer["rows"], "timezone": "UTC"}
+
+        monkeypatch.setattr(personal, "my_due_tasks", no_date)
         _freeze(monkeypatch, LATER_TODAY + timedelta(minutes=1))
+        rows = {i["id"]: i for i in run(member(*ALL))["items"]}
+        assert rows["tasks:t-soon"]["kind"] == "due_today"
+        _freeze(monkeypatch, fakes.tomorrow + timedelta(minutes=1))
         rows = {i["id"]: i for i in run(member(*ALL))["items"]}
         assert rows["tasks:t-soon"]["kind"] == "overdue"
 
@@ -642,7 +656,7 @@ class TestTheCaps:
 
     def _flood(self, fakes, overdue: int, due_today: int) -> None:
         fakes.tasks[ME] = (
-            [_task(f"t-o{n:02}", "x", NOW - timedelta(hours=n + 1)) for n in range(overdue)]
+            [_task(f"t-o{n:02}", "x", NOW - timedelta(days=n + 1)) for n in range(overdue)]
             + [_task(f"t-d{n:02}", "x", LATER_TODAY) for n in range(due_today)])
         fakes.pending[ORG] = [
             {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
@@ -815,6 +829,8 @@ class TestAFailingAppIsLeftOut:
         monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 0.001)
         answer = run(admin(*ALL, "approvals"))
         assert answer["items"] == []
+        # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
+        assert answer["sources"].pop("reminders") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
@@ -1030,3 +1046,98 @@ class TestAnAgentQuestionReadsAsTheProjectsBellReadsIt:
                / "app" / "projects" / "lib" / "notifications.ts").read_text(encoding="utf-8")
         verb = re.search(r'agent_question:\s*"([^"]+)"', src)
         assert verb is not None and verb.group(1) == shell._VERB["agent_question"]
+
+
+class TestTheReminderSource:
+    """WS-66 RM-2b: the reminders are ONE needs source, for the bell and My
+    Day. The flag is read inside the provider (``SourceAbsent`` when off)."""
+
+    @staticmethod
+    def _row(rid: str, *, state: str = "due", step: str = "fired") -> dict:
+        return {"id": rid, "title": f"Call {rid}", "kind": "action", "state": state,
+                "step": step, "step_at": NOW, "fire_at": NOW - timedelta(minutes=5),
+                "cycles": 0}
+
+    def _on(self, monkeypatch, rows: list[dict]) -> None:
+        import gateway.routes.projects.reminders as rem
+
+        async def my_open_cards(user, *, now, limit):
+            return rows[:limit], None
+
+        monkeypatch.setattr(rem, "reminders_enabled", lambda: True)
+        monkeypatch.setattr(rem, "my_open_cards", my_open_cards)
+
+    def test_a_due_reminder_is_one_calendar_row_with_its_link(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1")])
+        answer = run(member("projects"))
+        [row] = [i for i in answer["items"] if i["app"] == "calendar"]
+        assert row["kind"] == "reminder_due"
+        assert row["href"] == "/chat?do=new-chat&reminder=r-1"
+        assert row["id"] == "reminders:r-1"
+        assert answer["sources"]["reminders"] == "ok"
+        assert answer["totals"]["reminders"] == 1
+
+    def test_the_state_and_the_step_choose_the_kind(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1"),
+                               self._row("r-2", step="check_back"),
+                               self._row("r-3", state="unconfirmed", step="gave_up")])
+        answer = run(member("projects"))
+        kinds = {i["id"]: i["kind"] for i in answer["items"] if i["app"] == "calendar"}
+        assert kinds == {"reminders:r-1": "reminder_due",
+                         "reminders:r-2": "reminder_check",
+                         "reminders:r-3": "reminder_unconfirmed"}
+
+    def test_no_open_card_gives_no_row_but_an_ok_source(self, fakes, monkeypatch):
+        self._on(monkeypatch, [])
+        answer = run(member("projects"))
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+        assert answer["sources"]["reminders"] == "ok"
+
+    def test_with_the_flag_off_the_source_is_absent_and_reads_nothing(
+        self, fakes, monkeypatch,
+    ):
+        import gateway.routes.projects.reminders as rem
+
+        async def boom(*a, **k):
+            raise AssertionError("the store was read with the flag off")
+
+        monkeypatch.setattr(rem, "reminders_enabled", lambda: False)
+        monkeypatch.setattr(rem, "my_open_cards", boom)
+        answer = run(member("projects"))
+        assert answer["sources"]["reminders"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+
+    def test_a_member_without_projects_gets_no_reminder(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1")])
+        answer = run(member("email"))
+        assert answer["sources"]["reminders"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+
+    def test_the_source_is_ungated_and_registers_before_approvals(self):
+        provider = shell.REGISTRY["reminders"]
+        assert provider.needs is True and provider.gated is False
+        assert provider.features == ("projects",)
+        order = [p.source for p in shell.needs_providers()]
+        assert order[-1] == "approvals"
+        assert order.index("reminders") == order.index("approvals") - 1
+
+    def test_the_fired_kinds_come_first_and_the_unconfirmed_last(self):
+        """RX-7. Mutation: put `reminder_due` back after `needs_reply` in
+        `KIND_ORDER` and this fails, and so does the cut test below."""
+        order = [k for k, _ in sorted(shell.KIND_ORDER.items(), key=lambda kv: kv[1])]
+        assert order[:2] == ["reminder_due", "reminder_check"]
+        assert order[-1] == "reminder_unconfirmed"
+        assert all(shell.NEWEST_FIRST[k] is False for k in shell.REMINDER_KINDS)
+
+    def test_the_cut_keeps_a_fired_reminder_behind_thirty_other_rows(self):
+        """RX-7. The server keeps the first `size` rows. Thirty overdue tasks
+        and one fired reminder: the reminder stays."""
+        at = "2026-11-02T08:00:00+00:00"
+        rows = [{"id": f"tasks:{n}", "kind": "overdue", "app": "projects", "at": at}
+                for n in range(30)]
+        rows.append({"id": "reminders:r-1", "kind": "reminder_due", "app": "calendar", "at": at})
+        rows.append({"id": "reminders:r-2", "kind": "reminder_check", "app": "calendar", "at": at})
+        cut = shell._fit(rows, shell.DEFAULT_LIMIT)
+        ids = [i["id"] for i in cut["items"]]
+        assert ids[:2] == ["reminders:r-1", "reminders:r-2"]
+        assert cut["count"] == shell.DEFAULT_LIMIT and cut["total"] == 32

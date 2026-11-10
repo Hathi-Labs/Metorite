@@ -269,7 +269,7 @@ describe("(6) an option shows its icon or its colour (task #417)", () => {
     const html = render([{ value: "a", label: "A" }], "a");
     expect(html).toBe(
       '<button type="button" role="option" aria-selected="true" ' +
-        'class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted bg-muted font-medium">' +
+        'class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs glass:rounded-lg hover:bg-muted bg-muted font-medium">' +
         '<span class="min-w-0 flex-1 truncate pr-px">A</span></button>'
     );
     expect(html).not.toContain("<svg");

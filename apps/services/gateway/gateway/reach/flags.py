@@ -1,6 +1,7 @@
 """The switches of Reach (WS-59 RE-1a, ``proactive_reach.md``).
 
-This module is the ONE reader of the seven ``REACH_*`` settings.
+This module is the ONE reader of the seven ``REACH_*`` settings, and of
+``DUE_PUSH_ORGS``.
 
 * ``REACH_ENABLED`` — the switch of the loop and the routes, default OFF.
 * ``REACH_ORGS`` — the organization ids that may reach. Empty allows none,
@@ -14,6 +15,10 @@ This module is the ONE reader of the seven ``REACH_*`` settings.
   outside the window (RE-2a). Empty holds the interrupt until the window
   opens.
 * ``REACH_TEMPLATE_LANGUAGE`` — the language code of both templates.
+* ``DUE_PUSH_ORGS`` — the organization ids that get the morning summary of
+  due tasks (RX-5, ``calendar_events_reminders.md`` §5.11), or ``*`` for each
+  org. Empty allows none. No ``REACH_*`` switch gates it, because the summary
+  goes by web push and never on WhatsApp.
 
 The organization and the member always come from a session or from the loop's
 own list, never from request input (R5, R11).
@@ -30,6 +35,21 @@ from acb_common import get_settings
 def _parse(raw: str) -> frozenset[str]:
     """The entries of a comma list, trimmed and in lower case."""
     return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def due_push_orgs() -> frozenset[str]:
+    """The organization ids in ``DUE_PUSH_ORGS``. ``*`` stays in the set, and
+    :func:`due_push_allowed` reads it as every org."""
+    return _parse(str(getattr(get_settings(), "due_push_orgs", "") or ""))
+
+
+def due_push_allowed(organization_id: str | None) -> bool:
+    """True when ``DUE_PUSH_ORGS`` holds the org, or holds ``*``. Default OFF,
+    and no org answers False. The org comes from the loop, never from input."""
+    if not organization_id:
+        return False
+    listed = due_push_orgs()
+    return "*" in listed or str(organization_id).strip().lower() in listed
 
 
 def enabled() -> bool:

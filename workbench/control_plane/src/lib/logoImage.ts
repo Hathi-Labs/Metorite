@@ -88,6 +88,69 @@ export function contentBounds(p: Pixels, bg: Background = detectBackground(p)): 
 }
 
 /**
+ * The square mark inside a logo (owner, 2026-11-01: "optimise the view of
+ * the logo in square format and rectangular format"). A folded sidebar has a
+ * square slot, and a wide logo clipped to it shows a slice of a word.
+ *
+ * - Trim to the ink (`contentBounds`).
+ * - Read the columns from the left. The symbol ends at the first clear gap
+ *   that is wide for its height: a gap of a fifth of the height parts a
+ *   symbol from its wordmark, and a letter's own gaps are narrower.
+ * - A part wider than 1.6 times its height is a word, not a symbol: take the
+ *   square at its left.
+ * - Square it, centred, with a margin of an eighth on each side.
+ *
+ * The box can reach past the image. That area is transparent when drawn.
+ */
+export function markBox(p: Pixels, bg: Background = detectBackground(p)): Box {
+  const c = contentBounds(p, bg);
+  const minGap = Math.max(2, Math.round(c.h * 0.2));
+  const minPart = Math.max(2, Math.round(c.h * 0.3));
+  let end = c.x + c.w;
+  let gap = 0;
+  let seen = false;
+  for (let x = c.x; x < c.x + c.w; x++) {
+    let ink = false;
+    for (let y = c.y; y < c.y + c.h && !ink; y++) ink = bg.kind === "none" || isInk(p, at(p, x, y), bg);
+    if (ink) {
+      if (seen && gap >= minGap && x - gap - c.x >= minPart) {
+        end = x - gap;
+        break;
+      }
+      seen = true;
+      gap = 0;
+    } else if (seen) {
+      gap++;
+    }
+  }
+  // The symbol's own height: a symbol can be shorter than the wordmark.
+  let y0 = c.y + c.h, y1 = c.y - 1;
+  if (bg.kind !== "none") {
+    for (let y = c.y; y < c.y + c.h; y++) {
+      for (let x = c.x; x < end; x++) {
+        if (!isInk(p, at(p, x, y), bg)) continue;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+        break;
+      }
+    }
+  }
+  if (y1 < y0) {
+    y0 = c.y;
+    y1 = c.y + c.h - 1;
+  }
+  let part: Box = { x: c.x, y: y0, w: end - c.x, h: y1 - y0 + 1 };
+  if (part.w > part.h * 1.6) part = { x: c.x, y: c.y, w: c.h, h: c.h };
+  const side = Math.ceil(Math.max(part.w, part.h) * 1.25);
+  return {
+    x: Math.round(part.x + part.w / 2 - side / 2),
+    y: Math.round(part.y + part.h / 2 - side / 2),
+    w: side,
+    h: side,
+  };
+}
+
+/**
  * Grow the box, centred, until its shape fits the server's bounds. A wordmark
  * longer than 8:1 gains a little height, a tall mark a little width. The new
  * area is transparent, so a person never meets "That shape will not fit".

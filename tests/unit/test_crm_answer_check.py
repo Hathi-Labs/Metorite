@@ -1164,3 +1164,51 @@ def test_an_answer_with_no_text_still_gets_the_fallback() -> None:
 
     out = asyncio.run(middleware._checked(_Context(), lambda: None, card))
     assert out.text.startswith(FALLBACK_LEAD)
+
+
+# ── WS-67 OA-8a: the reads of the ``crm-records`` pack arm the check ────────
+
+PIPELINE_RESULT = "Pipeline:\n- Negotiation: 3 deals, INR 1,234,567\n- Won: 1 deal, INR 500,000"
+
+
+async def get_pipeline(owner: str | None = None, per_lane: int = 5) -> str:
+    """A fake pack read of the CRM assistant."""
+    return PIPELINE_RESULT
+
+
+async def search_crm(query: str, entity: str | None = None) -> str:
+    """A fake pack read of the CRM assistant."""
+    return "Deal Acme Renewal (id=d-1), INR 500,000"
+
+
+@STREAMS
+async def test_a_pack_read_arms_the_check_through_the_real_assembly(
+    stream: bool, monkeypatch,
+) -> None:
+    """OA-8a: the orchestrator holds ``get_pipeline`` and ``search_crm`` from
+    the pack, and ``ARM_TOOLS`` names both. The real
+    ``_tool_injection._apply_answer_check`` puts the provider on that agent,
+    and an invented total gets one retry. Mutation: take ``get_pipeline`` and
+    ``search_crm`` out of ``ARM_TOOLS`` -> no provider, no retry -> red."""
+    import acb_common.settings as settings_mod
+    from orchestrator import _tool_injection
+
+    monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: ON)
+    client = ScriptedClient([("call", "get_pipeline", {}), ("call", "search_crm", {"query": "a"}),
+                             ("text", "The pipeline holds ₹18.9 lakh."),
+                             ("text", "Negotiation holds INR 1,234,567.")])
+    agent = Agent(client=client, name="orchestrator", tools=[get_pipeline, search_crm])
+    agents = [agent]
+    _tool_injection._apply_answer_check(agents, "orchestrator")
+    assert agents[0] is not agent, "the real assembly armed the check"
+    assert any(isinstance(p, AnswerCheckProvider) for p in agents[0].context_providers or [])
+    if stream:
+        parts = []
+        async for update in agents[0].run("How is the pipeline?", stream=True):
+            parts.append(update.text or "")
+        out = "".join(parts)
+    else:
+        out = (await agents[0].run("How is the pipeline?")).text
+    assert out == "Negotiation holds INR 1,234,567."
+    assert len(client.requests) == 4
+    assert '"₹18.9 lakh"' in _user_texts(client.requests[-1])[-1]

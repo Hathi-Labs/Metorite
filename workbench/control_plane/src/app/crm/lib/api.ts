@@ -42,6 +42,8 @@ import type {
   SumCheck,
 } from "./questions";
 import type { BusinessRule, MyChoice, RuleScope, RulesBody } from "./rules";
+import { CHANGE_PAGE_SIZE, type ChangeList } from "./changeHistory";
+import type { PipelinePlan } from "./newPipeline";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -69,6 +71,13 @@ import type {
 } from "./types";
 import type { CrmModule, ModuleListResponse, ModuleRecordPage } from "./modules";
 
+/**
+ * What a refusal with no detail says (CRM-U17a). One sentence for every CRM
+ * refusal that has nothing better, with no status code in it. Anything that
+ * turns a failure into words reads it from here.
+ */
+export const TRY_AGAIN = "That did not work. Try again.";
+
 export class CrmError extends Error {
   status: number;
   /**
@@ -82,12 +91,25 @@ export class CrmError extends Error {
    * value, so a form can show the message beside that input.
    */
   field?: string;
-  constructor(message: string, status: number, code?: string, field?: string) {
+  /**
+   * The whole object `detail` of a refusal, or undefined (CRM-Z10b). The
+   * switch reads the `modules` of a 409 `module_incomplete` from it. Each
+   * other caller keeps reading `message`, `code` and `field`.
+   */
+  detail?: Record<string, unknown>;
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    field?: string,
+    detail?: Record<string, unknown>
+  ) {
     super(message);
     this.name = "CrmError";
     this.status = status;
     this.code = code;
     this.field = field;
+    this.detail = detail;
   }
 }
 
@@ -108,10 +130,11 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       error?: string;
     };
     throw new CrmError(
-      detailOf(body) || `Gateway error ${res.status}`,
+      detailOf(body) || TRY_AGAIN,
       res.status,
       codeOf(body),
-      fieldOf(body)
+      fieldOf(body),
+      objectDetailOf(body)
     );
   }
   if (res.status === 204) return undefined as T;
@@ -152,6 +175,14 @@ function codeOf(body: { detail?: unknown }): string | undefined {
     if (typeof code === "string") return code;
   }
   return undefined;
+}
+
+/** An object `detail` as it came, or undefined (CRM-Z10b). */
+function objectDetailOf(body: { detail?: unknown }): Record<string, unknown> | undefined {
+  const { detail } = body;
+  return detail && typeof detail === "object" && !Array.isArray(detail)
+    ? (detail as Record<string, unknown>)
+    : undefined;
 }
 
 /** The `field` of an object `detail`, or undefined (CRM-C4p item 4). */
@@ -291,6 +322,46 @@ export function getPipeline(
  */
 export function listPipelines(): Promise<DealPipeline[] | null> {
   return orNullOn404(call<DealPipeline[]>("/pipelines"));
+}
+
+/**
+ * The lead pipelines, each with its lead statuses in order (WS-CRM CRM-M4a).
+ * Only a row that says `kind: "lead"` counts, so a gateway from before
+ * CRM-M4a, which reads no `kind`, gives none and never its deal pipelines.
+ */
+export async function listLeadPipelines(): Promise<DealPipeline[] | null> {
+  const rows = await orNullOn404(call<DealPipeline[]>("/pipelines?kind=lead"));
+  return rows ? rows.filter((row) => row.kind === "lead") : null;
+}
+
+/**
+ * What a new deal pipeline would hold, in order (WS-CRM CRM-M3a). It reads
+ * only. The gateway answers each refusal of the create here too, so the
+ * dialog shows it before the member presses Create. Admin only, and 404 for
+ * an org off `CRM_PIPELINES_ORGS`.
+ */
+export function previewPipeline(body: Record<string, unknown>): Promise<PipelinePlan> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    // The stages go as one JSON value, the shape of the body of a create.
+    query.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return call<PipelinePlan>(`/pipelines/preview?${query.toString()}`);
+}
+
+/**
+ * Create a deal pipeline (WS-CRM CRM-M3a). Native mode only: Mirror mode is
+ * 409. It wakes every CRM read, `usePipelines` too, so the Deals board shows
+ * the pipeline switcher when the org has two pipelines.
+ */
+export function createPipeline(body: Record<string, unknown>): Promise<DealPipeline> {
+  return writeAndWake(() =>
+    call<DealPipeline>("/pipelines", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 /**
@@ -451,6 +522,14 @@ export async function listDigests(limit = 4): Promise<CrmDigest[]> {
   return res?.digests ?? [];
 }
 
+/**
+ * One page of the Change history of the CRM set-up, newest first (WS-CRM
+ * CRM-M1). Read only. The chat reads the same route (`crm_change_history`).
+ */
+export function listChanges(page = 1): Promise<ChangeList> {
+  return call<ChangeList>(`/change-history?page=${page}&page_size=${CHANGE_PAGE_SIZE}`);
+}
+
 // ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────
 
 /** The mirrored generic modules, in the profile order. Empty in Native mode. */
@@ -475,6 +554,23 @@ export function listModuleRecords(
 export function getModuleRecord(module: string, id: string): Promise<ModuleRecordPage> {
   return call<ModuleRecordPage>(
     `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+  );
+}
+
+/**
+ * Edit one generic record (CRM-Z10d). Native mode only: Mirror mode answers
+ * 409 `mirrored_record`. The body holds `name`, `owner_email` and `fields`,
+ * and names only the keys that change. A refusal is a `CrmError` with the
+ * `code` and the `field` of the 422.
+ */
+export function patchModuleRecord(
+  module: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
   );
 }
 
@@ -537,16 +633,41 @@ export type CrmModeBody = {
    * entity, and whether Zoho turned it off. Read it through `coreStatesOf`.
    */
   entities?: unknown;
+  /**
+   * CRM-Z10b: true when a Native CRM came from Zoho through the switch. Only
+   * then does the cutover card read the status of the switch.
+   */
+  cutover_done?: boolean;
+  /**
+   * CRM-M3a: true when `CRM_PIPELINES_ORGS` lets an admin of this Native CRM
+   * create a pipeline. Each other CRM leaves it out.
+   */
+  pipeline_create?: boolean;
 };
 
 /**
  * `GET /crm/mode`, for each member the access rule admits. In Mirror mode,
  * for an org on `CRM_FILL_RANK_ORGS`, it also holds the source's names of the
- * core entities (CRM-Q17a-1 item 6). Each other body has no `labels` key.
+ * core entities (CRM-Q17a-1 item 6). In Native mode it holds the names that
+ * an admin stored (CRM-Z10g). Each other body has no `labels` key.
  * CRM-Q20-2: with an approved role, `overlays` names the module of each slot.
  */
 export function getCrmMode(): Promise<CrmModeBody> {
   return call<CrmModeBody>("/mode");
+}
+
+/**
+ * Admin only, Native mode only (CRM-Z10g). The map replaces the stored names,
+ * and a type that is left out takes the default name again. Mirror mode is a
+ * 409. The write wakes every CRM read, so the rail and the headings follow.
+ */
+export function saveRecordNames(labels: SourceLabels): Promise<{ labels: SourceLabels }> {
+  return writeAndWake(() =>
+    call<{ labels: SourceLabels }>("/settings/labels", {
+      method: "PUT",
+      body: JSON.stringify({ labels }),
+    }),
+  );
 }
 
 /** Admin only. Choose who may open the CRM (CRM-T5). Each group is `group:<slug>`. */

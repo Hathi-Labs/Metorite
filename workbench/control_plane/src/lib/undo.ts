@@ -165,3 +165,77 @@ export function stepForward(
     },
   };
 }
+
+/**
+ * The step that undoes ONE named entry, for the Undo button of its own toast.
+ *
+ * The newest entry moves the stack the way Ctrl+Z does. An entry that is in
+ * the future was undone already, so it gives null. Any other entry (an older
+ * one, or one a scope change cleared) runs in place and leaves the stack. Its
+ * own state makes a later Ctrl+Z on it do nothing.
+ */
+export function stepBackTo(
+  stack: UndoStack,
+  entry: UndoEntry,
+): { stack: UndoStack; entry: UndoEntry } | null {
+  if (stack.past.at(-1) === entry) return stepBack(stack);
+  if (stack.future.includes(entry)) return null;
+  return { stack, entry };
+}
+
+/** Where a runner keeps the stack, and how it says that a step runs. */
+export interface UndoHost {
+  read: () => UndoStack;
+  write: (stack: UndoStack) => void;
+  busy: (on: boolean) => void;
+}
+
+export interface UndoRunner {
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
+  /** The toast's Undo for its own entry. See `stepBackTo`. */
+  undoEntry: (entry: UndoEntry) => Promise<void>;
+}
+
+/**
+ * Runs the steps, ONE at a time, for Ctrl+Z, the buttons AND each toast.
+ *
+ * Every entry does IO. Two steps at once against one row let the slower one
+ * win, and that corrupts the row the stack protects. So a step that starts
+ * while another runs does nothing. Before UNDO-1 fix round 1 (finding 6) only
+ * Ctrl+Z and the buttons came here. A toast's Undo called its entry directly,
+ * so a toast click and Ctrl+Z in one round trip sent two writes.
+ *
+ * The stack moves first, so the buttons update at once. A step that throws
+ * puts the stack back, so the failed step is still the next one, and the
+ * error goes to the caller.
+ */
+export function createUndoRunner(host: UndoHost): UndoRunner {
+  let running = false;
+  const run = async (
+    pick: (stack: UndoStack) => { stack: UndoStack; entry: UndoEntry } | null,
+    direction: "back" | "forward",
+  ): Promise<void> => {
+    if (running) return;
+    const before = host.read();
+    const step = pick(before);
+    if (!step) return;
+    running = true;
+    host.busy(true);
+    host.write(step.stack);
+    try {
+      await (direction === "back" ? step.entry.undo() : step.entry.redo());
+    } catch (err) {
+      host.write(before);
+      throw err;
+    } finally {
+      running = false;
+      host.busy(false);
+    }
+  };
+  return {
+    undo: () => run(stepBack, "back"),
+    redo: () => run(stepForward, "forward"),
+    undoEntry: (entry) => run((stack) => stepBackTo(stack, entry), "back"),
+  };
+}

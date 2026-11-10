@@ -140,9 +140,20 @@ export const EMPTY_COPY: Record<NodeSummary["level"], string> = {
  * A project and a subproject need no special case: their copy already says
  * the task views hold the work, which is exactly where it is.
  */
-export function emptyCopy(summary: NodeSummary): string {
+export function emptyCopy(
+  summary: NodeSummary,
+  opts: { personal?: boolean } = {},
+): string {
   const level = summary.level;
   const tasks = summary.tasks ?? 0;
+  // OP-12b — the private space holds folders, not "projects". The count names
+  // what it counts: all tasks, then the open ones.
+  if (opts.personal && level === "space") {
+    if (tasks === 0) return "Nothing here yet. Add a folder or a project to group your private tasks.";
+    const by = summary.by_category ?? {};
+    const open = Math.max(0, tasks - (by.done ?? 0) - (by.cancelled ?? 0));
+    return `${tasks} ${tasks === 1 ? "task" : "tasks"} (${open} open), in no folder. Add a folder or a project to group them.`;
+  }
   if (tasks > 0 && (level === "space" || level === "folder")) {
     const noun = level === "space" ? "space" : "folder";
     return `No projects here yet. ${tasks} ${

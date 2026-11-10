@@ -203,8 +203,23 @@ def _broker_write(
     return _run
 
 
-async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
-    """Post a message onto the activity feed (the v1 'send notification')."""
+NOTIFY_ACTIVITY = "notify.activity"
+
+
+async def notify_activity(
+    args: dict[str, Any], actor: str, *, organization_id: str | None,
+) -> dict[str, Any]:
+    """Post a message onto the tenant's activity feed (H-201c).
+
+    The run passes the org of its row (``service._tool_runner``), because a
+    scheduled run has no bound tenant. ``None`` falls back to the bound
+    tenant, and with neither the feed drops the message. The arguments are
+    checked here too, because the run calls this without ``execute_tool``.
+    """
+    problems = check_args(_TOOL_REGISTRY[NOTIFY_ACTIVITY].args_schema, args,
+                          action=NOTIFY_ACTIVITY)
+    if problems:
+        raise NodeExecutionError("; ".join(problems))
     message = str(args.get("message") or "").strip()
     if not message:
         raise NodeExecutionError("notify needs a message")
@@ -212,6 +227,7 @@ async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
         from acb_common import publish_activity
 
         publish_activity(
+            organization_id=organization_id,
             kind="workflow",
             agent=actor,
             source="workflows",
@@ -221,6 +237,14 @@ async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
     except Exception:
         pass
     return {"sent": True, "message": message[:500]}
+
+
+async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
+    """Post a message onto the activity feed (the v1 'send notification').
+
+    Outside a run, the org is the bound tenant.
+    """
+    return await notify_activity(args, actor, organization_id=None)
 
 
 register_tool(
@@ -248,7 +272,7 @@ register_tool(
 
 register_tool(
     WorkflowToolSpec(
-        action="notify.activity",
+        action=NOTIFY_ACTIVITY,
         label="Post notification",
         description="Post a message to the Metorite activity feed.",
         integration=None,

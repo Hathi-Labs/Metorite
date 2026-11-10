@@ -26,6 +26,7 @@
  * Fence (R7): `runStatus.test.ts`.
  */
 
+import { placementOf } from "@/lib/chatPlacement";
 
 // ── The phases ─────────────────────────────────────────────────────────────
 
@@ -42,6 +43,24 @@ export type RunPhase =
 
 /** A run may still run: Stop is offered, a send steers it. */
 const LIVE: ReadonlySet<RunPhase> = new Set(["starting", "working", "waiting_for_you", "finishing"]);
+
+/**
+ * True for each phase a run rests in: it ended, or none runs. A cut stream
+ * is not one: `finishing` asks the server, and the run may go on.
+ */
+export function isRestingPhase(p: RunPhase): boolean {
+  return p === "done" || p === "stopped" || p === "failed" || p === "idle";
+}
+
+/**
+ * A rest that a slot of a redraft may end on (§18.11, fix round 5): any rest
+ * but one that the `FINISH_MAX_MS` settle alone made. A cut stream with no
+ * server answer can still be a live run, and its next draft would then come
+ * with no slot to take.
+ */
+export function restConfirmed(s: Pick<RunStatus, "phase" | "restBlind">): boolean {
+  return isRestingPhase(s.phase) && !s.restBlind;
+}
 
 /** Live, for the composer, the session dot and the nav badge. */
 export function isLivePhase(p: RunPhase): boolean {
@@ -145,6 +164,18 @@ export interface RunStatus {
    * no Stop until the server lists the run.
    */
   checking: boolean;
+  /** Ids of the write tools the run started. A replay sends an id again, so
+   *  an id counts once. */
+  writesAsked: readonly string[];
+  /** Ids of the write tools that ended with success: the changes made. */
+  writesDone: readonly string[];
+  /**
+   * The run rests only because no word came for `FINISH_MAX_MS` (§18.11, fix
+   * round 5). The next server list either names the run, which works again,
+   * or not, which confirms the rest and clears this. A slot of a redraft
+   * ends only on a confirmed rest (`restConfirmed`).
+   */
+  restBlind: boolean;
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -167,6 +198,9 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   runKey: null,
   staleTail: false,
   checking: false,
+  writesAsked: [],
+  writesDone: [],
+  restBlind: false,
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -205,6 +239,10 @@ export type RunEvent =
   /** The chat mounted over a state kept in the store, with no stream that
    *  reads it: show "checking" until the server answers. */
   | { type: "remount"; at: number; streamOpen: boolean }
+  /** A tool call began. Only a write counts, as `chatPlacement` names it. */
+  | { type: "toolStart"; at: number; id: string; name: string }
+  /** A tool call ended. Only a successful write counts as a change made. */
+  | { type: "toolDone"; at: number; id: string; name: string; ok: boolean }
   /** A blocking card opened or closed in this chat. */
   | { type: "card"; at: number; open: boolean }
   /** A complete server list, taken at `at`. `run` is this thread's row. */
@@ -214,6 +252,8 @@ export type RunEvent =
 
 function to(s: RunStatus, phase: RunPhase, at: number, extra: Partial<RunStatus> = {}): RunStatus {
   const next = { ...s, ...extra, phase, changedAt: phase === s.phase ? s.changedAt : at };
+  // A blind rest lasts only while the phase it marks lasts.
+  if (phase !== s.phase && !extra.restBlind) next.restBlind = false;
   // "Checking" lasts only while a remount waits in `finishing`.
   if (phase !== "finishing" && next.checking) next.checking = false;
   return next;
@@ -284,6 +324,8 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         // A re-attach to a run this tab did not see start keeps no old step.
         step: live ? s.step : null,
         seq: live ? s.seq : 0,
+        writesAsked: live ? s.writesAsked : [],
+        writesDone: live ? s.writesDone : [],
         terminalAt: 0,
         staleTail: false,
       });
@@ -334,6 +376,20 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       return to(s, "stopped", e.at, {
         step: null, stoppedAt: e.at, attach: false, cardOpen: false, doneMessageId: s.messageId ?? s.doneMessageId,
       });
+
+    case "toolStart":
+      if (placementOf(e.name) !== "write" || s.writesAsked.includes(e.id)) return s;
+      return { ...s, writesAsked: [...s.writesAsked, e.id] };
+
+    case "toolDone": {
+      if (!e.ok || placementOf(e.name) !== "write" || s.writesDone.includes(e.id)) return s;
+      return {
+        ...s,
+        writesDone: [...s.writesDone, e.id],
+        // A write that ended was asked, even if its start was not seen.
+        writesAsked: s.writesAsked.includes(e.id) ? s.writesAsked : [...s.writesAsked, e.id],
+      };
+    }
 
     case "attach_skipped":
       // `attachedAt` stays, so the next list asks again at once.
@@ -410,6 +466,7 @@ function reduceServer(
     const fresh: Partial<RunStatus> = isNew
       ? {
         messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false,
+        writesAsked: [], writesDone: [],
         startedAt: parseTime(run.startedAt) ?? at,
         // The old run's streaming reply, if any, is not this run's.
         staleTail: other,
@@ -443,6 +500,8 @@ function reduceServer(
   }
 
   // The server does not name this thread: no run, and no question waits.
+  // A blind rest is now a known one (§18.11, fix round 5).
+  if (s.restBlind) return { ...s, restBlind: false };
   if (s.phase === "parked") return settled(s, at);
   if (!isLivePhase(s.phase)) return s;
   if (!streamOpen) {
@@ -471,7 +530,11 @@ function sameRun(a: RunStatus, b: RunStatus): boolean {
 }
 
 function reduceTick(s: RunStatus, at: number, streamOpen: boolean): RunStatus {
-  if (s.phase === "finishing" && at - s.changedAt >= FINISH_MAX_MS) return settled(s, at);
+  if (s.phase === "finishing" && at - s.changedAt >= FINISH_MAX_MS) {
+    // No word for this long: rest, but blind, until a server list says (§18.11).
+    const out = settled(s, at);
+    return out.phase === s.phase ? out : { ...out, restBlind: true };
+  }
   if ((s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you") && !streamOpen) {
     const heard = Math.max(s.lastEventAt, s.serverSeenAt, s.changedAt);
     if (at - heard >= STALE_MS) return settled(s, at);
@@ -530,10 +593,22 @@ export function runView(s: RunStatus, now: number): RunView | null {
       };
     case "stopped":
       if (now - s.changedAt >= RESTING_SHOW_MS) return null;
-      return { tone: "stopped", label: "Stopped", elapsed: null };
+      return { tone: "stopped", label: stoppedLabel(s), elapsed: null };
     default:
       return null;
   }
+}
+
+/**
+ * "Stopped · made 2 of 5 changes", "Stopped · made 2 changes" when the total
+ * is not above the made count, and "Stopped" when the run made none.
+ */
+function stoppedLabel(s: RunStatus): string {
+  const made = s.writesDone.length;
+  if (made === 0) return "Stopped";
+  const asked = s.writesAsked.length;
+  if (asked > made) return `Stopped · made ${made} of ${asked} changes`;
+  return `Stopped · made ${made} ${made === 1 ? "change" : "changes"}`;
 }
 
 /** The row's spoken and written line: "Asking Projects assistant · 1m 12s". */

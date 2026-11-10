@@ -284,20 +284,31 @@ def _app_workspace_for(
     The ``apps`` read runs in the caller's tenant, so an app of another
     tenant is not found. A write also needs edit rights on that app, the
     same rule the app routes use (``_common.can_edit``).
+
+    ⚠️ A Studio package (``format = 'manifest'``, WS-STU A3) is not an app
+    here, and it stores ``workspace_path = ''``. ``Path('')`` resolves to the
+    working directory of the process, so a package would bind a session to
+    that whole folder. Two guards: the query skips a package, and
+    ``workspace_dir`` refuses an empty or blank path. Fences:
+    ``test_studio_packages_r8.py`` and ``test_studio_packages_store.py``.
     """
     from acb_auth import UserContext as _UC
     from acb_auth.roles import UserRole
     from acb_graph import tenant_session
-    from gateway.routes.apps._common import can_edit
+    from gateway.routes.apps._common import can_edit, workspace_dir
     from sqlalchemy import text
 
     with tenant_session(organization_id) as s:
         apps = s.execute(text(
             "SELECT id, owner_email, workspace_path FROM apps "
-            "WHERE workspace_path IS NOT NULL")).fetchall()
+            "WHERE workspace_path IS NOT NULL "
+            "AND format IS DISTINCT FROM 'manifest'")).fetchall()
         for app in apps:
+            folder = workspace_dir(app.workspace_path)
+            if folder is None:
+                continue
             try:
-                ws = Path(str(app.workspace_path)).resolve(strict=True)
+                ws = folder.resolve(strict=True)
             except OSError:
                 continue
             if not _is_under(resolved, ws):

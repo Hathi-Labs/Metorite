@@ -117,6 +117,78 @@ const SIZES: Record<ButtonSize, string> = {
   none: "",
 };
 
+/**
+ * The glass look (D143, `glass_look.md` GL-2). Every class here sits behind
+ * `glass:`, so under classic it matches nothing and the button is unchanged.
+ * The shape is Aroh's: a capsule, a fill and no border, a press dip, and a
+ * 32 px height (40 px on a touch screen).
+ *
+ * ⚠️ The capsule is a custom property and not `glass:rounded-full`.
+ * `.cc-button` in globals.css is unlayered and sets `border-radius` from
+ * `--button-radius`, and unlayered CSS beats every Tailwind utility. The
+ * property is the one input that rule reads, so `glass:[--button-radius]`
+ * wins with no change to the stylesheet.
+ */
+// GL-6: a label never wraps. The narrow Calendar rail broke "New reminder"
+// onto two lines. The text size now comes from the size, so a toolbar button
+// reads smaller than a form button.
+const GLASS_BASE = "glass:glass-press glass:font-medium glass:whitespace-nowrap";
+const GLASS_CAPSULE = "glass:[--button-radius:9999px]";
+/**
+ * A disabled primary keeps its dim look under the pointer: the hover rules
+ * are emitted after `disabled:opacity-50` with the same specificity, so they
+ * must exclude a disabled button themselves (GL-2 review).
+ */
+const GLASS_PRIMARY_HOVER = "glass:not-disabled:hover:opacity-100 glass:not-disabled:hover:brightness-110";
+/** A filled glass variant swaps its fill on `selected`, so each state has its own set. */
+const GLASS_VARIANTS: Record<ButtonVariant, string> = {
+  primary: GLASS_PRIMARY_HOVER,
+  secondary:
+    "glass:border-transparent glass:bg-secondary glass:text-foreground glass:hover:border-transparent glass:hover:bg-muted glass:hover:text-foreground",
+  ghost: "",
+  destructive: "glass:hover:bg-destructive/15",
+  text: "",
+};
+const GLASS_SELECTED: Record<ButtonVariant, string> = {
+  primary: GLASS_PRIMARY_HOVER,
+  secondary:
+    "glass:border-transparent glass:bg-primary/12 glass:text-primary glass:hover:border-transparent glass:hover:bg-primary/16",
+  ghost: "",
+  destructive: "glass:hover:bg-destructive/15",
+  text: "",
+};
+/**
+ * GL-6, the toolbar size. `sm` is 28 px with a 13 px face and sits in a
+ * toolbar row beside `Input sm` and `SelectButton`, which are 28 px too.
+ * `md` and `lg` are 32 px with a 14 px face. A touch screen gets 40 px.
+ */
+const GLASS_SIZES: Record<ButtonSize, string> = {
+  sm: "glass:h-7 glass:px-3 glass:py-0 glass:text-footnote glass:pointer-coarse:h-10",
+  md: "glass:h-8 glass:px-3.5 glass:py-0 glass:text-label glass:pointer-coarse:h-10",
+  lg: "glass:h-8 glass:px-3.5 glass:py-0 glass:text-label glass:pointer-coarse:h-10 glass:pointer-coarse:px-4",
+  "icon-xs": "glass:h-7 glass:w-7 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
+  "icon-sm": "glass:h-7 glass:w-7 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
+  icon: "glass:h-8 glass:w-8 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
+  /** Caller supplies its own box. */
+  none: "",
+};
+
+/**
+ * The glass classes of one button. A bare text action keeps its size. A
+ * `size="none"` button keeps its whole box, as the size's contract says: the
+ * caller supplies padding, gap, text size and shape, often for a card or a
+ * multi-line row, so glass adds only the press (GL-2 review).
+ */
+export function glassButtonClasses(a: { variant: ButtonVariant; size: ButtonSize; selected?: boolean; radius?: "theme" | "keep" }): string {
+  if (a.size === "none") return "glass:glass-press";
+  const parts = [GLASS_BASE];
+  if (a.radius !== "keep" && a.variant !== "text") parts.push(GLASS_CAPSULE);
+  parts.push(a.selected ? GLASS_SELECTED[a.variant] : GLASS_VARIANTS[a.variant]);
+  if (a.variant !== "text") parts.push(GLASS_SIZES[a.size]);
+  else parts.push("glass:text-subhead");
+  return parts.filter(Boolean).join(" ");
+}
+
 /** Display and alignment a normal button wants. */
 const LAYOUT_DEFAULT = "inline-flex items-center justify-center";
 
@@ -227,7 +299,7 @@ export default function Button({
     ariaChecked: rest["aria-checked"],
     ariaPressed: rest["aria-pressed"],
   });
-  const classes = `cc-control ${radius === "theme" ? "cc-button" : ""} ${layout} disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${selected ? SELECTED[variant] : ""} ${SIZES[size]} ${className}`;
+  const classes = `cc-control ${radius === "theme" ? "cc-button" : ""} ${layout} disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${selected ? SELECTED[variant] : ""} ${SIZES[size]} ${glassButtonClasses({ variant, size, selected, radius })} ${className}`;
   const content = (
     <>
       {loading ? (

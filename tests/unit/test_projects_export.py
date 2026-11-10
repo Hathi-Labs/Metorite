@@ -268,6 +268,9 @@ def test_the_path_cannot_be_shadowed_by_the_single_task_route() -> None:
 
 #: List parameters the export deliberately does NOT take, and why.
 NOT_ON_THE_EXPORT = {
+    # MCP-G19a. `compact` is a row shape for the agent door, not a filter. The
+    # CSV has its own columns.
+    "compact",
     # A page is a screen's unit. Half a filter's tasks in a file IS the silent
     # truncation this endpoint refuses; the cap is a refusal instead.
     "page", "page_size",
@@ -287,6 +290,9 @@ NOT_ON_THE_EXPORT = {
     # no other AI session holds. The board never sends it, and a file of
     # "tasks no agent holds" is a snapshot that is stale on download.
     "unheld",
+    # #918. Not a filter: it asks the list to also answer the size of each
+    # status lane for the board's column heads. The rows are the same.
+    "with_status_counts",
 }
 
 

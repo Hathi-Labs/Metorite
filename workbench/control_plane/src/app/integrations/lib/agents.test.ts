@@ -18,6 +18,8 @@ import { visibleSections } from "@/lib/nav";
 import { buildItems, heldPanes } from "@/lib/shell/registry";
 
 import {
+  AGENT_CAN,
+  AGENT_CANNOT,
   AGENT_CLIENTS,
   CLAUDE_CODE_COMMAND,
   MCP_URL,
@@ -103,6 +105,18 @@ describe("A9: a member with no grants sees the AI agents view only", () => {
 });
 
 describe("the connect card (spec §17.1)", () => {
+  // EA-6f lets an agent move a task to done, and EA-6i turns the delete on by
+  // default. Only a cancel stays a person's act. The card must say so.
+  it("says what an agent can do now: done yes, cancel no, delete with the switch", () => {
+    const can = AGENT_CAN.join("\n");
+    const cannot = AGENT_CANNOT.join("\n");
+    expect(can).not.toMatch(/never to done/);
+    expect(can).toMatch(/done included/);
+    expect(can).toMatch(/Delete a task/);
+    expect(cannot).not.toMatch(/Close/);
+    expect(cannot).toMatch(/Cancel a task/);
+  });
+
   it("names the one address and the Claude Code command", () => {
     expect(MCP_URL).toBe("https://mcp.metorite.com/mcp");
     expect(CLAUDE_CODE_COMMAND).toBe("claude mcp add --transport http metorite https://mcp.metorite.com/mcp");

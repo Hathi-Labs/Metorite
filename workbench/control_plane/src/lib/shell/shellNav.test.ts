@@ -10,6 +10,7 @@ import {
   ASSISTANT_LINK,
   CHANGE_LAYOUT_ITEM,
   MY_ACCESS,
+  TAKE_TOUR_ITEM,
   TEAM_GROUPS,
   HOME_PANE,
   accountLinks,
@@ -19,7 +20,6 @@ import {
   isActive,
   launcherGroups,
   shellSidebar,
-  strayCount,
 } from "./shellNav";
 
 const ALL = PANES.map((p) => p.feature).filter((f): f is string => !!f);
@@ -31,8 +31,8 @@ describe("the sidebar holds places to work, by team", () => {
       ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
-      ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
+      ["studio", ["/chat", "/studio"]],
+      ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });
 
@@ -55,12 +55,13 @@ describe("the sidebar holds places to work, by team", () => {
     // the AI agents view, so Admin holds it and nothing else.
     expect(shape(shellSidebar(visibleSections(["tasks", "email"], false)))).toEqual([
       ["personal", ["/calendar", "/email"]],
-      ["admin", ["/integrations"]],
+      ["admin", ["/settings/appearance", "/integrations"]],
     ]);
   });
 
   it("for a member who holds nothing: Integrations only (D-EA-9)", () => {
-    expect(shape(shellSidebar(visibleSections([], false)))).toEqual([["admin", ["/integrations"]]]);
+    // Appearance is an ungated app since 2026-11-01 (owner).
+    expect(shape(shellSidebar(visibleSections([], false)))).toEqual([["admin", ["/settings/appearance", "/integrations"]]]);
   });
 
   it("for an unresolved viewer: nothing, never everything (§8.1)", () => {
@@ -71,6 +72,7 @@ describe("the sidebar holds places to work, by team", () => {
     expect(TEAM_GROUPS.map((g) => g.label)).toEqual([
       "Personal Center",
       "Across teams",
+      "Apps",
       "AI Studio",
       "Admin",
     ]);
@@ -203,6 +205,23 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
     expect(g.flatMap((x) => x.items)).not.toContainEqual(CHANGE_LAYOUT_ITEM);
   });
 
+  it("GD-5a: Take the tour follows Change my layout only with the guide's switch on", () => {
+    const on = rows(accountMenu(member, { layout: true, switcher: false, others: 0, tour: true }));
+    expect(on.find(([id]) => id === "settings")).toEqual([
+      "settings",
+      ["/settings/appearance", "colour-mode", "change-layout", "take-tour"],
+    ]);
+    expect(TAKE_TOUR_ITEM).toMatchObject({ kind: "action", id: "take-tour", label: "Take the tour" });
+    // Off, or not said: no row.
+    for (const tour of [false, undefined]) {
+      const g = accountMenu(member, { layout: true, switcher: false, others: 0, tour });
+      expect(g.flatMap((x) => x.items)).not.toContainEqual(TAKE_TOUR_ITEM);
+    }
+    // An admin gets the same row as a member: it is for every member.
+    const admin = accountMenu(visibleSections(ALL, true), { layout: true, switcher: false, others: 0, tour: true });
+    expect(admin.flatMap((x) => x.items)).toContainEqual(TAKE_TOUR_ITEM);
+  });
+
   it("with no sections (the shell nav off, or an unresolved viewer): no You, and Settings is the colour mode", () => {
     expect(rows(accountMenu([], { layout: false, switcher: true, others: 1 }))).toEqual([
       ["current", ["current"]],
@@ -278,14 +297,14 @@ describe("All apps lists every app the member holds, never a preference", () => 
       ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
-      ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
+      ["studio", ["/chat", "/studio"]],
+      ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });
 
   it("for a member who holds nothing: Integrations only (D-EA-9)", () => {
     const groups = launcherGroups(visibleSections([], false));
-    expect(groups.flatMap((g) => g.items.map((p) => p.href))).toEqual(["/integrations"]);
+    expect(groups.flatMap((g) => g.items.map((p) => p.href))).toEqual(["/settings/appearance", "/integrations"]);
   });
 
   it("gives every app it shows a purpose to print", () => {
@@ -389,12 +408,3 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 });
 
-describe("a run on a hidden app still shows (strayCount)", () => {
-  it("counts only the runs on panes the sidebar does not show", () => {
-    const shown = new Set(["/tasks", "/projects"]);
-    // Chat is hidden too, so a run folded onto Chat counts here.
-    expect(strayCount({ "/tasks": 2, "/chat": 1, "/email": 3 }, shown)).toBe(4);
-    expect(strayCount({ "/tasks": 2 }, shown)).toBe(0);
-    expect(strayCount({}, shown)).toBe(0);
-  });
-});

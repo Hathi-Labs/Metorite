@@ -48,6 +48,36 @@ export function nodeKind(node: Pick<ProjectNode, "kind">): NodeKind {
 }
 
 /**
+ * The one name of the private space (D-OP-2, OP-12b). The server stores the
+ * personal root as "My tasks" (`PERSONAL_PROJECT_NAME`), the old inbox word.
+ * The app never prints the stored name of this node, and never renames it.
+ */
+export const PERSONAL_NODE_NAME = "Personal";
+
+type NameFacts = {
+  name: string;
+  personal?: boolean | null;
+  parent_project_id?: string | null;
+};
+
+/** True for the root of a personal tree: personal, and nothing above it. */
+export function isPersonalRoot(
+  node: Pick<NameFacts, "personal" | "parent_project_id">,
+): boolean {
+  return node.personal === true && !node.parent_project_id;
+}
+
+/**
+ * The name to PRINT for a node, and the one function for it. The sidebar, the
+ * page title, the breadcrumb, the project chip, the pickers and the search
+ * results all call it. A personal root reads "Personal" whatever its stored
+ * name is. Any other node keeps its stored name.
+ */
+export function displayNodeName(node: NameFacts): string {
+  return isPersonalRoot(node) ? PERSONAL_NODE_NAME : node.name;
+}
+
+/**
  * The four LEVELS a node occupies. Derived from kind plus position, never
  * stored — a stored level and the tree could disagree, and the tree is the
  * fact. Mirrors `core.node_level` on the server.
@@ -359,7 +389,7 @@ export function taskWhere(
   projectId: string | null | undefined
 ): { id: string; name: string }[] {
   if (!projectId) return [];
-  return pathTo(roots, projectId).map((node) => ({ id: node.id, name: node.name }));
+  return pathTo(roots, projectId).map((node) => ({ id: node.id, name: displayNodeName(node) }));
 }
 
 /**

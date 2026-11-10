@@ -129,3 +129,11 @@ describe("My Email", () => {
     expect(f.facts).toEqual(["They are looking at all their inboxes together."]);
   });
 });
+
+describe("My Tasks, TC-1", () => {
+  it("names the focused card, which the page passes in place of the pane selection", () => {
+    const items = [{ id: "i-3", title: "Call Dr Dadi", disposition: "NEXT" as const }];
+    const f = tasksAssistantFacts({ items, openItemId: "i-3" });
+    expect(f.facts.join("\n")).toContain("item_id: i-3");
+  });
+});

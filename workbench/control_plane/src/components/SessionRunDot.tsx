@@ -50,7 +50,7 @@ export default function SessionRunDot({
       aria-label={SESSION_DOT_LABEL[state]}
       title={SESSION_DOT_LABEL[state]}
       data-session-dot={state}
-      className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+      className={`h-1.5 w-1.5 shrink-0 rounded-full glass:h-2 glass:w-2 ${
         state === "running" ? "bg-success motion-safe:animate-pulse" : "bg-info"
       }`}
     />

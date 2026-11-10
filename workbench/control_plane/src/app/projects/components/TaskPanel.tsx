@@ -71,6 +71,7 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { useTaskUndo } from "./useTaskUndo";
 import { MineDispositionStrip } from "./MineDispositionStrip";
 import { MyWorkStrip } from "./MyWorkStrip";
 import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
@@ -177,6 +178,7 @@ export function TaskPanel({
   const twoColumn = mode === "full";
 
   const toast = useToast();
+  const taskUndo = useTaskUndo();
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
@@ -290,7 +292,15 @@ export function TaskPanel({
    */
   async function rename(title: string) {
     try {
-      onChanged(await projectsApi.patchTask(task.id, { title }));
+      const prior = task;
+      const fresh = await projectsApi.patchTask(task.id, { title });
+      onChanged(fresh);
+      // UNDO-1 — a rename can be taken back.
+      taskUndo.edited(prior, { title }, fresh, {
+        label: `renamed ${prior.title}`,
+        receipt: "Task renamed",
+        after: async () => onChanged(await projectsApi.task(prior.id)),
+      });
     } catch {
       toast.show({
         key: `projects:task-title:${task.id}`,
@@ -305,9 +315,11 @@ export function TaskPanel({
     // arrangement and the reason the field cells below read as cards at all.
     // ⚠️ The root must stay an `<aside>`: `projects/page.tsx`'s phone branch
     // lifts the width cap with `[&>aside]:max-w-none`, and the `full` overlay
-    // rounds its corners the same way.
+    // rounds its corners the same way. In glass it is one opaque card
+    // surface: it lies over the board, and the board's text must not show
+    // through (owner, 2026-11-01).
     <aside
-      className={`flex h-full w-full ${PANEL_WIDTH_CLASS[mode]} flex-col border-l border-border bg-background`}
+      className={`flex h-full w-full ${PANEL_WIDTH_CLASS[mode]} flex-col border-l border-border bg-background glass:bg-card`}
       // Escape belongs to the panel, not to the window: a global listener
       // would also fire for the search palette and the four dialogs that can
       // be open over it, closing two things with one key.

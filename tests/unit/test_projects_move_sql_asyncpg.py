@@ -29,9 +29,11 @@ import re
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+from tests.unit._tenant_ladder import apply_ladder
 
 _URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "")
 
@@ -55,8 +57,24 @@ def _async_url() -> str:
     return _URL.replace("+psycopg", "+asyncpg")
 
 
+@pytest.fixture(scope="module")
+def built():
+    """The tenant schema, built by this file.
+
+    ⚠️ Without it, this file passed only when an earlier module in the same
+    shard had built the schema. A new test file moved the shard split, and all
+    eight cases failed with "relation pm_task_statuses does not exist".
+    `apply_ladder` is idempotent, so a second call does nothing.
+    """
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as connection:
+        apply_ladder(connection)
+    yield
+    eng.dispose()
+
+
 @pytest.fixture
-async def conn():
+async def conn(built):
     engine = create_async_engine(_async_url(), future=True, poolclass=NullPool)
     async with engine.begin() as connection:
         yield connection
@@ -150,6 +168,32 @@ async def test_the_destination_tag_read_runs_on_asyncpg(conn):
     )
 
 
+@pytest.mark.asyncio
+async def test_the_personal_source_read_runs_on_asyncpg(conn):
+    """WS-55 MCP-G1 fix round 1 (`move._move_audience`). A personal task that
+    an agent moves into a team project is a wider audience."""
+    await conn.execute(
+        text(
+            "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
+            " AND personal_owner IS NOT NULL"
+        ),
+        {"ids": [_ABSENT]},
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_assignee_read_of_the_audience_runs_on_asyncpg(conn):
+    """WS-55 MCP-G1 fix round 1. The assignees count on both sides of an
+    agent's move, because the assignee arm moves with the task."""
+    await conn.execute(
+        text(
+            "SELECT task_id, lower(assignee) AS who FROM pm_task_assignees"
+            " WHERE task_id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"ids": [_ABSENT]},
+    )
+
+
 def test_every_SQL_statement_in_move_py_is_covered():
     """⚠️ The completeness fence, and the reason this file is worth having.
 
@@ -163,7 +207,9 @@ def test_every_SQL_statement_in_move_py_is_covered():
     source = MOVE_PY.read_text(encoding="utf-8")
     # `text(` opens every statement in the module. The count is the contract.
     statements = len(re.findall(r"\btext\(", source))
-    covered = 5  # the five `text(` sites in move.py, exercised above
+    # The five `text(` sites of WS-27bl, and the two reads of the audience of
+    # an agent's move (WS-55 MCP-G1 fix round 1), each exercised above.
+    covered = 7
     assert statements == covered, (
         f"move.py now has {statements} SQL statements and this file covers "
         f"{covered}. Add the new one as a case above — a fence that silently "

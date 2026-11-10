@@ -63,13 +63,13 @@ export function RoomHeader({
           )}
 
           {shared && room.agents.length > 1 && (
-            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground glass:border-transparent glass:bg-secondary glass:px-2.5 glass:text-caption">
               {room.agents.length} agents
             </span>
           )}
 
           {watching && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground glass:border-transparent glass:bg-secondary glass:px-2.5 glass:text-caption">
               <Icon name="Eye" className="h-3 w-3" />
               Watching
             </span>
@@ -77,7 +77,7 @@ export function RoomHeader({
 
           <button
             onClick={() => setSharing(true)}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary hover:text-foreground"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary hover:text-foreground glass:glass-press glass:h-7 glass:rounded-full glass:border-transparent glass:bg-secondary glass:px-3 glass:py-0 glass:text-footnote glass:font-medium glass:text-foreground glass:hover:border-transparent glass:hover:bg-muted"
             title={shared ? "Manage who is in this room" : "Share this conversation"}
           >
             {shared ? <Icon name="Users" className="h-3.5 w-3.5" /> : <Icon name="Share2" className="h-3.5 w-3.5" />}
@@ -87,7 +87,7 @@ export function RoomHeader({
 
         {/* The cap, stated. This is the one thing the header exists to say. */}
         {shared && suspended.length > 0 && (
-          <p className="flex items-start gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive">
+          <p className="flex items-start gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive glass:rounded-[10px] glass:border-transparent glass:px-3 glass:py-2 glass:text-caption">
             <Icon name="AlertTriangle" className="mt-0.5 h-3 w-3 shrink-0" />
             <span>
               {suspended.map((e) => e.split("@")[0]).join(", ")} is suspended, so
@@ -98,7 +98,7 @@ export function RoomHeader({
         )}
 
         {shared && suspended.length === 0 && capped.length > 0 && !compact && (
-          <p className="flex items-start gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+          <p className="flex items-start gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[11px] text-muted-foreground glass:rounded-[10px] glass:border-transparent glass:px-3 glass:py-2 glass:text-caption">
             <Icon name="AlertTriangle" className="mt-0.5 h-3 w-3 shrink-0 text-warning" />
             <span>
               Unavailable in this room:{" "}

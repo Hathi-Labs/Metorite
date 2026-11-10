@@ -1,9 +1,9 @@
 """The ``idempotency_key`` of a write tool (WS-55 EA-6d and EA-6c, spec §9.2).
 
 Spec ``project-docs/specs/external_agent_access.md`` §9.2, "Rules of
-``create_task``" and "Rules of ``add_comment``". Two tools use a slot:
-``create_task`` (the key is optional) and ``add_comment`` (the key is
-required).
+``create_task``" and "Rules of ``add_comment``". Three tools use a slot:
+``create_task`` (the key is optional), ``add_comment`` (the key is
+required) and, since MCP-G1, ``create_project`` (the key is optional).
 
 **What it does.** The same key from the same connection, sent to the same
 tool, gives the first result and makes one row. The edge keeps one slot for

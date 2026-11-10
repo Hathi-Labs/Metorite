@@ -5,11 +5,15 @@
  * above an empty area three times their height, and a header icon right of
  * the step icons. `lib/trailLayout.ts` holds why.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import ThinkingContainer from "@/components/ThinkingContainer";
+import ThinkingContainer, { TrailStartsOpen } from "@/components/ThinkingContainer";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import {
   TRAIL_AXIS,
@@ -31,15 +35,19 @@ function steps(n: number, active: boolean): ToolEvent[] {
   });
 }
 
-/** Render the trail as a member first sees it: open while the turn runs. */
+/** Render the trail as a member sees it once they open it. */
 function render(n: number, active: boolean, reasoning?: string[]): string {
   return renderToStaticMarkup(
-    createElement(ThinkingContainer, {
-      toolEvents: steps(n, active),
-      progressLines: [],
-      reasoningBlocks: reasoning,
-      isActive: active,
-    }),
+    createElement(
+      TrailStartsOpen.Provider,
+      { value: true },
+      createElement(ThinkingContainer, {
+        toolEvents: steps(n, active),
+        progressLines: [],
+        reasoningBlocks: reasoning,
+        isActive: active,
+      }),
+    ),
   );
 }
 
@@ -120,5 +128,22 @@ describe("a step duration is the UI font with tabular figures", () => {
       expect(d).toContain("text-muted-foreground");
       expect(d).not.toContain("font-mono");
     }
+  });
+});
+
+describe("the trail starts closed, and only the member opens it (owner, 2026-11-03)", () => {
+  it.each([true, false])("draws no open body on the first render (turn working: %s)", (active) => {
+    const html = renderToStaticMarkup(
+      createElement(ThinkingContainer, { toolEvents: steps(3, active), progressLines: [], isActive: active }),
+    );
+    expect(classesOf(html, "data-trail-body")).toEqual([]);
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it("opens itself on no event: no effect sets it open", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../components/ThinkingContainer.tsx"), "utf8");
+    expect(src).toContain("useState(startsOpen)");
+    expect(src).toContain("export const TrailStartsOpen = createContext(false);");
+    expect(src).not.toMatch(/setExpanded\(true\)/);
   });
 });

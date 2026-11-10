@@ -1,10 +1,11 @@
 /**
- * The Metorite comet (owner, 2026-10-11).
+ * The Metorite comet (owner, 2026-10-11). One solid colour, no gradient
+ * (owner, 2026-10-30).
  *
  * These checks fail on the wrong builds that look right:
  *   1. A comet path that drifted from `brand/`, or a second copy of it.
- *   2. Gradient stops that ignore the colour mode, or the wrong master's.
- *   3. Two marks on one page that share one gradient id.
+ *   2. A fill that ignores the colour mode, or the wrong master's.
+ *   3. A gradient that came back.
  * Where the comet sits is `lib/shell/shellAccount.test.ts` and
  * `e2e/shell-signature.spec.ts`.
  */
@@ -13,7 +14,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createElement, Fragment } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -24,9 +25,9 @@ const BRAND = fileURLToPath(new URL("../../../../brand/", import.meta.url));
 const master = (name: string) => readFileSync(join(BRAND, name), "utf8");
 
 const pathOf = (svg: string) => /<path\b[^>]*\sd="([^"]+)"/.exec(svg)?.[1] ?? "";
-const stopsOf = (svg: string) => [...svg.matchAll(/stop-color="(#[0-9a-fA-F]{6})"/g)].map((m) => m[1].toLowerCase());
+const fillOf = (svg: string) => /<path\b[^>]*\sfill="(#[0-9a-fA-F]{6})"/.exec(svg)?.[1].toLowerCase() ?? "";
 const html = (props: Parameters<typeof MetoriteMark>[0] = {}) => renderToStaticMarkup(createElement(MetoriteMark, props));
-const classes = (out: string) => [...out.matchAll(/<stop\b[^>]*class="([^"]*)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
+const pathClass = (out: string) => (/<path\b[^>]*class="([^"]*)"/.exec(out)?.[1] ?? "").replace(/&amp;/g, "&");
 
 describe("the comet is the brand master's, once", () => {
   it("draws the path of both masters, verbatim", () => {
@@ -69,33 +70,42 @@ describe("the comet is the brand master's, once", () => {
   });
 });
 
-describe("the gradient follows the colour mode", () => {
-  const lightStops = stopsOf(master("metorite-logo.svg"));
-  const darkStops = stopsOf(master("metorite-logo-dark.svg"));
-  const hexes = (cls: string) => [...cls.matchAll(/#[0-9a-f]{6}/g)].map((m) => m[0]);
+describe("the solid fill follows the colour mode", () => {
+  const lightFill = fillOf(master("metorite-logo.svg"));
+  const darkFill = fillOf(master("metorite-logo-dark.svg"));
 
-  it("pinned light draws the light master's stops", () => {
-    expect(classes(html({ mode: "light" })).map((c) => hexes(c)[0])).toEqual(lightStops);
+  it("the masters are solid black for light and solid white for dark (owner, 2026-10-30)", () => {
+    expect(lightFill).toBe("#000000");
+    expect(darkFill).toBe("#ffffff");
+    for (const name of ["metorite-logo.svg", "metorite-logo-dark.svg", "favicon.svg"]) {
+      expect(master(name), name).not.toMatch(/Gradient|<stop\b|url\(#/);
+    }
   });
 
-  it("pinned dark draws the dark master's stops", () => {
-    expect(classes(html({ mode: "dark" })).map((c) => hexes(c)[0])).toEqual(darkStops);
+  it("the tab icon is black, and white for a dark browser frame", () => {
+    const icon = readFileSync(join(SRC, "app", "icon.svg"), "utf8");
+    expect(icon).not.toMatch(/Gradient|<stop\b|url\(#/);
+    expect(icon).toContain(`.a{fill:${lightFill}}`);
+    expect(icon).toContain(`@media (prefers-color-scheme:dark){.a{fill:${darkFill}}}`);
+    expect(icon).toMatch(/<path class="a" fill-rule="evenodd"/);
   });
 
-  it("unpinned, dark is the base and `.light` swaps in the light stops", () => {
-    const cls = classes(html());
-    expect(cls).toHaveLength(3);
-    cls.forEach((c, i) => {
-      expect(c.split(" ")).toEqual([`[stop-color:${darkStops[i]}]`, `[.light_&]:[stop-color:${lightStops[i]}]`]);
-    });
+  it("draws no gradient", () => {
+    for (const mode of [undefined, "light", "dark"] as const) {
+      expect(html({ mode })).not.toMatch(/Gradient|<stop\b|url\(#/);
+    }
   });
 
-  it("two marks on one page never share a gradient id", () => {
-    const out = renderToStaticMarkup(createElement(Fragment, null, createElement(MetoriteMark), createElement(MetoriteMark)));
-    const ids = [...out.matchAll(/<linearGradient id="([^"]+)"/g)].map((m) => m[1]);
-    expect(ids).toHaveLength(2);
-    expect(new Set(ids).size).toBe(2);
-    for (const id of ids) expect(out).toContain(`fill="url(#${id})"`);
+  it("pinned light draws the light master's fill", () => {
+    expect(pathClass(html({ mode: "light" }))).toBe(`[fill:${lightFill}]`);
+  });
+
+  it("pinned dark draws the dark master's fill", () => {
+    expect(pathClass(html({ mode: "dark" }))).toBe(`[fill:${darkFill}]`);
+  });
+
+  it("unpinned, dark is the base and `.light` swaps in the light fill", () => {
+    expect(pathClass(html()).split(" ")).toEqual([`[fill:${darkFill}]`, `[.light_&]:[fill:${lightFill}]`]);
   });
 
   it("is decorative unless it is given a name", () => {

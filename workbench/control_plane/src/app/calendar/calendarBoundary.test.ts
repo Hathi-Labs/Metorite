@@ -80,6 +80,8 @@ describe("the Calendar app's boundary with Tasks (D54)", () => {
       "SchedulePopup",
       "DeleteConfirmModal",
       "UndoToast",
+      // UXD-1: a refused Calendar write says so through the store.
+      "SyncFailureToast",
     ]);
     const offenders: string[] = [];
     for (const file of sourceFiles(CALENDAR)) {
@@ -92,7 +94,7 @@ describe("the Calendar app's boundary with Tasks (D54)", () => {
     }
     expect(
       offenders,
-      "Calendar may read Tasks' shared lib and store, and may mount the four " +
+      "Calendar may read Tasks' shared lib and store, and may mount the five " +
         "store-driven overlays it raises — but pulling in another of Tasks' " +
         "views means the surfaces are entangled rather than sharing a store. " +
         "Widen ALLOWED_TASK_COMPONENTS only for something Calendar genuinely " +

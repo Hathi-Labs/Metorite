@@ -22,6 +22,7 @@ import {
   dateLabel,
   type SearchFilters,
 } from "../lib/searchFilters";
+import { realSpaces } from "../lib/labels";
 import type { Space } from "../lib/types";
 import ChromePopover from "./ChromePopover";
 
@@ -109,10 +110,10 @@ export default function SearchFilterBar({
       <ChromePopover trigger={trigger} open={menu !== null} onClose={close} label={menuLabel(menu)} id="kb-search-filter-menu">
         {menu === "space" ? (
           <ul className="flex flex-col" aria-label="Spaces">
-            {spaces.length === 0 ? (
+            {realSpaces(spaces).length === 0 ? (
               <li className="px-2 py-1.5 text-xs text-muted-foreground">No space to pick.</li>
             ) : null}
-            {spaces.map((s) => (
+            {realSpaces(spaces).map((s) => (
               <li key={s.id}>
                 <Button
                   variant="ghost"

@@ -279,7 +279,9 @@ test("the old ids open My tasks with their chip", async ({ page }) => {
   await expect(space(page)).toBeVisible();
 });
 
-test("at 390 the bar reads Menu, My tasks, Capture, Search, Ask, and My tasks shows its chips", async ({ page }) => {
+// MOB-10 (task 2003): "Projects" took the place of "My tasks" on the bar. My
+// tasks is a row of the Projects sheet, one tap further.
+test("at 390 the bar reads Menu, Projects, Capture, Search, Ask, and the sheet's My tasks shows its chips", async ({ page }) => {
   test.setTimeout(150_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await mock(page, { shell: true });
@@ -287,8 +289,9 @@ test("at 390 the bar reads Menu, My tasks, Capture, Search, Ask, and My tasks sh
   const bar = page.locator("nav").filter({ has: page.locator("[data-ask-tab]") }).last();
   await expect(bar.locator("[data-ask-tab]")).toBeVisible({ timeout: 60_000 });
   const labels = (await bar.locator("button").allInnerTexts()).map((t) => t.trim()).filter(Boolean);
-  expect(labels).toEqual(["Menu", "My tasks", "Capture", "Search", "Ask"]);
-  await bar.getByRole("button", { name: "My tasks" }).click();
+  expect(labels).toEqual(["Menu", "Projects", "Capture", "Search", "Ask"]);
+  await bar.getByRole("button", { name: "Projects", exact: true }).click();
+  await page.getByRole("button", { name: /^My tasks/ }).first().click({ timeout: 30_000 });
   await expect(space(page)).toHaveAttribute("data-mode", "list", { timeout: 30_000 });
   await expect(page.locator("[data-my-tasks-chips]")).toBeVisible();
   await expect(chip(page, "all")).toBeVisible();

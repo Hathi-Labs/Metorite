@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from acb_auth import require_feature_router
@@ -71,8 +71,14 @@ router = APIRouter(
     #   webhook/microsoft— Graph change notification. It echoes the
     #                      validationToken, verifies the signed `org` in its
     #                      own URL, then checks clientState inside that tenant.
+    #   signature-image  — WS-17 SG-1 (D-EM-68). A mail reader fetches a
+    #                      signature logo with no session. The 256-bit token in
+    #                      the URL is the capability, and the route reads it
+    #                      under tenant_session(org) and RLS. Never gated, so a
+    #                      mail that went out keeps its logo.
     dependencies=[require_feature_router("email", exempt=[
         "/email/webhook/microsoft",
+        "/email/signature-image/{org}/{token}.{ext}",
     ])],
 )
 
@@ -125,6 +131,10 @@ class EmailMessageModel(BaseModel):
     snippet: str = ""
     has_attachments: bool = False
     attachments: list[AttachmentModel] = []
+    # "failed" only when the provider call for the files failed, so the
+    # reader can offer a retry. An empty list with "ok" is a mail whose parts
+    # are all inline pictures (Graph sets ``hasAttachments`` for those).
+    attachments_status: Literal["ok", "failed"] = "ok"
     is_read: bool = False
     is_starred: bool = False
     is_flagged: bool = False
@@ -172,6 +182,12 @@ def _instantiate_provider(provider_name: str, creds: dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _scope_provider(provider: Any, account_id: str) -> None:
+    """Name the mailbox on a provider that keeps a shared folder-id cache."""
+    if hasattr(provider, "folder_cache_scope"):
+        provider.folder_cache_scope = account_id
+
+
 def _decrypt_credentials(blob: str) -> tuple[dict, Any]:
     """Decrypt a stored credential blob. Returns the credentials and the store.
 
@@ -210,6 +226,7 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Message not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(row.account_id))
     return provider, row.provider_message_id, str(row.account_id), store
 
 
@@ -233,6 +250,7 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 
@@ -254,6 +272,7 @@ async def _provider_for_account_any(db: Any, account_id: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 
@@ -824,9 +843,22 @@ HUMAN_SENDER_CATEGORIES_LOWER: list[str] = [
 # all": a user's own hand-made label doesn't make a message categorized as far
 # as the rules are concerned, and treating it as such would hide exactly the
 # mail the cleaner exists to find.
+#
+# OUTBOUND MAIL IS NEVER UNCATEGORIZED (#467). The rules run reads inbox mail
+# only, so a message the member wrote or has not sent yet never gets a label,
+# and "carries no label" would put every one of them in the chip and the count.
+# Cleanup categories describe inbound mail. ``NOT_INBOUND_FOLDERS`` names the
+# canonical folder keys of such mail, and the Email Cleaner's scope reads the
+# same fragment (``NOT_OUTBOUND_SQL``), so the two views cannot disagree.
+NOT_INBOUND_FOLDERS = ("sent", "drafts", "outbox")
+NOT_OUTBOUND_SQL = (
+    "LOWER(COALESCE(em.folder, '')) NOT IN ("
+    + ", ".join(f"'{f}'" for f in NOT_INBOUND_FOLDERS) + ")"
+)
 UNCATEGORIZED_SQL = (
+    f"({NOT_OUTBOUND_SQL} AND "
     "NOT EXISTS (SELECT 1 FROM unnest(COALESCE(em.categories, '{}')) AS c"
-    " WHERE LOWER(TRIM(c)) = ANY(:known_labels))"
+    " WHERE LOWER(TRIM(c)) = ANY(:known_labels)))"
 )
 
 # "Uncategorized" is a STATE — the absence of any known label — never a label
@@ -888,7 +920,10 @@ def _bound_org() -> str:
 
 
 async def _assert_account_owner(
-    db: Any, account_id: str, user_email: str, *, this_tenant: bool = False,
+    db: Any, account_id: str, user_email: str, *,
+    # On: every caller opens tenant_session, which refuses an unbound tenant.
+    # A session with no app.tenant_id compares to NULL and gets 404.
+    this_tenant: bool = True,
     level: str = "manage",
 ) -> None:
     """Raise 404 if the user may not act on the account at ``level``.
@@ -896,9 +931,11 @@ async def _assert_account_owner(
     ``this_tenant`` also names the session's bound tenant in the SQL (WS-58
     MD-3d). A member may own one mailbox in each of two organizations. RLS
     keeps the other one out for production's role ``acb_app``, so the
-    predicate is defence in depth (R5): it holds also for a role that
-    bypasses RLS. Off by default, so the statement of every other caller does
-    not change (HANDOFF H-334).
+    predicate is defence in depth (R5). It holds also for a role that
+    bypasses RLS. It is on by default (WS-29 H-334). Each caller runs in a
+    bound tenant. With no tenant bound, the predicate compares to NULL, so
+    the check fails closed with 404. No caller passes ``False``.
+    R8: ``tests/unit/test_email_owner_tenant_r8.py``.
 
     ``level`` is ``read``, ``send`` or ``manage`` (WS-65 SM-2). The default
     ``manage`` fails closed for a shared mailbox. The check is

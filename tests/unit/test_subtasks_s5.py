@@ -322,7 +322,7 @@ def patch_door(monkeypatch):
     async def load_visible_task(db, vis, task_id):
         return PARENT
 
-    async def apply_status_transition(db, task, status_id, *, created_by):
+    async def apply_status_transition(db, task, status_id, *, created_by, completed_at=None):
         return {
             "row": task,
             "from": SimpleNamespace(name="To do"),
@@ -509,6 +509,8 @@ def mover(monkeypatch, subtree):
     monkeypatch.setattr(tasks, "touch_task", noop)
     monkeypatch.setattr(tasks, "record_activity", noop)
     monkeypatch.setattr(tasks, "record_drops", noop)
+    # WS-39 SP-1: the cycle rule of a move. Its SQL runs in test_sprint_store_r8.py.
+    monkeypatch.setattr(tasks, "detach_moved_tasks", noop)
     monkeypatch.setattr(tasks, "row_to_dict", lambda row, model: {"id": row.id})
     return written
 

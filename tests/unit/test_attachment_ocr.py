@@ -801,6 +801,10 @@ class TestTheWorker:
             "io_uring_setup", "io_uring_enter", "io_uring_register", "setpriority",
             "sched_setparam", "sched_setscheduler", "sched_setaffinity", "ioprio_set",
             "sched_setattr",
+            # WEB-2b repair 1: a file changed in place, at every ABI.
+            "truncate", "chmod", "fchmod", "chown", "fchown", "lchown", "utime", "setxattr",
+            "lsetxattr", "fsetxattr", "removexattr", "lremovexattr", "fremovexattr", "utimes",
+            "fchownat", "futimesat", "fchmodat", "utimensat", "fchmodat2",
         }
         # Fix round 3: fcntl and ioctl by command, prlimit64 by pid.
         fcntl_nr, ioctl_nr, prlimit_nr = 72, 16, 302

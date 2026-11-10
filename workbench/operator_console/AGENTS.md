@@ -122,6 +122,18 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   tab.
   `POST /catalog/decide/try` joined them on 2026-09-23 (CP-13b). It is the
   "Try a decision" panel on `/tiers`, and it never calls the customer door.
+  `POST /catalog/transcribe/try` and `POST /catalog/vision/try` joined them on
+  2026-11-08 (VOX-4). They are the "Try speech to text" and "Try image
+  analysis" panels on `/tiers`. They send a multipart body through
+  `callConsoleForm`, and they never call the customer door. `src/lib/voiceTry.ts`
+  holds the limits, and `voiceTry.test.ts` reads `main.py` to fence them.
+  `GET`/`POST /orgs/apps` and `/apps/connection*` joined them on 2026-10-30
+  (CP-APP, task 1105). They are the "Aroh" tab of a customer page and the
+  `/aroh` page ("Connect Aroh"). `src/lib/aroh.ts` holds the rules, and
+  `aroh.test.ts` is the fence. The Console calls the Aroh hub, never this
+  app: the hub token crosses the BFF once, to the Console, and the box key
+  never reaches this app. Connect, Rotate and Disconnect mint or revoke a
+  real key, so the page asks for the typed name `aroh`.
 - The invocation verbs and their pairing rule live in `src/lib/invocation.ts`.
   It mirrors the Console's `check_invocation_for_task`. Do not write a second
   verb list. `tests/unit/test_operator_console_invocations.py` fails when its

@@ -93,7 +93,9 @@ def _pack_tools_by_name() -> dict[str, Any]:
     an owner that does not load prices nothing, as an unimportable platform
     tool does in :func:`_platform_tools_by_name`.
     """
-    from acb_skills import skill_families, tool_packs
+    from acb_skills import skill_families
+    from acb_skills.tool_guard import tool_name
+    from orchestrator._tool_injection import _owner_pack_tools
 
     out: dict[str, Any] = {}
     for slug in skill_families.pack_slugs():
@@ -103,8 +105,12 @@ def _pack_tools_by_name() -> dict[str, Any]:
             if module is None:
                 _log.warning("skills.pack_owner_unavailable", pack=slug, owner=owner)
                 continue
-            for fn in tool_packs.owner_tools(slug, module):
-                out[getattr(fn, "__name__", "")] = fn
+            # OA-8b: the run path's per-owner cache, so a catalog read does
+            # not build the 120 Projects tools again for each pack.
+            for fn in _owner_pack_tools(slug, owner, module):
+                # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has a
+                # ``name`` and no ``__name__``, so ``tool_name`` reads both.
+                out[tool_name(fn)] = fn
         except Exception as exc:  # a price never breaks the catalog
             _log.warning(
                 "skills.pack_tools_unavailable", pack=slug, owner=owner,
@@ -119,7 +125,14 @@ def _addendum_for_scope(scope: frozenset[str] | None) -> str:
     from orchestrator._tool_injection import (  # noqa: PLC0415
         _build_injected_tools_addendum,
     )
-    return _build_injected_tools_addendum(effective_scope=scope)
+    from acb_common.assistant_profile import image_analysis_for  # noqa: PLC0415
+    from acb_common.db import current_tenant  # noqa: PLC0415
+
+    # WS-VOX VOX-3: the text depends on the org flag, so the key says it.
+    return _build_injected_tools_addendum(
+        effective_scope=scope,
+        image_org_on=bool(image_analysis_for(current_tenant())),
+    )
 
 
 def _count_tokens(text: str) -> int:
@@ -135,7 +148,9 @@ def _core_tool_names() -> frozenset[str]:
     return frozenset(_CORE_STANDARD_TOOL_NAMES)
 
 
-def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
+def _disabled_families_by_agent(
+    organization_id: str | None,
+) -> dict[str, frozenset[str]]:
     """agent name → families an admin disabled (WS-23 S2), best-effort.
 
     Reads the same ``agent_skill_setting`` rows the enforcement seam
@@ -143,11 +158,16 @@ def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
     start, so the matrix shows the EFFECTIVE surface — stored settings on top
     of declared scope. Any failure (table not migrated, DB down) returns
     empty: the catalog then shows declared scope only, exactly S1's view.
+
+    H-201: the read binds the caller's tenant (``agent_skill_setting`` has
+    FORCE RLS). With no tenant it reads nothing and returns empty.
     """
+    if not organization_id:
+        return {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text as _text  # noqa: PLC0415
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 _text(
                     "SELECT agent_name, family FROM agent_skill_setting "
@@ -232,7 +252,7 @@ async def skills_catalog(
         core_tool_names=_core_tool_names(),
     )
 
-    disabled_map = _disabled_families_by_agent()
+    disabled_map = _disabled_families_by_agent(user.organization_id)
 
     agents_out: list[dict[str, Any]] = []
     for a in _list_agents():

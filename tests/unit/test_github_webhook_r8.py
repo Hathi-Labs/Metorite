@@ -36,6 +36,10 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * W-M10 no ``archived_at`` check in ``_resolve`` -> the ``L4b`` rule.
 * W-M11 ``len(rows) != 1`` becomes ``not rows`` -> the ``L4d`` rule.
 * W-M12 ``found[:MAX_LINKS]`` becomes ``found`` -> the ``L6`` rule.
+* SW53-M1 drop the ``github_app_org_allowed`` check of the receiver ->
+  ``test_sw53_an_org_off_the_list_writes_nothing_and_an_org_on_it_links``,
+  ``test_sw53_an_empty_list_turns_every_org_off`` and
+  ``test_sw53_a_wrong_signature_is_401_before_any_org_check``.
 
 Fix round 1, item 2 (a removed link stays removed), each one red when run:
 
@@ -277,6 +281,99 @@ async def test_w8_the_flag_off_gives_404_with_no_signature_check(world, monkeypa
     monkeypatch.setattr(get_settings(), "github_app_enabled", False)
     resp = await _post(world, "pull_request", _pr_payload(INSTALL_A), signature="")
     assert resp.status_code == 404
+
+
+# ── SW-53: GITHUB_APP_ORGS, the switch for each org ────────────────────────
+
+
+def _org_list(monkeypatch: Any, value: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "github_app_orgs", value)
+
+
+def _links_of(p: Any, task: str) -> int:
+    return int(g.scalar(p, "SELECT count(*) FROM pm_activities WHERE task_id = CAST(:t AS uuid) "
+                           "AND type = 'link' AND created_by = 'system:github'", t=task))
+
+
+async def test_sw53_an_org_off_the_list_writes_nothing_and_an_org_on_it_links(
+    world, monkeypatch,
+) -> None:
+    """SW-53 Done when: the master on and org B off the list. B's delivery gets
+    202 and writes nothing. A's delivery links its pull request."""
+    w = world
+    _org_list(monkeypatch, w.p.org_a)
+    task_a = g.seed_task(w.p, w.p.org_a, EMAIL_A)
+    task_b = g.seed_task(w.p, w.p.org_b, EMAIL_B)
+    body_b = f"https://app.metorite.com/projects?task={task_b}"
+    resp_b = await _post(w, "pull_request", _pr_payload(INSTALL_B, action="opened", body=body_b))
+    assert resp_b.status_code == 202 and resp_b.json() == {"ignored": True}, resp_b.text
+    assert _refs_of(w.p, task_b) == []
+    assert _links_of(w.p, task_b) == 0
+    assert g.scalar(w.p, "SELECT count(*) FROM pm_task_refs WHERE organization_id = "
+                         "CAST(:o AS uuid)", o=w.p.org_b) == 0
+    assert w.redis.items() == {}, "no delivery key for an org off the list"
+    body_a = f"https://app.metorite.com/projects?task={task_a}"
+    resp_a = await _post(w, "pull_request", _pr_payload(INSTALL_A, action="opened", body=body_a))
+    assert resp_a.status_code == 200, resp_a.text
+    assert [(r.ref, r.via) for r in _refs_of(w.p, task_a)] == [(f"{REPO}#12", "github")]
+    assert _links_of(w.p, task_a) == 1
+
+
+async def test_sw53_an_empty_list_turns_every_org_off(world, monkeypatch) -> None:
+    """The decision: with the master on, an empty list fails closed."""
+    w = world
+    _org_list(monkeypatch, "")
+    task = g.seed_task(w.p, w.p.org_a, EMAIL_A)
+    ref = _seed_ref(w.p, w.p.org_a, task)
+    resp = await _post(w, "pull_request", _pr_payload(INSTALL_A, title="Empty list"))
+    assert resp.status_code == 202
+    assert _ref(w.p, ref).title is None
+    assert w.redis.items() == {}
+
+
+async def test_sw53_an_unknown_installation_is_unchanged(world, monkeypatch) -> None:
+    w = world
+    _org_list(monkeypatch, w.p.org_a)
+    task = g.seed_task(w.p, w.p.org_a, EMAIL_A)
+    ref = _seed_ref(w.p, w.p.org_a, task)
+    payload = _pr_payload(999_999, title="Unknown")
+    payload["organization"] = {"id": w.p.org_a}  # never read
+    resp = await _post(w, "pull_request", payload)
+    assert resp.status_code == 202 and resp.json() == {"ignored": True}
+    assert _ref(w.p, ref).title is None
+    assert w.redis.items() == {}
+
+
+async def test_sw53_a_wrong_signature_is_401_before_any_org_check(world, monkeypatch) -> None:
+    from gateway.connections import github_app
+
+    w = world
+    _org_list(monkeypatch, "")
+    asked: list[Any] = []
+    real = github_app.github_app_org_allowed
+    monkeypatch.setattr(github_app, "github_app_org_allowed",
+                        lambda org: asked.append(org) or real(org))
+    payload = _pr_payload(INSTALL_B)
+    raw = json.dumps(payload).encode()
+    resp = await _post(w, "pull_request", payload, raw=raw, signature=_sign(raw, "wrong"))
+    assert resp.status_code == 401
+    assert asked == [], "the org check runs only after the HMAC passes"
+    good = await _post(w, "pull_request", payload)
+    assert good.status_code == 202 and asked == [w.p.org_b]
+
+
+async def test_sw53_the_master_off_is_off_for_every_org(world, monkeypatch) -> None:
+    from acb_common import get_settings
+
+    w = world
+    _org_list(monkeypatch, "*")
+    monkeypatch.setattr(get_settings(), "github_app_enabled", False)
+    for install in (INSTALL_A, INSTALL_B):
+        resp = await _post(w, "pull_request", _pr_payload(install), signature="")
+        assert resp.status_code == 404
+    assert w.redis.items() == {}
 
 
 async def test_the_headers_are_checked_after_the_signature(world, monkeypatch) -> None:

@@ -4,8 +4,8 @@ This is the dedicated search surface (``GET /email/search``), distinct from the
 folder-oriented ``/email/messages`` list:
 
   • It searches the WHOLE message — subject + body_text + sender name + email —
-    over an FTS index whose expression matches the query exactly (migration 72),
-    so body matches are found via the GIN index, not a sequential scan.
+    through the stored vector ``em.fts`` (migration 314). Under FORCE RLS no
+    index serves the app role, so a cheap test of each row is the speed-up.
   • It ranks by relevance (``ts_rank_cd``), not just recency, so the best match
     surfaces first — with recency as the tie-break.
   • It searches ACROSS folders and (optionally) across all of the user's
@@ -35,6 +35,7 @@ complete, reliable lexical search on its own.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -53,9 +54,10 @@ from gateway.routes.email.transport.messages import _also_in_by_message
 from sqlalchemy import text
 
 # The tsvector expression — MUST stay byte-for-byte identical to the GIN index
-# in migration 72 (idx_email_messages_fts_body) so the planner uses the index
-# instead of recomputing per row. One constant, referenced everywhere it's
-# needed (WHERE match, rank, headline), so they can never drift apart.
+# in migration 72 (idx_email_messages_fts_body) and to the trigger of migration
+# 314, which fills ``em.fts`` with it. A role that bypasses RLS can use that
+# index. The app role cannot (``docs/rls_and_indexes.md``), so it reads
+# ``_FTS_MATCH`` below.
 _FTS_VECTOR = (
     "to_tsvector('english', "
     "coalesce(em.subject,'') || ' ' || "
@@ -63,6 +65,15 @@ _FTS_VECTOR = (
     "coalesce(em.from_address->>'name','') || ' ' || "
     "coalesce(em.from_address->>'email',''))"
 )
+
+# What the match and the rank read (WS-KG KG-3a, migration 314). The stored
+# column first, and the expression for a row that the backfill has not
+# reached. Under FORCE RLS no index serves the app role
+# (``docs/rls_and_indexes.md``), so the cost of the test of each row is the
+# cost of the search. A stored vector is cheap, and the expression parses the
+# whole body. The trigger of 314 keeps the column equal to the expression, so
+# a row gives the same answer either way.
+_FTS_MATCH = f"COALESCE(em.fts, {_FTS_VECTOR})"
 
 # What the highlighter runs over — subject + body only (sender is shown
 # separately on the card, no need to highlight it inside the snippet).
@@ -75,9 +86,9 @@ def _parse_dt(value: str | None) -> Any:
     if not value:
         return None
     try:
-        from datetime import datetime  # noqa: PLC0415
+        from datetime import datetime
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -192,6 +203,10 @@ async def search_messages(
                     "of magnitude on HTML-heavy mail."),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    with_total: bool = Query(
+        True,
+        description="Count every match for ``total``. Company retrieval sets "
+                    "it False: it reads one page and never the count."),
     user: UserContext = Depends(get_current_user),
 ):
     """Ranked search over the user's email — the query surface behind the search
@@ -216,7 +231,7 @@ async def search_messages(
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
         if text_q:
             where.append(
-                f"{_FTS_VECTOR} @@ websearch_to_tsquery('english', :q)")
+                f"{_FTS_MATCH} @@ websearch_to_tsquery('english', :q)")
 
         # Search is the one place "all" spans sent mail too: the browse view
         # excludes it (All shows what arrived), but "what did I tell them?" is
@@ -244,9 +259,15 @@ async def search_messages(
 
         where_sql = " AND ".join(where)
 
-        total = (await db.execute(text(
-            f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
-        ), params)).scalar() or 0
+        # The count visits every match. The Email app shows it, so it is on by
+        # default. Company retrieval turns it off (WS-KG KG-3a): it reads k
+        # hits, and the count doubled the time of each search. Off, ``total``
+        # is None.
+        total: int | None = None
+        if with_total:
+            total = (await db.execute(text(
+                f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
+            ), params)).scalar() or 0
 
         params["limit"] = page_size
         params["offset"] = (page - 1) * page_size
@@ -268,7 +289,7 @@ async def search_messages(
             try:
                 from email_ingestion.email_embeddings import embed_query
                 qvec = await embed_query(text_q)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 qvec = None
             if qvec is not None:
                 params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
@@ -281,7 +302,7 @@ async def search_messages(
                     "COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)), 0)"
                     " AS sim")
                 order_sql = (
-                    "(LEAST(ts_rank_cd(" + _FTS_VECTOR +
+                    "(LEAST(ts_rank_cd(" + _FTS_MATCH +
                     ", websearch_to_tsquery('english', :q)), 1.0) * 0.5"
                     " + COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)),"
                     " 0) * 0.5) DESC, em.received_at DESC")
@@ -293,7 +314,7 @@ async def search_messages(
         # <mark> in it, which the list would render as a "match" snippet that
         # matched nothing. Emit an empty highlight instead so the card falls back
         # to its normal preview.
-        rank_select = (f"ts_rank_cd({_FTS_VECTOR},"
+        rank_select = (f"ts_rank_cd({_FTS_MATCH},"
                        " websearch_to_tsquery('english', :q)) AS rank"
                        if text_q else "0.0 AS rank")
         headline_select = (
@@ -357,3 +378,145 @@ async def search_messages(
             "query": text_q,
             "hybrid": bool(join_sql),
         }
+
+
+# ── The vector half of company search (WS-KG KG-3b) ─────────────────────────
+
+#: The lowest cosine similarity of a vector hit. The nearest mail to a query
+#: is always there, even when it has nothing to do with it, so a floor keeps
+#: the unrelated out. A default, tuned by the eval after the KG-2 backfill.
+VECTOR_MIN_SIM = 0.30
+
+
+async def semantic_messages(
+    *, user: UserContext, words: str, k: int, received_after: str | None,
+    embed: Any,
+) -> list[dict[str, Any]]:
+    """The mail nearest in meaning to *words*, as the lexical search shapes it.
+
+    The same account scope, folder scope and date filter as
+    :func:`search_messages` with ``folder="all"``: the vector half adds no read
+    path around the gate. FORCE RLS binds both reads (the tenant session).
+
+    1. A first read asks whether any vector of this member's scope exists. With
+       none, this returns ``[]`` and *embed* is NOT called: an org that was
+       never backfilled costs no model call.
+    2. *embed* (``async (words) -> vector | None``) runs with no session open.
+       ``None`` gives ``[]``.
+    3. A second read orders by cosine distance and keeps the hits at or above
+       :data:`VECTOR_MIN_SIM`.
+    """
+    text_q = (words or "").strip()
+    if not text_q:
+        return []
+    uid = user.email or "anonymous"
+
+    async def scope(db: Any) -> tuple[str, dict[str, Any]]:
+        account_id = await resolve_account_filter(db, None, uid)
+        params: dict[str, Any] = {"uid": uid}
+        where = [_account_scope(account_id, params, pooled_only=True, level="read")]
+        folder_sql = folder_scope("all", params, include_sent=True)
+        if folder_sql:
+            where.append(folder_sql)
+        _state_filters(where, params, {"received_after": received_after})
+        return " AND ".join(where), params
+
+    async with _tenant_session() as db:
+        where_sql, params = await scope(db)
+        present = (await db.execute(text(
+            "SELECT 1 FROM email_messages em "
+            "JOIN email_embeddings ee ON ee.message_id = em.id "
+            f"WHERE {where_sql} LIMIT 1"
+        ), params)).first()
+    if present is None:
+        return []
+    qvec = await embed(text_q)
+    if qvec is None:
+        return []
+    async with _tenant_session() as db:
+        where_sql, params = await scope(db)
+        params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
+        params["limit"] = max(1, int(k))
+        rows = (await db.execute(text(
+            f"""SELECT em.id, em.provider_message_id, em.thread_id,
+                       em.account_id, em.folder, em.labels,
+                       em.from_address, em.to_addresses,
+                       em.cc_addresses, em.bcc_addresses,
+                       em.subject, '' AS body_text, NULL AS body_html,
+                       em.snippet, em.has_attachments,
+                       em.is_read, em.is_starred, em.is_flagged,
+                       em.importance, em.categories,
+                       em.received_at, em.synced_at,
+                       0.0 AS rank,
+                       1 - (ee.embedding <=> CAST(:qvec AS vector)) AS sim
+                  FROM email_messages em
+                  JOIN email_embeddings ee ON ee.message_id = em.id
+                 WHERE {where_sql}
+                 ORDER BY ee.embedding <=> CAST(:qvec AS vector)
+                 LIMIT :limit"""
+        ), params)).fetchall()
+    # The floor and the tie-break run here: a second sort key or a WHERE on the
+    # distance would stop Postgres from using the ivfflat ordering scan.
+    rows = sorted(
+        (r for r in rows if float(getattr(r, "sim", 0.0) or 0.0) >= VECTOR_MIN_SIM),
+        key=lambda r: (-float(r.sim), -(r.received_at.timestamp() if r.received_at else 0.0),
+                       str(r.id)),
+    )
+    out = []
+    for row in rows:
+        m = _row_to_message(row)
+        m.html_remote = False
+        d = m.model_dump()
+        d["rank"] = 0.0
+        d["sim"] = float(getattr(row, "sim", 0.0) or 0.0)
+        d["highlight"] = ""
+        out.append(d)
+    return out
+
+
+# ── The backfill of the stored vector (WS-KG KG-3a, migration 314) ──────────
+
+#: The rows that one transaction of the backfill fills.
+BACKFILL_BATCH = 1000
+
+_NO_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def backfill_fts(
+    org: str, *, batch: int = BACKFILL_BATCH, pause_s: float = 0.2,
+    max_batches: int | None = None,
+) -> dict[str, int]:
+    """Fill ``email_messages.fts`` for each row of *org* that has none.
+
+    Each batch is one short transaction through the tenant seam, so FORCE RLS
+    binds *org*. The batches walk the primary key, so a batch never reads a
+    row twice. A second run finds no NULL and writes nothing. A run that stops
+    keeps its committed batches, and the next run takes the rest.
+
+    The UPDATE sets only ``fts``, so the trigger of 314 does not fire. It
+    writes ``_FTS_VECTOR``, the expression of the trigger. *pause_s* is the
+    sleep between batches, so a sync does not wait behind the backfill.
+    *max_batches* stops the run early, for a test. Returns ``batches`` and
+    ``filled``.
+    """
+    counts = {"batches": 0, "filled": 0}
+    last = _NO_ID
+    while max_batches is None or counts["batches"] < max_batches:
+        async with _tenant_session(org) as db:
+            ids = (await db.execute(text(
+                "WITH b AS (SELECT em.id FROM email_messages em"
+                " WHERE em.organization_id = CAST(:org AS uuid)"
+                " AND em.fts IS NULL AND em.id > CAST(:last AS uuid)"
+                " ORDER BY em.id LIMIT :n FOR UPDATE)"
+                f" UPDATE email_messages em SET fts = {_FTS_VECTOR}"
+                " FROM b WHERE em.id = b.id RETURNING em.id"),
+                {"org": org, "last": last, "n": batch},
+            )).scalars().all()
+        if not ids:
+            break
+        counts["batches"] += 1
+        counts["filled"] += len(ids)
+        last = str(max(ids, key=str))
+        if pause_s > 0:
+            await asyncio.sleep(pause_s)
+    return counts

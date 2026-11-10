@@ -63,6 +63,43 @@ def test_a_cached_module_needs_no_check(redis: _FakeRedis, checks: list[str]) ->
     assert checks == ["Payment_Received"]  # the second read used the cache
 
 
+def test_own_cands_get_their_own_cached_entry(monkeypatch: pytest.MonkeyPatch,
+                                               redis: _FakeRedis) -> None:
+    """The amount pick passes its own fields. It ran the 27 s check on every
+    call (2026-10-28). Now it caches, apart from the per-module entry."""
+    calls: list[tuple[str, tuple[str, ...] | None]] = []
+
+    async def _check(_db: Any, _org: str, src: Any, cands: Any = None) -> Any:
+        keys = tuple(c.key for c in cands) if cands is not None else None
+        calls.append((str(src.module), keys))
+        return {"IP": ("Excludes GST",)} if cands is None else {"Amt": ("Includes GST",)}
+
+    monkeypatch.setattr(q, "_gst_evidence", _check)
+    siblings: list[Any] = [(), ()]
+    monkeypatch.setattr(q.qs, "gst_siblings", lambda _src: tuple(siblings))
+    a = [SimpleNamespace(key="Amount"), SimpleNamespace(key="Total")]
+    b = [SimpleNamespace(key="Total")]
+    src = _src("Invoices")
+
+    first = asyncio.run(q.module_evidence(None, ORG, src, a))
+    again = asyncio.run(q.module_evidence(None, ORG, src, a))
+    other = asyncio.run(q.module_evidence(None, ORG, src, b))
+    plain = asyncio.run(q.module_evidence(None, ORG, src))
+
+    assert first == again == other == {"Amt": ("Includes GST",)}
+    assert plain == {"IP": ("Excludes GST",)}
+    assert calls == [("Invoices", ("Amount", "Total")), ("Invoices", ("Total",)),
+                     ("Invoices", None)]
+    ttls = sorted(ttl for _v, ttl in redis.data.values())
+    assert ttls == [q.CANDS_EVIDENCE_TTL_S] * 2 + [q.EVIDENCE_TTL_S]
+
+    # A new GST sibling is a new entry, so it never reads the old evidence.
+    siblings[0] = (SimpleNamespace(key="GST_Amount"),)
+    asyncio.run(q.module_evidence(None, ORG, src, a))
+    assert calls[-1] == ("Invoices", ("Amount", "Total"))
+    assert len(calls) == 4
+
+
 def test_a_redis_fault_still_answers(monkeypatch: pytest.MonkeyPatch, checks: list[str]) -> None:
     def _down() -> Any:
         raise ConnectionError("redis down")

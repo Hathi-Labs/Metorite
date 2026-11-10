@@ -15,13 +15,15 @@ Route                      Does
 =========================  ===============================================
 ``GET``                    The profile, or the empty profile
 ``PUT``                    Body ``{key, value}``, ``key`` is ``learning``,
-                           ``address`` or ``style``. Merges that one key
+                           ``address``, ``style`` or ``apps``. Merges that
+                           one key
 ``POST .../facts``         Add one fact. The server sets ``id``,
                            ``source`` (``settings``) and ``at``
 ``PATCH .../facts/{id}``   Change the text or the kind
 ``DELETE .../facts/{id}``  Forget one fact
 ``.../aliases[/{id}]``     The same three for aliases
-``DELETE``                 Forget everything. The column becomes NULL
+``DELETE``                 Forget everything. The member's words go, and
+                           the app settings (``apps``) stay
 ``GET .../address``        ``{"name"}``, the form of address of §5.2 (PZ-4)
 ``GET .../export``         The whole profile as a download, JSON or text
                            (PZ-9). Read-only, and only the member's own
@@ -49,6 +51,17 @@ who has not left (PZ-5). ``assistant_profile_people.email_in_org`` is the one
 check, in the same session as the write. An address outside the org is a
 422, :data:`OUTSIDE_ORG`. The check needs no feature, because the member
 typed the address and the answer is only yes or no.
+
+**The app settings** (``apps``, ``personalization.md`` §12.6). A PUT of
+``apps`` takes ``{<app>: {<key>: <value>}}`` for ONE app that
+``acb_common.assistant_profile.APP_PREFERENCES`` declares, and merges those
+keys into ``apps.<app>``. ``clean_app_prefs`` is the strict check: a bool
+key takes a bool, and a time takes ``HH:MM`` from 00:00 to 23:59. The GET
+answers ``apps``, the preferences of each declared app over its defaults.
+They are settings, not the member's words, so forget-all keeps them, the
+6,000-character budget leaves them out, and a chat write cannot set them.
+The brief's ``enabled``, ``brief_time`` and ``closeout_time`` are the first
+(WS-BRIEF BR-2a-1).
 
 **A member with no settings row.** The first write makes the row with the
 calendar seed (``_seed_from_work_schedule``), exactly as ``prefs.py`` does.
@@ -85,9 +98,12 @@ from acb_auth import UserContext, get_current_user
 # The shape, the caps and the lenient read live in ONE parser, which the
 # executor's per-turn block reads too (WS-63 PZ-2). This module keeps the
 # models, the write SQL and the routes.
+from acb_common import celebrations
 from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     ALIAS_MAX,
     ALIASES_MAX,
+    APP_PREFERENCES,
+    APP_ROW_SQL_TEMPLATE,
     AREAS,
     EMAIL_MAX,
     FACT_KINDS,
@@ -122,23 +138,35 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _text,
     apply_interview_mark,
     area_has_answer,
+    clean_app_prefs,
     empty_profile,
     mark_changed,
     may_ask,
     profile_size,
+    put_areas,
+    stored_app_prefs,
     stored_profile,
 )
 from fastapi import Body, Depends, Header, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
+from gateway.assistant_summaries import (
+    clear_for_member,
+    clear_one_for_member,
+    list_for_member,
+)
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
+#: The most chat summaries that Settings lists (the store caps at the same 50).
+SUMMARIES_MAX = 50
+
 FactKind = Literal["about", "routine", "preference", "work", "relationship"]
 #: The areas of the interview (PZ-26). ``AREAS`` is the one table.
-AreaId = Literal["role", "goals", "good_day", "decisions", "detail", "rhythm",
-                 "channels", "energy", "peeves", "people"]
+AreaId = Literal["name", "language", "role", "goals", "good_day", "decisions", "detail",
+                 "rhythm", "channels", "energy", "peeves", "people"]
 InterviewState = Literal["asked", "answered", "skipped", "never"]
 
 
@@ -151,7 +179,11 @@ def _clean_learning(value: Any) -> bool:
     return value
 
 
-_CLEAN = {"learning": _clean_learning, "address": _clean_address, "style": _clean_style}
+_CLEAN = {"learning": _clean_learning, "address": _clean_address, "style": _clean_style,
+          "apps": clean_app_prefs, "celebrations": celebrations.clean_celebrations}
+
+#: The keys that only Settings writes: a chat write of one is a 422.
+SETTINGS_ONLY_KEYS = frozenset({"learning", "apps"})
 
 
 class ProfilePut(BaseModel):
@@ -159,7 +191,7 @@ class ProfilePut(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: Literal["learning", "address", "style"]
+    key: Literal["learning", "address", "style", "apps", "celebrations"]
     value: Any
 
     @model_validator(mode="after")
@@ -192,11 +224,14 @@ class InterviewMark(BaseModel):
 
 class InterviewStart(BaseModel):
     """What ``POST .../interview`` accepts (PZ-26). ``sitting`` is true when
-    the member starts a sitting, and absent for a "no thanks"."""
+    the member starts a sitting, and absent for a "no thanks". ``stop`` is
+    true when the member says stop asking (PZ-32 repair). It writes
+    ``stopped_at``. A body cannot hold both."""
 
     model_config = ConfigDict(extra="forbid")
 
     sitting: bool = False
+    stop: bool = False
 
 
 class FactPatch(BaseModel):
@@ -286,6 +321,27 @@ _VERSIONED = f"jsonb_set({_BASE}, ARRAY['v'], CAST('1' AS jsonb), true)"
 _NEW_KEY = "jsonb_build_object('v', 1, CAST(:pkey AS text), CAST(:pval AS jsonb))"
 #: PUT, an existing row: merge the one key, keep every other key.
 _MERGE_KEY = f"jsonb_set({_VERSIONED}, ARRAY[CAST(:pkey AS text)], CAST(:pval AS jsonb), true)"
+
+#: PUT of ``apps``, a new row: the version and the one app (``:pval`` is
+#: ``{<app>: {...}}``, as ``clean_app_prefs`` gives it).
+_NEW_APP = "jsonb_build_object('v', 1, 'apps', CAST(:pval AS jsonb))"
+#: The stored object at ``apps`` and at ``apps.<:app>``. Not an object counts
+#: as empty.
+_APPS = (
+    "CASE WHEN jsonb_typeof(user_settings.assistant_profile -> 'apps') = 'object' "
+    "THEN user_settings.assistant_profile -> 'apps' ELSE CAST('{}' AS jsonb) END"
+)
+_APP = (
+    "CASE WHEN jsonb_typeof(user_settings.assistant_profile -> 'apps' -> "
+    "CAST(:app AS text)) = 'object' THEN user_settings.assistant_profile -> 'apps' -> "
+    "CAST(:app AS text) ELSE CAST('{}' AS jsonb) END"
+)
+#: PUT of ``apps``, an existing row: merge the keys of the one app, keep
+#: every other key of it, every other app, and every other key of the column.
+_MERGE_APP = (
+    f"jsonb_set({_VERSIONED}, ARRAY['apps'], ({_APPS}) || jsonb_build_object("
+    f"CAST(:app AS text), ({_APP}) || (CAST(:pval AS jsonb) -> CAST(:app AS text))), true)"
+)
 
 #: The stored list ``:lkey`` (``facts`` or ``aliases``). Not an array counts
 #: as empty, so ``jsonb_array_elements`` never sees an object.
@@ -395,10 +451,15 @@ _UNDO_WRITE_SQL = (
     "updated_at = now() WHERE organization_id = {org} AND user_id = :uid"
 )
 
-#: DELETE all: the column becomes NULL. The row and its other columns stay.
+#: DELETE all: the member's words go. The app settings (``apps``) stay,
+#: because they are settings and not words: a forget must never turn an
+#: opt-out of the brief back on. With no ``apps`` the column becomes NULL.
+#: The row and its other columns stay.
 _FORGET_SQL = (
-    "UPDATE user_settings SET assistant_profile = NULL, updated_at = now() "
-    "WHERE organization_id = {org} AND user_id = :uid"
+    "UPDATE user_settings SET assistant_profile = CASE WHEN "
+    "jsonb_typeof(assistant_profile -> 'apps') = 'object' "
+    "THEN jsonb_build_object('v', 1, 'apps', assistant_profile -> 'apps') ELSE NULL END, "
+    "updated_at = now() WHERE organization_id = {org} AND user_id = :uid"
 )
 
 
@@ -411,6 +472,24 @@ def _sql(template: str) -> Any:
 
 async def _read(db: Any, uid: str) -> Any:
     return (await db.execute(_sql(_READ_SQL), {"uid": uid})).first()
+
+
+async def _app_row(db: Any, uid: str, app: str) -> tuple[str | None, Any]:
+    """The ``user_id`` and the stored ``apps.<app>`` of the row that the
+    planner reads (``APP_ROW_SQL_TEMPLATE``, any case), or ``(None, None)``
+    when the member has no row. The GET and the PUT of ``apps`` take this
+    row, so the member sees and sets the value that the brief reads."""
+    row = (await db.execute(_sql(APP_ROW_SQL_TEMPLATE), {"m": uid, "app": app})).first()
+    return (None, None) if row is None else (str(row[0]), row[1])
+
+
+async def _apps(db: Any, uid: str) -> dict[str, dict[str, Any]]:
+    """The preferences of every declared app, each from its own row by the
+    row rule, over the declared defaults."""
+    out: dict[str, dict[str, Any]] = {}
+    for app in APP_PREFERENCES:
+        out[app] = stored_app_prefs((await _app_row(db, uid, app))[1], app)
+    return out
 
 
 async def _upsert(db: Any, uid: str, new: str, merge: str, params: dict[str, Any],
@@ -494,16 +573,18 @@ def _check_caps(stored: Any) -> None:
         items = stored.get(key)
         if isinstance(items, list) and len(items) > cap:
             raise _refuse(f"at most {cap} {key}")
-    # The record of the last change and the interview state are not the
-    # member's words, so they stay out of the budget (PZ-26): a mark must
-    # never fail on a full profile.
+    # The record of the last change, the interview state and the app
+    # settings are not the member's words, so they stay out of the budget
+    # (PZ-26, BR-2a-1): a mark or a setting must never fail on a full profile.
     if profile_size({k: v for k, v in stored.items()
-                     if k not in (LAST_CHANGE, "interview")}) > PROFILE_MAX:
+                     if k not in (LAST_CHANGE, "interview", "apps")}) > PROFILE_MAX:
         raise _refuse(f"profile exceeds {PROFILE_MAX} characters")
 
 
 #: The 422 of a chat write that asks to forget the whole profile.
 FORGET_ALL_IN_SETTINGS = "forget everything in Settings, not from the chat"
+#: The 422 of a summary delete from the chat (PZ-35).
+SUMMARIES_IN_SETTINGS = "delete chat summaries in Settings, not from the chat"
 
 
 def _last(record: dict[str, Any]) -> str:
@@ -557,14 +638,15 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
     op = last.get("op")
     if op == "put":
         key = last.get("key")
-        if key not in ("address", "style") or out.get(key) != last.get("after"):
+        if key not in ("address", "style", "celebrations") or out.get(key) != last.get("after"):
             return None, UNDO_CHANGED
         prior = last.get("prior")
         out[key] = prior if isinstance(prior, dict) else {}
-        if key == "style":
-            # A chat style change is the answer of `detail` (fix of
-            # 2026-10-27). Its undo opens the area again.
-            _reopen(out, "detail")
+        # A chat change of the address or the style answers `name`,
+        # `language` or `detail` (fix of 2026-10-27, PZ-32). Its undo opens
+        # each area that it answered again (`put_areas`, the one rule).
+        for area in sorted(put_areas(last)):
+            _reopen(out, area)
         return out, ""
     lkey = last.get("list")
     if lkey not in ("facts", "aliases"):
@@ -688,18 +770,32 @@ async def get_assistant_profile(
     app shows the page, the account row and the My Day name only when it is
     true. The key is not part of the stored shape, and no write takes it.
     """
-    from acb_common.assistant_profile import enabled_for
+    from acb_common.assistant_profile import chat_summary_for, enabled_for
 
     uid = _member(user)
     try:
         async with _tenant_session() as db:
             row = await _read(db, uid)
+            # The app settings, each over its declared defaults, from the
+            # row that the brief reads (BR-2a-1, the row rule).
+            apps = await _apps(db, uid)
     except Exception as exc:
         logger.warning("auth.assistant_profile.read_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    out: dict[str, Any] = stored_profile(row[0] if row is not None else None)
+    raw = row[0] if row is not None else None
+    out: dict[str, Any] = stored_profile(raw)
     out["enabled"] = enabled_for(getattr(user, "organization_id", None))
+    # PZ-35: Settings shows "Recent chats" only with the summary flag on.
+    # Like ``enabled``, the key is not part of the stored shape.
+    out["summaries_enabled"] = chat_summary_for(getattr(user, "organization_id", None))
+    out["apps"] = apps
+    # PZ-43: Settings shows "Celebrations" only with the flag on. It holds
+    # the list that the picker offers, and no festival while the list is empty.
+    # With the flag off the answer has no such key, so its shape is as it was.
+    if celebrations.celebrations_for(getattr(user, "organization_id", None)):
+        out["celebrations_enabled"] = True
+        out["festival_catalogue"] = celebrations.catalogue()
     return out
 
 
@@ -741,6 +837,78 @@ async def get_assistant_profile_address(
     return {"name": resolve_address_name(stored["address"].get("name"), preferred, display)}
 
 
+@me_router.get("/me/assistant-profile/block",
+               summary="The text the assistant reads about the caller (PZ-20a)")
+async def get_assistant_profile_block(
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """``{"enabled": bool, "text": str}``: "Read as text" of Settings.
+
+    ``text`` is ``member_block``, the call that the executor makes to build
+    the block of a turn. The member reads the same bytes that the model
+    reads. The per-turn lines stay out of it: the due line of the interview,
+    the part of the day, the date, the name and the number system. An empty
+    profile with no name gives ``""``.
+
+    With the profile off for the org (PZ-25), the answer is
+    ``{"enabled": false, "text": ""}`` and the route reads nothing. The
+    member comes from the session and the org from the bound session (R5).
+    The route takes no address, query or body. A failed read answers 503,
+    never an empty text. Each answer, the 503 too, carries
+    ``Cache-Control: no-store``. The read is the executor's ``READ_SQL``.
+    """
+    from acb_common.assistant_profile import (
+        ADDRESS_SQL_TEMPLATE,
+        READ_SQL_TEMPLATE,
+        enabled_for,
+        member_block,
+    )
+
+    headers = {"Cache-Control": "no-store"}
+    if not enabled_for(getattr(user, "organization_id", None)):
+        return JSONResponse({"enabled": False, "text": ""}, headers=headers)
+    uid = _member(user)
+    try:
+        async with _tenant_session() as db:
+            # The executor's own statements, so the view and the model read
+            # the same row (any case of the address, the row with a profile first).
+            row = (await db.execute(_sql(READ_SQL_TEMPLATE), {"m": uid})).first()
+            names = (await db.execute(_sql(ADDRESS_SQL_TEMPLATE), {"m": uid})).first()
+    except Exception as exc:
+        logger.warning("auth.assistant_profile.block_failed",
+                       extra={"error": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="unavailable",
+                            headers=headers) from exc
+    preferred, _zone, display = names[:3] if names else (None, None, None)
+    text = member_block(row[0] if row is not None else None, preferred, display,
+                        getattr(user, "organization_id", None))
+    return JSONResponse({"enabled": True, "text": text}, headers=headers)
+
+
+def _summary_json(one: Any) -> dict[str, Any]:
+    """One chat summary as the routes show it."""
+    return {
+        "id": one.session_id,
+        "title": one.title,
+        "date": one.updated_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if one.updated_at else None,
+        "text": one.text,
+        "follow_ups": list(one.follow_ups),
+    }
+
+
+def _summaries_text(shown: list[dict[str, Any]]) -> str:
+    """The short block of the text export. Empty with no summary."""
+    if not shown:
+        return ""
+    lines = ["", "", "Recent chats"]
+    for one in shown:
+        head = " - ".join(p for p in ((one["date"] or "")[:10], one["title"]) if p)
+        lines.append(f"- {head}: {one['text']}" if one["text"] else f"- {head}")
+        lines += [f"    Next: {f}" for f in one["follow_ups"]]
+    return "\n".join(lines)
+
+
 #: The file names of the two exports (PZ-9).
 EXPORT_FILES: dict[str, tuple[str, str]] = {
     "json": ("assistant-profile.json", "application/json"),
@@ -768,26 +936,34 @@ async def export_assistant_profile(
     member with no profile gets the empty profile, never a 404. A failed
     read answers 503, never the empty profile.
     """
-    from acb_common.assistant_profile import render_export
+    from acb_common.assistant_profile import EXPORT_EMPTY, render_export
 
     uid = _member(user)
     try:
         async with _tenant_session() as db:
             row = await _read(db, uid)
+            listed = await list_for_member(db, uid, SUMMARIES_MAX + 1)
     except Exception as exc:
         logger.warning("auth.assistant_profile.export_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
     raw = row[0] if row is not None else None
     text = render_export(raw)
+    shown = [_summary_json(one) for one in listed[:SUMMARIES_MAX]]
+    if shown and text == EXPORT_EMPTY:
+        # A member with no profile but with summaries: the empty line would
+        # say "keeps nothing" and then list summaries.
+        text = ""
     name, media = EXPORT_FILES[format]
     if format == "text":
-        content = text + "\n"
+        content = (text + _summaries_text(shown)).lstrip("\n") + "\n"
     else:
         content = json.dumps({
             "exported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "member": uid,
             "profile": stored_profile(raw),
+            "summaries": shown,
+            "more": len(listed) > SUMMARIES_MAX,
             "text": text,
         }, ensure_ascii=False, indent=2) + "\n"
     return Response(content=content, media_type=media, headers={
@@ -803,14 +979,25 @@ async def put_assistant_profile(
     x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Save one key. Every other key of the column stays. A chat write
-    cannot set ``learning``, which only the member sets in Settings."""
+    cannot set ``learning`` or ``apps``, which only the member sets in
+    Settings. A PUT of ``apps`` merges the keys of its one app into the
+    row that the brief reads (the row rule, ``APP_ROW_SQL_TEMPLATE``), and
+    its answer carries ``apps`` as the GET does."""
     uid = _member(user)
     via = _via(x_profile_via)
     put = _validate(ProfilePut, body)
-    if via is not None and put.key == "learning":
-        raise _refuse("learning is set in Settings, not from the chat")
+    if (put.key == "celebrations" and not celebrations.is_clear(put.value)
+            and not celebrations.celebrations_for(getattr(user, "organization_id", None))):
+        # PZ-43: off for this org, so the member cannot SET it. A write that
+        # only clears stays open, so a saved value can still be deleted (§7).
+        raise _refuse("celebrations are not on for your organization")
+    if via is not None and put.key in SETTINGS_ONLY_KEYS:
+        raise _refuse(f"{put.key} is set in Settings, not from the chat")
     params = {"pkey": put.key, "pval": json.dumps(put.value)}
     new, merge, where = _NEW_KEY, _MERGE_KEY, ""
+    if put.key == "apps":
+        (params["app"],) = put.value
+        new, merge = _NEW_APP, _MERGE_APP
     if via is not None:
         params["last"] = _last({"op": "put", "key": put.key, "after": put.value})
         new = _with_last(_NEW_KEY, _PUT_LAST_NEW)
@@ -819,13 +1006,27 @@ async def put_assistant_profile(
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
-        stored = await _upsert(db, uid, new, merge, params, where)
+        row_uid = uid
+        if put.key == "apps":
+            # The row that the brief reads, in any case. A member with no
+            # row gets a new row under the session's address.
+            row_uid = (await _app_row(db, uid, params["app"]))[0] or uid
+        stored = await _upsert(db, row_uid, new, merge, params, where)
         if stored is None:
             raise HTTPException(status_code=409, detail=LEARNING_OFF)
         _check_caps(stored)
-        return stored
+        if put.key != "apps":
+            return stored, None
+        if row_uid != uid:
+            row = await _read(db, uid)
+            stored = _as_dict(row[0]) if row is not None else None
+        return stored, await _apps(db, uid)
 
-    return stored_profile(await _write(uid, "write", _run))
+    stored, apps = await _write(uid, "write", _run)
+    out = stored_profile(stored)
+    if apps is not None:
+        out["apps"] = apps
+    return out
 
 
 @me_router.delete("/me/assistant-profile", status_code=204, response_class=Response,
@@ -834,7 +1035,8 @@ async def delete_assistant_profile(
     user: UserContext = Depends(get_current_user),
     x_profile_via: str | None = Header(default=None),
 ) -> Response:
-    """The column becomes NULL. The settings row and its other columns stay.
+    """The member's words go: the column becomes NULL, or keeps only
+    ``apps``, the app settings. The settings row and its other columns stay.
     Forget-all is a Settings act: a chat write (``X-Profile-Via``) is a 422."""
     uid = _member(user)
     if _via(x_profile_via) is not None:
@@ -842,8 +1044,82 @@ async def delete_assistant_profile(
 
     async def _run(db: Any) -> None:
         await db.execute(_sql(_FORGET_SQL), {"uid": uid})
+        # PZ-35: Forget clears the chat summaries too, in the same
+        # transaction. A summary that was off stays off, and ``apps`` stays.
+        await clear_for_member(db, uid)
 
     await _write(uid, "forget", _run)
+    return Response(status_code=204)
+
+
+# ── Recent chats (PZ-35, ``personalization.md`` §15.5) ──────────────────────
+#
+# The member lists, deletes and deletes all of the summaries of their own solo
+# chats. The member comes from the session and the org from the bound session
+# (R5). No route takes a member in the path, the query or the body.
+
+
+@me_router.get("/me/assistant-profile/summaries",
+               summary="The caller's chat summaries (PZ-35)")
+async def list_chat_summaries(
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """``{"summaries": [...], "more": bool}``, newest first, at most 50. A
+    failed read answers 503, never an empty list."""
+    uid = _member(user)
+    try:
+        async with _tenant_session() as db:
+            listed = await list_for_member(db, uid, SUMMARIES_MAX + 1)
+    except Exception as exc:
+        logger.warning("auth.assistant_profile.summaries_failed",
+                       extra={"error": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return JSONResponse(
+        {"summaries": [_summary_json(one) for one in listed[:SUMMARIES_MAX]],
+         "more": len(listed) > SUMMARIES_MAX},
+        headers={"Cache-Control": "no-store"})
+
+
+@me_router.delete("/me/assistant-profile/summaries/{session_id}", status_code=204,
+                  response_class=Response,
+                  summary="Delete the summary of one chat (PZ-35)")
+async def delete_chat_summary(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
+    """The summary goes, and a new one may come after a new message (owner
+    decision of 2026-11-02). A chat of another member answers 404 and stays
+    as it was. A chat write (``X-Profile-Via``) is a 422, as for Forget."""
+    uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(SUMMARIES_IN_SETTINGS)
+
+    async def _run(db: Any) -> None:
+        if not await clear_one_for_member(db, session_id, uid):
+            raise HTTPException(status_code=404, detail="Not found")
+
+    await _write(uid, "summary_delete", _run)
+    return Response(status_code=204)
+
+
+@me_router.delete("/me/assistant-profile/summaries", status_code=204,
+                  response_class=Response,
+                  summary="Delete every chat summary of the caller (PZ-35)")
+async def delete_chat_summaries(
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
+    """Delete all: each summary goes, as Delete does for one. A chat write
+    (``X-Profile-Via``) is a 422."""
+    uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(SUMMARIES_IN_SETTINGS)
+
+    async def _run(db: Any) -> None:
+        await clear_for_member(db, uid)
+
+    await _write(uid, "summary_delete_all", _run)
     return Response(status_code=204)
 
 
@@ -1132,17 +1408,26 @@ async def start_assistant_interview(
     """Set ``started_at`` once. It marks no area, so no question is due
     until a sitting asks one. "No thanks" to the offer calls it with no body.
     Body ``{"sitting": true}`` also sets ``sitting_at``: the member starts a
-    sitting, and for two hours the chat may mark an area ``asked``."""
-    from acb_common.assistant_profile import start_interview
+    sitting, and for two hours the chat may mark an area ``asked``.
+
+    Body ``{"stop": true}`` is "stop asking" (PZ-32 repair, P1-1). In one
+    transaction it sets ``stopped_at`` and marks ``never`` each area that is
+    not answered (``stop_interview``). No area opens again, a new area of a
+    later release included, until a reset in Settings."""
+    from acb_common.assistant_profile import start_interview, stop_interview
 
     uid = _member(user)
     via = _via(x_profile_via)
     # No body is a "no thanks". A direct call gets the `Body` default object,
     # which is no body either.
     raw = body if isinstance(body, (dict, list, str, int, float, bool)) else {}
-    sitting = _validate(InterviewStart, raw).sitting
+    start = _validate(InterviewStart, raw)
+    if start.sitting and start.stop:
+        raise _refuse("give sitting or stop, not both")
+    if start.stop:
+        return await _interview_write(uid, via, lambda cur: stop_interview(cur, _now()))
     return await _interview_write(
-        uid, via, lambda cur: start_interview(cur, _now(), sitting))
+        uid, via, lambda cur: start_interview(cur, _now(), start.sitting))
 
 
 @me_router.post("/me/assistant-profile/interview/{area}",
@@ -1199,19 +1484,15 @@ async def reset_assistant_interview_area(
 ) -> Response:
     """The area is open again. The facts stay. A Settings act: a chat call
     (``X-Profile-Via``) is a 422. ``reset_at`` records the time, so a fact
-    from before the reset never answers the area again."""
+    from before the reset never answers the area again. A reset ends a stop,
+    and only this area opens (``reset_interview_area``, PZ-32 repair)."""
+    from acb_common.assistant_profile import reset_interview_area
+
     uid = _member(user)
     if _via(x_profile_via) is not None:
         raise _refuse(INTERVIEW_RESET_IN_SETTINGS)
     _area(area)
-
-    def _build(cur: Any) -> dict[str, Any]:
-        cur = dict(cur or {})
-        cur["areas"] = {k: v for k, v in (cur.get("areas") or {}).items() if k != area}
-        cur["reset_at"] = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        return cur
-
-    await _interview_write(uid, None, _build)
+    await _interview_write(uid, None, lambda cur: reset_interview_area(cur, area, _now()))
     return Response(status_code=204)
 
 

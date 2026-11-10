@@ -11,18 +11,44 @@
  * Fence: `myDay.test.ts`.
  */
 import { NAV_SECTIONS } from "@/lib/nav";
-import { relativeTime } from "@/lib/taskCard";
+import { dueLabel, relativeTime } from "@/lib/taskCard";
 
 import { orderCards } from "./presets";
-import { KIND_ORDER, type NeedsApp, type NeedsItem, type NeedsKind, type SourceState } from "./needs";
+import { isReminderKind } from "./reminderKinds";
+import {
+  KIND_ORDER,
+  NEEDS_SOURCE_APP,
+  type NeedsApp,
+  type NeedsItem,
+  type NeedsKind,
+  type NeedsSource,
+  type SourceState,
+} from "./needs";
 
 // ── The header ──────────────────────────────────────────────────────────────
 
-/** "Good morning" before noon, "Good afternoon" before six, then evening. */
+/**
+ * The ONE table of greetings (PZ-39). Each row is the first hour of a band and
+ * its greeting. A band runs until the next row starts. The last band runs past
+ * midnight until 05:00. The late hours read "Hello", never "Good night",
+ * because "Good night" is a goodbye. The server holds the same table in
+ * `acb_common.today.GREETING_TABLE`.
+ * Fence: `tests/unit/test_greeting_table.py` fails when the two differ.
+ */
+export const GREETING_TABLE: ReadonlyArray<readonly [number, string]> = [
+  [5, "Good morning"],
+  [12, "Good afternoon"],
+  [17, "Good evening"],
+  [21, "Hello"],
+];
+
+/** The greeting for an hour (0 to 23), from `GREETING_TABLE`. */
 export function greeting(hour: number): string {
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+  let found = GREETING_TABLE[GREETING_TABLE.length - 1][1];
+  for (const [from, word] of GREETING_TABLE) {
+    if (from <= hour) found = word;
+  }
+  return found;
 }
 
 /**
@@ -104,6 +130,9 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   due_today: "Due today",
   notification: "From your projects",
   needs_reply: "Waiting for your reply",
+  reminder_due: "Reminder due",
+  reminder_check: "Reminder still open",
+  reminder_unconfirmed: "Reminder not confirmed",
 };
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
@@ -135,14 +164,28 @@ export interface NeedsGroup {
   items: NeedsItem[];
 }
 
+/** The reminder kinds that wait on the member. The bell lists them first (RX-3). */
+const FIRED_FIRST: readonly NeedsKind[] = ["reminder_due", "reminder_check"];
+
+/**
+ * Reminder rows shown before "Show all". Reminders sort first, so a long run
+ * of them would push every other row out of the seven. Three keep the rest in
+ * view, as the approval cap does for the admin's queue (RX-3).
+ */
+export const REMINDERS_SHOWN = 3;
+
 /**
  * The kind order, with the member's preset's first kind moved to the front
  * (NS-7, §8.1: the Sales manager reads replies first). A kind the feed does
  * not carry changes nothing.
  */
 export function kindOrder(first?: string): readonly NeedsKind[] {
-  if (!first || !(KIND_ORDER as readonly string[]).includes(first)) return KIND_ORDER;
-  return [first as NeedsKind, ...KIND_ORDER.filter((k) => k !== first)];
+  // RX-3: a reminder that fired and waits on the member sorts first in the
+  // bell, ahead of the server's order. The member's preset (NS-7) still moves
+  // its own kind in front of them.
+  const base: readonly NeedsKind[] = [...FIRED_FIRST, ...KIND_ORDER.filter((k) => !FIRED_FIRST.includes(k))];
+  if (!first || !(KIND_ORDER as readonly string[]).includes(first)) return base;
+  return [first as NeedsKind, ...base.filter((k) => k !== first)];
 }
 
 /**
@@ -172,26 +215,32 @@ export function shownNeeds(
   first?: string,
 ): { groups: NeedsGroup[]; hidden: number } {
   const order = kindOrder(first);
-  const sorted = first
-    ? order.flatMap((kind) => items.filter((i) => i.kind === kind))
-    : items;
+  // The cut runs over the kind order, with the reminders in front (RX-3).
+  const sorted = order.flatMap((kind) => items.filter((i) => i.kind === kind));
   let approvals = 0;
+  let reminders = 0;
   const shown = expanded
     ? sorted
     : sorted
         .filter((i) => i.kind !== "approval" || ++approvals <= APPROVALS_SHOWN)
+        .filter((i) => !isReminderKind(i.kind) || ++reminders <= REMINDERS_SHOWN)
         .slice(0, limit);
   return { groups: groupNeeds(shown, first), hidden: items.length - shown.length };
 }
 
 /**
- * A row's time, in muted words. A due row says when it was or is due, so
- * "Due 2d ago" and "Due in 3h". Any other row says how long ago it came.
+ * A row's time, in muted words. An overdue row says the day it was due, such
+ * as "Due 2d ago", and never a clock (RX-5). A row due today says nothing,
+ * because its group heading says "Due today". Any other row says how long ago
+ * it came.
  */
 export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()): string {
-  const rel = relativeTime(item.at, nowMs);
-  if (!rel) return "";
-  return item.kind === "overdue" || item.kind === "due_today" ? `Due ${rel}` : rel;
+  if (item.kind === "due_today") return "";
+  if (item.kind === "overdue") {
+    const day = dueLabel(item.at, nowMs);
+    return day ? `Due ${day}` : "";
+  }
+  return relativeTime(item.at, nowMs);
 }
 
 /** The member-facing name of each source app. */
@@ -200,6 +249,7 @@ export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
   approvals: "Approvals",
   projects: "Projects",
   email: "Email",
+  calendar: "Calendar",
 };
 
 const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
@@ -207,6 +257,7 @@ const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
+  calendar: "/calendar",
 };
 
 /** A row's icon: its app's own icon from the manifest, never a second list. */
@@ -215,20 +266,42 @@ export function appIcon(app: NeedsApp): string {
   return pane?.icon ?? "Circle";
 }
 
-/** One muted line per source that failed: "Email did not answer. …". */
-export function failedLines(sources: Partial<Record<NeedsApp, SourceState>>): string[] {
-  return (Object.keys(APP_NAMES) as NeedsApp[])
-    .filter((app) => sources[app] === "failed")
-    .map((app) => `${APP_NAMES[app]} did not answer, so its ${MISSING[app]} may be missing.`);
-}
+/**
+ * A source that can fail, named by its SOURCE id: the needs sources, and the
+ * feed's `calendar` source. The server keys `sources` this way, so
+ * `reminders` is not `calendar` (`NEEDS_SOURCE_APP` maps it to its app).
+ */
+export type FailedSource = NeedsSource | "calendar";
 
-/** What a source's silence can hide, in the member's words. */
-const MISSING: Readonly<Record<NeedsApp, string>> = {
+/** What a source's silence can hide, in the member's words. Keyed by source. */
+const MISSING: Readonly<Record<FailedSource, string>> = {
   tasks: "due tasks",
   approvals: "approvals",
   projects: "notifications",
   email: "replies",
+  reminders: "reminders",
+  calendar: "time blocks",
 };
+
+/** True when the key is a source this card knows how to word. */
+export function isFailedSource(source: string): source is FailedSource {
+  return Object.hasOwn(MISSING, source);
+}
+
+/** The app a source speaks for. A needs source goes through THE map. */
+function appOfSource(source: FailedSource): NeedsApp {
+  return source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source];
+}
+
+/**
+ * One muted line per source that failed: "Email did not answer. …". The keys
+ * are SOURCE ids, as the server sends them. The name is the source's app.
+ */
+export function failedLines(sources: Partial<Record<FailedSource, SourceState>>): string[] {
+  return (Object.keys(MISSING) as FailedSource[])
+    .filter((source) => sources[source] === "failed")
+    .map((source) => `${APP_NAMES[appOfSource(source)]} did not answer, so its ${MISSING[source]} may be missing.`);
+}
 
 // ── Next actions ────────────────────────────────────────────────────────────
 

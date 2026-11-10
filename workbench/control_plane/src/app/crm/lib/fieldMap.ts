@@ -80,7 +80,7 @@ const STATUS_LABEL: Record<FieldRuleStatus, string> = {
   proposed: "Proposed",
   approved: "Approved",
   rejected: "Rejected",
-  stale: "Stale",
+  stale: "Zoho changed this",
 };
 
 const STATUS_TONE: Record<FieldRuleStatus, BadgeTone> = {

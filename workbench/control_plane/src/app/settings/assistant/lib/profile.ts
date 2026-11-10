@@ -53,9 +53,11 @@ export interface Style {
  * Fence: `interviewAreas.test.ts` reads that file and compares.
  */
 export const INTERVIEW_AREAS = [
+  { id: "name", label: "What to call you", question: "What should I call you, and how formal should I be?" },
+  { id: "language", label: "Your language", question: "Which language should I answer you in?" },
   { id: "role", label: "Your role", question: "What is your role, and what takes most of your week?" },
   { id: "goals", label: "Your goals", question: "What are the one to three things you most want to move this quarter?" },
-  { id: "good_day", label: "A good day", question: "What would make today a win for you?" },
+  { id: "good_day", label: "A good day", question: "What makes a day a win for you?" },
   { id: "decisions", label: "How you decide", question: "Do you want options with a recommendation, or only the answer?" },
   { id: "detail", label: "How much detail", question: "Do you want the headline first, or the full reasoning?" },
   { id: "rhythm", label: "Your rhythm", question: "When do you do deep work, and when must I not interrupt?" },
@@ -106,6 +108,83 @@ function normalizeInterview(raw: unknown): Interview | undefined {
   return out;
 }
 
+// ── Celebrations (PZ-43, `personalization.md` §16.6) ──────────────────────
+
+/**
+ * The birthday is a month and a day. The profile keeps NO year, so the type
+ * has no year and the form has no year field. `festivals` holds ids of the
+ * list that the server offers, and `work_anniversary` is off by default.
+ */
+export interface Celebrations {
+  birthday?: { month: number; day: number };
+  festivals: string[];
+  work_anniversary: boolean;
+}
+export interface Festival {
+  id: string;
+  name: string;
+}
+/** What the profile read says about celebrations: the flag of the organization, and the list. */
+export interface CelebrationsGate {
+  enabled: boolean;
+  festivals: Festival[];
+}
+
+export const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const;
+
+/** The most days of a month. February has 29, so a 29 February birthday can be set. */
+const MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+export function daysInMonth(month: number): number {
+  return MONTH_DAYS[month - 1] ?? 31;
+}
+
+export function celebrationsGate(raw: unknown): CelebrationsGate {
+  const r = (raw && typeof raw === "object" ? raw : {}) as {
+    celebrations_enabled?: unknown;
+    festival_catalogue?: unknown;
+  };
+  const list = Array.isArray(r.festival_catalogue) ? r.festival_catalogue : [];
+  const festivals = list.filter(
+    (f): f is Festival =>
+      !!f && typeof f === "object" && typeof (f as Festival).id === "string" && typeof (f as Festival).name === "string",
+  );
+  return { enabled: r.celebrations_enabled === true, festivals };
+}
+
+/** A stored value, read leniently. A part of the wrong shape drops. */
+export function normalizeCelebrations(raw: unknown): Celebrations | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const b = r.birthday as { month?: unknown; day?: unknown } | undefined;
+  const out: Celebrations = {
+    festivals: Array.isArray(r.festivals) ? r.festivals.filter((x): x is string => typeof x === "string") : [],
+    work_anniversary: r.work_anniversary === true,
+  };
+  if (b && Number.isInteger(b.month) && Number.isInteger(b.day)) {
+    out.birthday = { month: b.month as number, day: b.day as number };
+  }
+  return out;
+}
+
+/** The new `celebrations` value: the current one plus one edit. A null birthday clears it. */
+export function mergeCelebrations(
+  current: Celebrations | undefined,
+  edit: { birthday?: { month: number; day: number } | null; festivals?: string[]; work_anniversary?: boolean },
+): Celebrations {
+  const base: Celebrations = current ?? { festivals: [], work_anniversary: false };
+  const { birthday: _old, ...rest } = base;
+  const birthday = "birthday" in edit ? edit.birthday : base.birthday;
+  return {
+    ...rest,
+    ...(edit.festivals ? { festivals: edit.festivals } : {}),
+    ...(edit.work_anniversary !== undefined ? { work_anniversary: edit.work_anniversary } : {}),
+    ...(birthday ? { birthday: { month: birthday.month, day: birthday.day } } : {}),
+  };
+}
+
 export interface Fact {
   id: string;
   text: string;
@@ -125,6 +204,8 @@ export interface Profile {
   learning: boolean;
   /** The interview state (PZ-26). Absent until the member starts or declines. */
   interview?: Interview;
+  /** The birthday, the festival picks and the work anniversary (PZ-43). Absent until the member sets one. */
+  celebrations?: Celebrations;
   address: Address;
   style: Style;
   aliases: Alias[];
@@ -203,10 +284,12 @@ async function call<T>(path: string, method: string, body?: unknown): Promise<T 
 /** Fill the gaps in a stored profile, so a view never meets undefined. */
 export function normalize(raw: Partial<Profile> | null | undefined): Profile {
   const interview = normalizeInterview(raw?.interview);
+  const celebrations = normalizeCelebrations(raw?.celebrations);
   return {
     v: raw?.v ?? 1,
     learning: raw?.learning !== false,
     ...(interview ? { interview } : {}),
+    ...(celebrations ? { celebrations } : {}),
     address: raw?.address ?? {},
     style: raw?.style ?? {},
     aliases: raw?.aliases ?? [],
@@ -233,6 +316,9 @@ export async function saveAddress(value: Address): Promise<Profile> {
 export async function saveStyle(value: Style): Promise<Profile> {
   return normalize(await call<Partial<Profile>>("", "PUT", { key: "style", value }));
 }
+export async function saveCelebrations(value: Celebrations): Promise<Profile> {
+  return normalize(await call<Partial<Profile>>("", "PUT", { key: "celebrations", value }));
+}
 export async function forgetAll(): Promise<Profile> {
   await call("", "DELETE");
   return EMPTY_PROFILE; // no `interview` key: the gateway clears it with the rest
@@ -243,8 +329,8 @@ export const startInterview = () => call<Interview>("/interview", "POST");
 export const resetArea = (id: InterviewAreaId) => call(`/interview/${encodeURIComponent(id)}`, "DELETE");
 /** Reset the whole interview, so the offer can come again. The facts stay. */
 export const resetInterview = () => call("/interview", "DELETE");
-export const addFact = (text: string, kind: FactKind) =>
-  call<Fact>("/facts", "POST", { text, kind });
+export const addFact = (text: string, kind: FactKind, area?: InterviewAreaId) =>
+  call<Fact>("/facts", "POST", { text, kind, ...(area ? { area } : {}) });
 export const patchFact = (id: string, patch: { text: string } | { kind: FactKind }) =>
   call<Fact>(`/facts/${encodeURIComponent(id)}`, "PATCH", patch);
 export const deleteFact = (id: string) => call(`/facts/${encodeURIComponent(id)}`, "DELETE");
@@ -274,6 +360,53 @@ export function mergeAddress(current: Address, edit: { [K in keyof Address]?: Ad
 /** The new `style` value, built the same way. */
 export function mergeStyle(current: Style, edit: { [K in keyof Style]?: Style[K] | null | "" }): Style {
   return compact({ ...current, ...edit } as Style);
+}
+
+/**
+ * The next value of a draft field when the server value or the reset epoch may
+ * have changed. Null keeps the draft.
+ *
+ * A new epoch (Forget everything) always takes the server value. Otherwise a
+ * draft that still equals the server value it started from follows the new
+ * one, and a draft the member changed is theirs and stays.
+ */
+export function reconcileDraft(
+  draft: string,
+  seen: { server: string; epoch: number },
+  server: string,
+  epoch: number,
+): string | null {
+  if (epoch !== seen.epoch) return server;
+  if (server === seen.server) return null;
+  return draft === seen.server ? server : null;
+}
+
+/** The languages the picker offers, as BCP 47 tags the gateway accepts. */
+export const LANGUAGES: Record<string, string> = {
+  en: "English",
+  hi: "Hindi",
+  kn: "Kannada",
+  ta: "Tamil",
+  te: "Telugu",
+  mr: "Marathi",
+  bn: "Bengali",
+  gu: "Gujarati",
+  ml: "Malayalam",
+};
+
+/**
+ * The name the assistant uses when the profile holds none (D-PZ-5): the
+ * member's preferred name, then the first word of the display name. Null when
+ * neither is known.
+ */
+export function fallbackAddress(
+  preferred: string | null | undefined,
+  display: string | null | undefined,
+): { name: string; from: "preferred" | "display" } | null {
+  const p = (preferred ?? "").trim();
+  if (p) return { name: p, from: "preferred" };
+  const first = (display ?? "").trim().split(/\s+/)[0];
+  return first ? { name: first, from: "display" } : null;
 }
 
 /** True when a counter should warn: at or past 80% of its cap. */
@@ -336,6 +469,121 @@ export async function fetchExport(format: ExportFormat): Promise<{ body: Blob; f
   };
 }
 
+// ── Read as text (PZ-20a) ─────────────────────────────────────────────────
+
+/** The proxy path of the block. It takes no query. */
+export const BLOCK_PATH = "/api/auth/me/assistant-profile/block";
+
+/** What the assistant reads about the member. `text` is "" for no profile. */
+export interface ProfileBlock {
+  enabled: boolean;
+  text: string;
+}
+
+/**
+ * Fetch the text that the assistant reads about the member. A failed call
+ * throws a `ProfileError`, never an empty text, so a fault does not read as
+ * "the assistant sees nothing".
+ */
+export async function fetchBlock(): Promise<ProfileBlock> {
+  let res: Response;
+  try {
+    res = await fetch(BLOCK_PATH, { cache: "no-store" });
+  } catch {
+    throw new ProfileError(errorText("", 502), 0);
+  }
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = data && typeof data === "object" ? (data as { detail?: unknown }).detail : undefined;
+    throw new ProfileError(errorText(detail, res.status), res.status);
+  }
+  const d = data as { enabled?: unknown; text?: unknown } | null;
+  if (!d || typeof d.enabled !== "boolean" || typeof d.text !== "string") {
+    throw new ProfileError(errorText("", 502), 502);
+  }
+  return { enabled: d.enabled, text: d.text };
+}
+
+// ── Recent chats (PZ-35, `personalization.md` §15.5) ─────────────────────────
+
+/** One chat summary, as the gateway lists it. Only the member sees it. */
+export interface ChatSummary {
+  id: string;
+  title: string;
+  /** The date of the chat, ISO, or null. */
+  date: string | null;
+  text: string;
+  follow_ups: string[];
+}
+
+/** One page of summaries. `more` is true when the member has more than the page holds. */
+export interface SummariesPage {
+  summaries: ChatSummary[];
+  more: boolean;
+}
+
+/**
+ * What the profile read says about summaries: `enabled` is the flag of the
+ * organization (`summaries_enabled`), and `keep` is the switch of the member
+ * (`apps.chat.summaries`, on by default). Neither is part of the stored
+ * profile, so the pane holds them apart from `Profile`.
+ */
+export interface SummaryGate {
+  enabled: boolean;
+  keep: boolean;
+}
+
+export function summaryGate(raw: unknown): SummaryGate {
+  const r = (raw && typeof raw === "object" ? raw : {}) as {
+    summaries_enabled?: unknown;
+    apps?: { chat?: { summaries?: unknown } };
+  };
+  return { enabled: r.summaries_enabled === true, keep: r.apps?.chat?.summaries !== false };
+}
+
+/** The profile and the summary gate, from the one GET. */
+export async function fetchProfileAndGate(): Promise<{
+  profile: Profile;
+  gate: SummaryGate;
+  celebrations: CelebrationsGate;
+}> {
+  const raw = await call<Partial<Profile>>("", "GET");
+  return { profile: normalize(raw), gate: summaryGate(raw), celebrations: celebrationsGate(raw) };
+}
+
+/** The switch "Keep chat summaries". Forget keeps it. */
+export const saveKeepSummaries = (value: boolean) =>
+  call("", "PUT", { key: "apps", value: { chat: { summaries: value } } });
+
+/** The list. A fault throws a `ProfileError`, never an empty list. */
+export async function fetchSummaries(): Promise<SummariesPage> {
+  const d = await call<Partial<SummariesPage>>("/summaries", "GET");
+  if (!d || !Array.isArray(d.summaries)) throw new ProfileError(errorText("", 502), 502);
+  return { summaries: d.summaries, more: d.more === true };
+}
+export const deleteSummary = (id: string) => call(`/summaries/${encodeURIComponent(id)}`, "DELETE");
+export const deleteAllSummaries = () => call("/summaries", "DELETE");
+
+/** The link that opens one chat (the chat app's `open-chat` action). */
+export function chatHref(id: string): string {
+  return `/chat?do=open-chat&fill.session=${encodeURIComponent(id)}`;
+}
+
+/** The words of the confirm of Delete one. */
+export const DELETE_ONE_BODY =
+  "If you keep chatting in this chat, a new one can appear. You cannot undo this.";
+
+/** The words of the confirm of Delete all. They name the count. */
+export function deleteAllBody(page: SummariesPage): string {
+  return `This deletes all ${summaryCount(page)} chat summaries. The chats stay. If you keep chatting, new summaries can appear. To stop them, turn off Keep chat summaries. You cannot undo this.`;
+}
+
+/** The count in the confirm of Delete all. A full page may hide more, so it says so. */
+export function summaryCount(page: SummariesPage): string {
+  const n = page.summaries.length;
+  return page.more ? `${n} or more` : String(n);
+}
+
 // ── The interview list (PZ-27) ────────────────────────────────────────────
 
 /** The profile with one area back to open. The facts stay. */
@@ -353,9 +601,9 @@ export function withoutInterview(p: Profile): Profile {
 
 /** What the list shows for one area: its label and the state words. */
 export const STATE_LABELS: Record<InterviewState | "open", string> = {
-  open: "Open",
+  open: "Not asked yet",
   asked: "Asked",
   answered: "Answered",
   skipped: "Skipped",
-  never: "Never ask",
+  never: "Stopped asking",
 };

@@ -845,10 +845,14 @@ async def test_tier(
         text = await complete(
             tier=LLMTier(tier_id),
             messages=[{"role": "user", "content": "Reply with only: OK"}],
-            max_tokens=10,
+            max_tokens=64,
+            job="structured",
         )
         elapsed = int((time.monotonic() - t0) * 1000)
-        return TestResult(success=True, response=(text or "").strip() or "(empty response)", latency_ms=elapsed)
+        reply = (text or "").strip()
+        # An empty answer is a failed test, not a pass (task 1128).
+        return TestResult(success=bool(reply), response=reply or "(empty response)",
+                          latency_ms=elapsed)
     except Exception as exc:
         elapsed = int((time.monotonic() - t0) * 1000)
         return TestResult(success=False, response=str(exc), latency_ms=elapsed)
@@ -1586,40 +1590,7 @@ async def list_provider_models(
     Checks the on-disk cache first.  If the cache entry is stale or missing,
     falls back to the static list so the UI is never empty.  Use the refresh
     endpoint to populate / update the cache.
-
-    GitHub is special-cased to the LIVE Copilot SDK list (the same source the
-    chat model dropdown uses via ``/copilot/models``).  Without this the Models
-    page showed a stale static ``github/...`` list whose IDs never matched the
-    dropdown's live IDs (e.g. ``claude-sonnet-4.5``), so enabling a Copilot
-    model here had no effect on the picker.  Serving the same live IDs makes the
-    Models page the real source of truth for the picker's allow-list filter.
     """
-    if provider == "github":
-        try:
-            # Lazy import to avoid a circular import at module load (main.py
-            # imports this router).  Reuses main.py's 5-min cache + SDK fetch.
-            from gateway.main import copilot_models
-            data = await copilot_models()
-            raw_models = data.get("models", []) if isinstance(data, dict) else []
-            live = [
-                ModelInfo(
-                    id=str(m.get("id")),
-                    label=str(m.get("label") or m.get("id") or ""),
-                    provider="github",
-                    reasoning=bool(m.get("reasoning", False)),
-                    context_window=int(m.get("context_window") or 0),
-                    desc="Via your GitHub Copilot subscription",
-                )
-                # Drop the "auto" picker convenience — it's not a real
-                # toggleable model on the Models page.
-                for m in raw_models
-                if m.get("id") and str(m.get("id")) != "auto"
-            ]
-            if live:
-                return live
-        except Exception as exc:  # fall back to cache/static
-            _log.warning("settings.github_live_models_failed", error=str(exc)[:160])
-
     cache = _load_models_cache()
     entry = cache.get(provider, {})
     if entry and _cache_entry_fresh(entry):
@@ -2227,6 +2198,10 @@ _LOGO_MAX_EDGE = 2048
 _LOGO_MIN_ASPECT = 0.5
 _LOGO_MAX_ASPECT = 8.0
 
+#: The square mark's shape bounds (owner, 2026-11-01): near square.
+_MARK_MIN_ASPECT = 0.75
+_MARK_MAX_ASPECT = 1.34
+
 
 class OrgLogo(BaseModel):
     """A stored logo, as the shell needs it to render."""
@@ -2257,6 +2232,10 @@ class BrandingResponse(BaseModel):
     #: The dark-mode version, present only with `darkStyle` "white" or "own".
     logoDark: OrgLogo | None = None
     darkStyle: DarkStyle = "same"
+    #: The square mark for the folded sidebar (owner, 2026-11-01). The
+    #: admin's own, or the one the editor made. `None` on a logo saved before
+    #: it existed; the shell then draws one from the logo.
+    logoMark: OrgLogo | None = None
     updatedBy: str = ""
     updatedAt: str = ""
 
@@ -2276,6 +2255,9 @@ class BrandingUpload(BaseModel):
     logoBase64: str
     logoDarkBase64: str | None = None
     darkStyle: DarkStyle = "same"
+    #: The optional square mark. It passes every check the logo does, and it
+    #: must be near square (`_MARK_MIN_ASPECT`, `_MARK_MAX_ASPECT`).
+    logoMarkBase64: str | None = None
 
 
 def _coerce_branding(raw: Any) -> BrandingResponse:
@@ -2295,6 +2277,7 @@ def _coerce_branding(raw: Any) -> BrandingResponse:
 
     logo = _logo(blob.get("logo"))
     logo_dark = _logo(blob.get("logoDark"))
+    logo_mark = _logo(blob.get("logoMark"))
     style = blob.get("darkStyle")
     if style not in ("same", "white", "plate", "own"):
         style = "same"
@@ -2305,6 +2288,7 @@ def _coerce_branding(raw: Any) -> BrandingResponse:
         logo=logo,
         logoDark=logo_dark if (logo and style in _DARK_IMAGE_STYLES) else None,
         darkStyle=style if logo else "same",
+        logoMark=logo_mark if logo else None,
         updatedBy=str(blob.get("updatedBy") or ""),
         updatedAt=str(blob.get("updatedAt") or ""),
     )
@@ -2350,6 +2334,11 @@ def put_branding(
 
     logo = _accept_logo(body.logoBase64)
     logo_dark = _accept_logo(body.logoDarkBase64) if body.logoDarkBase64 else None
+    logo_mark = _accept_logo(body.logoMarkBase64) if body.logoMarkBase64 else None
+    if logo_mark is not None and not (
+        _MARK_MIN_ASPECT <= logo_mark.width / logo_mark.height <= _MARK_MAX_ASPECT
+    ):
+        raise HTTPException(status_code=400, detail="The square mark should be about as wide as it is tall.")
 
     updated_at = datetime.now(timezone.utc).isoformat()
     save_org_setting(
@@ -2358,6 +2347,7 @@ def put_branding(
             "logo": logo.model_dump(),
             "logoDark": logo_dark.model_dump() if logo_dark else None,
             "darkStyle": body.darkStyle,
+            "logoMark": logo_mark.model_dump() if logo_mark else None,
             "updatedBy": user.email or "",
             "updatedAt": updated_at,
         },
@@ -2376,6 +2366,7 @@ def put_branding(
         logo=logo,
         logoDark=logo_dark,
         darkStyle=body.darkStyle,
+        logoMark=logo_mark,
         updatedBy=user.email or "",
         updatedAt=updated_at,
     )
@@ -2390,7 +2381,7 @@ def _accept_logo(raw: str) -> OrgLogo:
     import base64  # noqa: PLC0415
     import binascii  # noqa: PLC0415
 
-    from gateway.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
+    from acb_common.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
 
     payload = raw.strip()
     # Accept a data URI prefix so a caller that pasted one is not stuck, but

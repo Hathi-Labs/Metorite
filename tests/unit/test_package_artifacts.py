@@ -687,7 +687,15 @@ def test_a_no_egress_run_keeps_it() -> None:
     assert "package_artifacts" in _tool_names(agent)
 
 
-@pytest.mark.parametrize(("agent_dir", "agent_name", "runtime"), AGENTS)
+from acb_skills.subagent_contract import INTERNAL_AGENTS  # noqa: E402
+
+
+# OA-9b: an internal agent (the worker) holds exactly the tools of its job
+# (SUB-1, spec §6.8), so it is the one agent that never holds this tool.
+@pytest.mark.parametrize(
+    ("agent_dir", "agent_name", "runtime"),
+    [a for a in AGENTS if a[1] not in INTERNAL_AGENTS],
+)
 def test_every_agent_holds_it_and_reads_when_to_use_it(
     agent_dir: str, agent_name: str, runtime: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -710,6 +718,17 @@ def test_every_agent_holds_it_and_reads_when_to_use_it(
         tool = next(t for t in pool if ti._tool_name(t) == "package_artifacts")
         text = str(getattr(tool, "description", "") or getattr(tool, "__doc__", ""))
         assert "zip, package or bundle" in text, agent_name
+
+
+@pytest.mark.parametrize(
+    ("agent_dir", "agent_name", "runtime"),
+    [a for a in AGENTS if a[1] in INTERNAL_AGENTS],
+)
+def test_an_internal_agent_never_holds_it(
+    agent_dir: str, agent_name: str, runtime: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _built(agent_dir, agent_name, monkeypatch)
+    assert "package_artifacts" not in _tool_names(agent), agent_name
 
 
 # ═════════════════════════ the route (R8) ═══════════════════════════════════

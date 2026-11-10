@@ -24,6 +24,7 @@ for it. Fence: ``tests/unit/test_delegation_no_egress.py``.
 """
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterable
 from typing import Any, Callable
 
@@ -33,6 +34,8 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "call_agent":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     "call_agents_parallel":  {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     "call_agent_background": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
+    # WS-67 OA-9b: children that only read, started by the main assistant.
+    "spawn_subagents":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     # Web access
     "web_search":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
     "fetch_page":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
@@ -50,6 +53,11 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-VOX VOX-3: an attached image to tier-vision through the Console. It
+    # changes no record, and it reaches only the metered model, so it is no
+    # egress tool. Each call counts against a cap and draws credits, so it is
+    # not idempotent.
+    "analyze_image":         {"read_only": True,  "destructive": False, "idempotent": False, "open_world": False},
     # Memory
     "remember":              {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "recall_timeline":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -148,6 +156,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # `GET /crm/notes/search` as the member. The query goes to the platform's
     # own embed door, as for `search_company`.
     "crm_search_notes":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-CRM CRM-M1: the Change history of the CRM set-up. It reads
+    # `GET /crm/change-history` as the member, and nothing leaves the platform.
+    "crm_change_history":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-53 CRM-Q32-5: the org-facts read (`org_facts_tools.py`). It reads
     # `GET /org/facts` as the member, and nothing leaves the platform.
     "org_facts":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -195,6 +206,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # words in tenant Redis, and nothing leaves the platform.
     "keep_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
     "drop_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    # CTX-1 (#825): pages of a stored tool result. It reads an in-process
+    # store of this chat and nothing leaves the platform.
+    "read_tool_result":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
 }
 
 #: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
@@ -217,6 +231,10 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # Not H-236's, and left out for the same reason: only a WhatsApp run holds
     # it, so the block of every other agent stays byte-identical.
     "whatsapp_ui",
+    # WS-67 OA-9b: only the orchestrator holds it, and only for an org on
+    # SPAWN_SUBAGENTS_ORGS. No other agent's block names it, so every block
+    # stays byte-identical.
+    "spawn_subagents",
     # WS-53 CRM-C7: the twelve CRM reads. They only read, so the risk block
     # gains nothing from them, and it stays byte-identical for every agent.
     "crm_list_records",
@@ -233,6 +251,8 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "crm_get_module_record",
     # WS-53 CRM-Q27: the search of notes reads only, on the same terms.
     "crm_search_notes",
+    # WS-CRM CRM-M1: the read of the Change history, on the same terms.
+    "crm_change_history",
     # WS-53 CRM-Q32-5: the org-facts read, on the same terms.
     "org_facts",
     # WS-53 CRM-Q32-8: the reply of a card that the member picked. It is no
@@ -270,6 +290,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # stays byte-identical.
     "keep_correction",
     "drop_correction",
+    # CTX-1 (#825): the page reader of a stored result. It only reads, and
+    # only the orchestrator holds it, behind TOOL_RESULT_SPILL `on`.
+    "read_tool_result",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
@@ -283,6 +306,11 @@ _AGENT_OWN: set[str] = set()
 #: these, so it no longer depends on what one process imported.
 _PLATFORM_STATIC: frozenset[str] = frozenset(TOOL_ANNOTATIONS)
 
+#: RX-1: the parameters of each tool that says ``card_write``, read when the
+#: tool registers. A caller with only a NAME cannot read a signature, so
+#: ``egress.is_held_card_write`` holds a bare name to this record.
+CARD_WRITE_PARAMS: dict[str, frozenset[str]] = {}
+
 
 def annotate(
     *,
@@ -291,6 +319,7 @@ def annotate(
     idempotent: bool = False,
     open_world: bool | None = None,
     card_bound: bool = False,
+    card_write: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering risk annotations for an agent-defined tool.
 
@@ -303,6 +332,11 @@ def annotate(
     nothing in a held run: ``egress.is_card_bound_send`` also needs the
     tool's name on its list and its pinned parameters. The key is set only
     when it is true, so every other tool's hints stay as they were.
+
+    ``card_write`` (RX-1, D169) marks a first-party write that always shows
+    its exact change on one card. The mark alone keeps nothing in a held
+    chat: ``egress.is_held_card_write`` also needs the tool's name on its
+    list and its pinned parameters.
 
     Example::
 
@@ -318,11 +352,15 @@ def annotate(
         hints["open_world"] = bool(open_world)
     if card_bound:
         hints["card_bound"] = True
+    if card_write:
+        hints["card_write"] = True
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         TOOL_ANNOTATIONS[fn.__name__] = hints
         _AGENT_OWN.add(fn.__name__)
         fn.__tool_risk__ = hints  # type: ignore[attr-defined]
+        if card_write:
+            CARD_WRITE_PARAMS[fn.__name__] = frozenset(inspect.signature(fn).parameters)
         return fn
 
     return _wrap

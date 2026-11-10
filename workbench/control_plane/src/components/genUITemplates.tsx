@@ -27,6 +27,7 @@
  */
 
 import { createElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import GenUIFallback from "@/components/GenUIFallback";
 import LiveChart from "@/components/LiveChart";
@@ -57,6 +58,7 @@ import { useNumberSystem } from "@/lib/numberSystem";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
 import { sentFormValues } from "@/lib/askOutcome";
@@ -65,6 +67,7 @@ import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import SuggestionPills from "@/components/SuggestionPills";
+import { runHelloChip } from "@/lib/shell/buddyHello";
 import { clipWords, plainTitle } from "@/lib/fencedText";
 import { type CardFamily, templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -92,19 +95,68 @@ import {
   isEmptyCell,
   splitMany,
 } from "@/lib/dataGridLayout";
+import {
+  REMINDER_CHIPS,
+  actOfWords,
+  actResultWords,
+  actTurn,
+  chipsLabel,
+  closedWords,
+  reminderActs,
+  runReminderAct,
+  useKnownReminder,
+} from "@/lib/shell/reminderOpen";
+import { laterPresets } from "@/lib/reminderClock";
+import { useMemberZone } from "@/lib/shell/memberZone";
+import { snoozeZone } from "@/lib/shell/reminderBand";
 import { statusAccent } from "@/lib/statusAccent";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
 
 type Data = Record<string, unknown>;
 
+/**
+ * The glass card language for a template (GL-10a, `glass_look.md` GL-4),
+ * copied from ConfirmationCard and ToolCardShell: a 22 px surface with a
+ * hairline and no border, and a solid icon tile for the title's icon
+ * (the card-tile utility of globals.css). A template draws its frame as an inline style, which
+ * beats a class, so each glass utility carries `!`. Under classic the
+ * variant matches nothing and the markup is what it was
+ * (`glassCards.test.ts`).
+ *
+ * Never the chrome or menu material here: a card holds non-portalled `fixed` children.
+ */
+const G_FRAME = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised! glass:p-4!";
+/** The frame of a card that waits on the member: the raised card with a
+ *  hairline in the tint. A wash of the tint read as navy on the dark page. */
+const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[16px]! glass:border-primary/35! glass:glass-raised! glass:p-4!";
+/** A frame whose children bring their own padding (a table, a comparison). */
+const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised!";
+/** A card drawn INSIDE another card (a table in a report). The parent is the
+ *  raised surface, so the inner one keeps a visible hairline and no second
+ *  raise. A transparent border here drew only the corners (task 1651). */
+const G_NESTED = "glass:glass-card-tile glass:rounded-[12px]! glass:border-border! glass:p-3!";
+/** An inner group: a rounded block on the card, with no border. */
+const G_BLOCK = "glass:rounded-[10px]! glass:border-transparent! glass:bg-secondary!";
+/** A field of a form: a rounded fill with no border. */
+const G_FIELD = "glass:rounded-[10px]! glass:border-transparent! glass:bg-field!";
+/** The solid tile's colour, one per kind of card. */
+const T_BLUE = "glass:[--tile:var(--system-blue)]";
+const T_TEAL = "glass:[--tile:var(--system-teal)]";
+const T_GREEN = "glass:[--tile:var(--system-green)]";
+const T_ORANGE = "glass:[--tile:var(--system-orange)]";
+const T_INDIGO = "glass:[--tile:var(--system-indigo)]";
+const T_PURPLE = "glass:[--tile:var(--system-purple)]";
+const T_PINK = "glass:[--tile:var(--system-pink)]";
+
 /** Small inline Lucide icon for templates (optional `icon` fields). */
-function TIcon({ name, size = 16, color }: { name?: unknown; size?: number; color?: string }) {
+function TIcon({ name, size = 16, color, className }: { name?: unknown; size?: number; color?: string; className?: string }) {
   if (!name || typeof name !== "string") return null;
   // createElement (not <Icon/>) so the resolved component isn't flagged as
   // declared-during-render (react-hooks/static-components).
   return createElement(resolveIcon(name), {
     size, strokeWidth: 1.75, color: color ?? "currentColor", "aria-hidden": true,
+    ...(className ? { className } : {}),
   });
 }
 
@@ -241,6 +293,20 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "report",
     summary: "A report make_report wrote: KPI tiles, a summary, sections with their charts and tables, the sources and a PDF. Opens in full in the side panel.",
     data: "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
+    family: "result",
+  },
+  // ── A reminder that a tap opened (WS-66 RM-4) ───────────────────────────
+  {
+    name: "reminderCard",
+    summary: "A reminder that a tap opened in the chat, with its chips: Done, Not yet, Later, Drop, Make it a task. The server writes it as the chat's first row. An agent does not emit it.",
+    data: "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
+    family: "result",
+  },
+  // ── The hello of a new member (WS-BUD BUD-1) ────────────────────────────
+  {
+    name: "buddyHello",
+    summary: "The hello a new member sees in the assistant, with three chips: Show me around, What can you do here?, I'll look around. The server writes it as the chat's first row. An agent does not emit it.",
+    data: "{ chips:[{ id('tour'|'ask'|'look'), label }] }",
     family: "result",
   },
 ];
@@ -401,7 +467,7 @@ function WeatherCard({ data }: { data: Data }) {
   const animated = useCountUp(temp);
   const forecast = arr(data.forecast);
   return (
-    <div style={{
+    <div className={`${G_FRAME} ${T_TEAL} glass:bg-none!`} style={{
       borderRadius: 14, padding: 16, border: "1px solid var(--border)",
       background: "linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, var(--card)), var(--card))",
     }}>
@@ -511,7 +577,7 @@ function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
   // formatter. The browser's locale grouped it before (WS-47 follow-up).
   const numbering = useNumberSystem();
   return (
-    <div data-stat-tile={dense ? "dense" : ""} style={{
+    <div data-stat-tile={dense ? "dense" : ""} className={G_BLOCK} style={{
       flex: 1, minWidth: dense ? 0 : 110, padding: dense ? "6px 8px" : 12, borderRadius: dense ? 8 : 12,
       border: "1px solid var(--border)", background: "var(--card)",
       animation: "ccFadeUp .4s ease both",
@@ -542,7 +608,7 @@ function StatDashboard({ data }: { data: Data }) {
   // holds the header and the tiles, as the other chat templates draw.
   const fold = useCardFold();
   return (
-    <div style={fold ? CARD_BOX : undefined}>
+    <div className={fold ? `${G_FRAME} ${T_BLUE}` : undefined} style={fold ? CARD_BOX : undefined}>
       <TemplateHead icon="layout-dashboard" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -585,7 +651,7 @@ function SparkTrend({ data }: { data: Data }) {
   const fold = useCardFold();
   const label = templateTitle("sparkTrend", data);
   return (
-    <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+    <div className={`${G_FRAME} ${T_GREEN}`} style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
     <TemplateHead icon="trending-up" title={label || null} foldOnly />
     <TemplateBody>
     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -618,7 +684,7 @@ function Comparison({ data }: { data: Data }) {
   // card folds even with no title, so the toggle has its place.
   const fold = useCardFold();
   return (
-    <div style={{ borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
+    <div className={`${G_FRAME_FLUSH} ${T_INDIGO}`} style={{ borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
       {(data.title != null || fold?.toggle) && (
         <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", background: "var(--card)" }}>
           <TemplateHead icon="scale" title={data.title != null ? str(data.title) : null} gap={0} />
@@ -628,7 +694,8 @@ function Comparison({ data }: { data: Data }) {
       <div style={{ display: "grid", gridTemplateColumns: `140px repeat(${options.length}, 1fr)` }}>
         <div style={{ background: "var(--card)" }} />
         {options.map((o, i) => (
-          <div key={i} style={{
+          // Glass: the badge is the tint, so the column takes the tint too.
+          <div key={i} className={o.recommended ? "glass:bg-primary/[0.10]!" : undefined} style={{
             padding: "8px 10px", fontSize: TYPE.xs, fontWeight: 600, textAlign: "center",
             color: "var(--foreground)",
             // The highlight family of the Recommended badge, so the column
@@ -643,14 +710,14 @@ function Comparison({ data }: { data: Data }) {
         ))}
         {rowLabels.map((label, ri) => (
           <div key={label} style={{ display: "contents" }}>
-            <div style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
+            <div className="glass:bg-transparent!" style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
               borderTop: "1px solid var(--border)", background: ri % 2 ? "var(--secondary)" : "transparent" }}>
               {label}
             </div>
             {options.map((o, ci) => {
               const row = arr(o.rows).map((r) => (r ?? {}) as Data).find((r) => str(r.label) === label);
               return (
-                <div key={ci} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
+                <div key={ci} className={o.recommended ? "glass:bg-primary/[0.06]!" : "glass:bg-transparent!"} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
                   color: "var(--foreground)", borderTop: "1px solid var(--border)", borderLeft: "1px solid var(--border)",
                   background: o.recommended ? "color-mix(in srgb, var(--warning) 6%, transparent)" : (ri % 2 ? "var(--secondary)" : "transparent") }}>
                   {row ? str(row.value) : "—"}
@@ -670,7 +737,7 @@ function ProgressTracker({ data }: { data: Data }) {
   const done = steps.filter((s) => str(s.state) === "done").length;
   const pct = steps.length ? (done / steps.length) * 100 : 0;
   return (
-    <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+    <div className={`${G_FRAME} ${T_GREEN}`} style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
       <TemplateHead icon="gauge" title={data.title != null ? str(data.title) : null} gap={10} />
       <TemplateBody>
       <div style={{ height: 6, borderRadius: 3, background: "var(--secondary)", overflow: "hidden", marginBottom: 12 }}>
@@ -736,7 +803,7 @@ function RecipeCard({ data }: { data: Data }) {
   );
   const hasIntro = data.description != null || meta.length > 0;
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
+    <div className={`${G_FRAME_FLUSH} ${T_ORANGE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
       <div style={{
         padding: "14px 16px", borderBottom: "1px solid var(--border)",
         background: "linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--card)), var(--card))",
@@ -848,7 +915,7 @@ function FlightStatus({ data }: { data: Data }) {
   const pct = Math.max(0, Math.min(100, num(data.progressPct,
     status === "landed" ? 100 : status === "in-air" ? 50 : 0)));
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
+    <div className={`${G_FRAME} ${T_BLUE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       <TemplateHead icon="plane" title={templateTitle("flightStatus", data)} gap={12}
         aside={data.date != null ? str(data.date) : undefined} end={<StatusBadge status={status} />} />
       <TemplateBody>
@@ -886,7 +953,7 @@ function TrainStatus({ data }: { data: Data }) {
   const stops = arr(data.stops).map((s) => (s ?? {}) as Data);
   const delay = num(data.delayMin);
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
+    <div className={`${G_FRAME} ${T_BLUE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       <TemplateHead icon="train-front" title={templateTitle("trainStatus", data)} gap={12} end={
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {delay > 0 && (
@@ -991,7 +1058,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     exit.current.decline(off);
   };
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
+    <div className={`${locked ? G_FRAME : G_FRAME_ASK} ${T_ORANGE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       <TemplateHead icon="clipboard-list" rich gap={4} title={data.title != null ? str(data.title) : null}
         actions={canDecline ? <NotNowClose onClick={decline} /> : undefined} />
       <TemplateBody>
@@ -1036,7 +1103,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 )}
               </span>
               {type === "select" ? (
-                <select value={str(v)} disabled={locked} style={FIELD_INPUT_STYLE}
+                <select value={str(v)} disabled={locked} className={G_FIELD} style={FIELD_INPUT_STYLE}
                   onChange={(e) => set(name, e.target.value)}>
                   <option value="" disabled>{str(f.placeholder, "Choose…")}</option>
                   {arr(f.options).map((o) => (
@@ -1045,7 +1112,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 </select>
               ) : type === "textarea" ? (
                 <textarea value={str(v)} disabled={locked} rows={3} placeholder={str(f.placeholder)}
-                  style={{ ...FIELD_INPUT_STYLE, resize: "vertical" }}
+                  className={G_FIELD} style={{ ...FIELD_INPUT_STYLE, resize: "vertical" }}
                   onChange={(e) => set(name, e.target.value)} />
               ) : type === "toggle" ? (
                 <button type="button" disabled={locked} onClick={() => set(name, !v)}
@@ -1053,7 +1120,8 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                   style={{ width: 40, height: 22, borderRadius: 999, border: "1px solid var(--border)",
                     background: v ? "var(--primary)" : "var(--secondary)", position: "relative",
                     cursor: locked ? "default" : "pointer", transition: "background 0.2s var(--cc-ease, ease)" }}>
-                  <span style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
+                  {/* Glass: the knob is white in both states, as a system switch. */}
+                  <span className="glass:bg-white! glass:shadow-sm" style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
                     borderRadius: "50%", background: v ? "var(--primary-foreground)" : "var(--foreground)",
                     transition: "left 0.2s var(--cc-ease, ease)" }} />
                 </button>
@@ -1066,7 +1134,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 <input type={type === "number" ? "number" : type === "date" ? "date" : "text"}
                   value={str(v)} disabled={locked} placeholder={str(f.placeholder)}
                   min={f.min != null ? num(f.min) : undefined} max={f.max != null ? num(f.max) : undefined}
-                  style={FIELD_INPUT_STYLE}
+                  className={G_FIELD} style={FIELD_INPUT_STYLE}
                   onChange={(e) => set(name, type === "number" && e.target.value !== ""
                     ? parseFloat(e.target.value) : e.target.value)} />
               )}
@@ -1157,7 +1225,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   };
   return (
-    <div style={CARD_BOX}>
+    <div className={`${locked ? G_FRAME : G_FRAME_ASK} ${T_ORANGE}`} style={CARD_BOX}>
       <TemplateHead icon="list-checks" gap={4} rich title={data.title != null ? str(data.title) : null}
         actions={canDecline ? <NotNowClose onClick={decline} /> : undefined} />
       <TemplateBody>
@@ -1172,6 +1240,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           return (
             <button key={id} type="button" onClick={() => toggle(id)} disabled={locked}
               aria-pressed={active}
+              className={`glass:rounded-[10px]! ${active ? "glass:bg-primary/[0.12]!" : "glass:border-transparent! glass:bg-secondary!"}`}
               // A column from the top: a button centres its content, so an
               // option with a Recommended badge set the row height and the
               // titles beside it sat lower (follow-up 5 of #766).
@@ -1268,6 +1337,11 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "recipeCard", "flightStatus", "trainStatus", "formCard", "barChart", "chart",
   // A report the agent makes (2026-10-16).
   "report",
+  // A reminder that a tap opened (WS-66 RM-4).
+  "reminderCard",
+  // The hello (WS-BUD BUD-1) draws no head at all: the chat's title says Welcome.
+  // It is here so the frame adds no generic "Card" header over its chips.
+  "buddyHello",
 ]);
 
 /**
@@ -1309,12 +1383,12 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, acti
       <div className="flex min-w-0 items-center gap-1.5">
         <div className="min-w-0 flex-1">
           <CollapsibleCardHeader
-            lead={<TIcon name={icon} size={14} color="var(--primary)" />}
+            lead={<TIcon name={icon} size={14} color="var(--primary)" className="glass:stroke-current" />}
             title={title === null ? undefined : plainTitle(title)}
             quiet={title === null}
             aside={aside}
             className="text-sm"
-            titleClassName="font-semibold text-foreground"
+            titleClassName="font-semibold text-foreground glass:text-subhead"
           />
         </div>
         {end != null && <div data-template-end="" className="flex shrink-0 items-center">{end}</div>}
@@ -1390,7 +1464,7 @@ function Timeline({ data }: { data: Data }) {
           // its hue is information, so a semantic tone (AGENTS.md rule 7).
           : MILESTONE_TONE[type] ?? "var(--border)";
   return (
-    <div style={CARD_BOX}>
+    <div className={`${G_FRAME} ${T_INDIGO}`} style={CARD_BOX}>
       <TemplateHead icon="history" title={str(data.title, "Timeline")} href={taskHref(data.taskId)}
         aside={data.total != null ? `${rows.length} of ${num(data.total)}` : undefined} />
       <TemplateBody>
@@ -1458,7 +1532,7 @@ function TaskChip({ t }: { t: Data }) {
   // wrapped one word per line. The chip now sits in the facts row under it,
   // with the assignees as person chips and the due date.
   const body = (
-    <div data-board-card="" style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
+    <div data-board-card="" className={G_BLOCK} style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
       padding: "6px 8px", marginBottom: 6, opacity: t.done ? 0.6 : 1 }}>
       <div style={{ ...CELL, overflowWrap: "anywhere" }}>
         {t.number != null && <span style={{ ...MUTED, marginRight: 4 }}>#{str(t.number)}</span>}
@@ -1498,7 +1572,7 @@ function TaskBoard({ data }: { data: Data }) {
     };
   }, [columns.length]);
   return (
-    <div style={CARD_BOX}>
+    <div className={`${G_FRAME} ${T_PURPLE}`} style={CARD_BOX}>
       <TemplateHead icon="kanban" title={str(data.title, "Board")} gap={10}
         aside={data.total != null ? `${num(data.total)} tasks` : undefined} />
       <TemplateBody>
@@ -1588,13 +1662,29 @@ function rootRemPx(): number {
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
+ * The cell editing of a Studio Table (STU-D2b). A grid with no `edit` draws as
+ * it always did. `components/studio/StudioTable.tsx` supplies one, and the
+ * store behind it is `lib/studio/inlineEdit.ts`. A row with no `id` never edits.
+ */
+export interface GridEdit {
+  /** Can the cells of column `index` edit? */
+  can(index: number): boolean;
+  /** The editor that replaces the cell, or null to draw the cell with an edit button. */
+  editor(rowId: string, index: number): React.ReactNode | null;
+  /** The member asked to edit this cell. */
+  open(rowId: string, index: number): void;
+  /** Is a save of this cell in flight? */
+  pending(rowId: string, index: number): boolean;
+}
+
+/**
  * The `dataGrid` template. It draws a table where the box is wide enough,
  * and stacked rows where it is not (`lib/dataGridLayout.ts`). `layout` fixes
  * one of the two, for a test. The data may also carry `kinds`, one card kind
  * per column (`task_dataset` sends them). Without them, each column takes
  * the kind of its card label.
  */
-export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
+export function DataGrid({ data, layout, edit, nested }: { data: Data; layout?: GridLayout; edit?: GridEdit; nested?: boolean }) {
   const kinds = Array.isArray(data.kinds)
     ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
     : undefined;
@@ -1604,6 +1694,14 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   const { shown, categoryAt, primaryAt } = gridColumns(labels, kinds);
   const base = str(data.openBase, "/projects?task=");
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  // A Studio table (`data.filterable`) shows a box that keeps the rows whose
+  // cells hold the typed words (STU-D2a). Other grids draw as they did.
+  const filterable = data.filterable === true;
+  const [filter, setFilter] = useState("");
+  const query = filterable ? filter.trim().toLowerCase() : "";
+  const kept = query
+    ? rows.filter((r) => arr(r.cells).some((c) => cellText(c).toLowerCase().includes(query)))
+    : rows;
   const boxRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -1632,9 +1730,9 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       el.removeEventListener("scroll", check);
       observer?.disconnect();
     };
-  }, [mode, rows.length]);
+  }, [mode, kept.length]);
   const sorted = sort
-    ? [...rows].sort((a, b) => {
+    ? [...kept].sort((a, b) => {
       const av = arr(a.cells)[sort.col];
       const bv = arr(b.cells)[sort.col];
       const an = typeof av === "number" ? av : parseFloat(cellText(av));
@@ -1642,32 +1740,62 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * sort.dir;
       return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
-    : rows;
-  const cellOf = (r: Data, c: GridColumn) => (
+    : kept;
+  // A cell that edits shows its editor, or a button that opens it (STU-D2b).
+  const withEdit = (r: Data, c: GridColumn, plain: React.ReactNode): React.ReactNode => {
+    const id = str(r.id);
+    if (!edit || !id || !edit.can(c.index)) return plain;
+    const editor = edit.editor(id, c.index);
+    if (editor !== null) return editor;
+    const busy = edit.pending(id, c.index);
+    return (
+      <Button type="button" variant="text" size="none" radius="keep" layout="block" data-cell-edit=""
+        aria-label={`Edit ${c.label}`} aria-busy={busy || undefined} disabled={busy}
+        onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
+        className="min-h-5 w-full min-w-8 cursor-text text-left">
+        {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
+        {/* A quiet pencil says the cell edits. It needs no hover, so touch sees it too. */}
+        <span data-edit-mark="" aria-hidden="true"
+          style={{ display: "inline-block", marginLeft: 4, verticalAlign: "middle", opacity: 0.45 }}>
+          <Icon name="Pencil" size={10} />
+        </span>
+      </Button>
+    );
+  };
+  const cellOf = (r: Data, c: GridColumn) => withEdit(r, c, (
     <GridCell kind={c.kind} cell={arr(r.cells)[c.index]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
-  );
+  ));
   const titleOf = (r: Data) => {
-    const href = taskHref(r.id, base);
+    // An empty `openBase` means "no link": a Studio record id is a UUID, and `base + id` would be a bad relative link.
+    const href = base ? taskHref(r.id, base) : null;
     // The title draws by its column's kind: a groups table by stage puts the
     // stage first, and it reads as its label, never the key (review round 1).
     const kind = shown.find((c) => c.index === primaryAt)?.kind ?? "text";
     const cell = <GridCell kind={kind} cell={arr(r.cells)[primaryAt]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />;
-    return href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const plain = href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const primary = shown.find((c) => c.index === primaryAt);
+    return primary ? withEdit(r, primary, plain) : plain;
   };
   const lead = shown.find((c) => c.role === "lead");
   return (
-    <div ref={boxRef} data-grid-layout={mode} style={CARD_BOX}>
+    <div ref={boxRef} data-grid-layout={mode} className={`${nested ? G_NESTED : G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
       <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
+      {filterable && (
+        <div style={{ marginBottom: 6 }}>
+          <Input inputSize="sm" icon="Search" value={filter} placeholder="Filter rows"
+            aria-label="Filter rows" onChange={(e) => setFilter(e.target.value)} />
+        </div>
+      )}
       {mode === "stacked" ? (
         <div style={{ maxHeight: 420, overflowY: "auto" }}>
-          {rows.map((r, i) => {
+          {kept.map((r, i) => {
             const facts = shown.filter((c) => c.role === "secondary" && !isEmptyCell(arr(r.cells)[c.index]));
             return (
               <div key={str(r.id) || i} data-grid-row="" style={{ padding: "6px 0",
-                borderBottom: i < rows.length - 1 ? "1px solid var(--border)" : "none" }}>
+                borderBottom: i < kept.length - 1 ? "1px solid var(--border)" : "none" }}>
                 <div style={{ ...CELL, overflowWrap: "anywhere" }}>
                   {lead && <span style={{ ...MUTED, marginRight: 4 }}>{cellText(arr(r.cells)[lead.index])}</span>}
                   {titleOf(r)}
@@ -1690,11 +1818,11 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
               </div>
             );
           })}
-          {rows.length === 0 && <div style={{ ...MUTED, padding: 8 }}>No rows.</div>}
+          {kept.length === 0 && <div style={{ ...MUTED, padding: 8 }}>{query ? "No rows match." : "No rows."}</div>}
         </div>
       ) : (
         <>
-          <div ref={scrollRef} style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+          <div ref={scrollRef} className="glass:rounded-[10px] glass:ring-1 glass:ring-border" style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
@@ -1726,7 +1854,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
                   </tr>
                 ))}
                 {sorted.length === 0 && (
-                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>No rows.</td></tr>
+                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>{query ? "No rows match." : "No rows."}</td></tr>
                 )}
               </tbody>
             </table>
@@ -1767,7 +1895,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   // 2026-10-13). Elsewhere it is the column it always was.
   const fold = useCardFold();
   return (
-    <div style={fold ? CARD_BOX : undefined} data-report-pills={pills.length > 0 ? "" : undefined}>
+    <div className={fold ? `${G_FRAME} ${T_INDIGO}` : undefined} style={fold ? CARD_BOX : undefined} data-report-pills={pills.length > 0 ? "" : undefined}>
       {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
       <TemplateHead icon="file-text" gap={10} title={str(data.title, "Report")} href={pills.length > 0 ? null : reportLink()}
         aside={data.period != null ? str(data.period) : undefined} />
@@ -1778,7 +1906,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           click, so the file is the Reports app's numbers of that moment. */}
       <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
-      {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+      {tables.map((t, i) => <DataGrid key={i} nested={fold != null} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
       {pills.length > 0 && (
         <SuggestionPills suggestions={pills} onPick={(line) => ctx?.onAction?.(line)} label={BRIEF_PILLS_LABEL} align="start" />
       )}
@@ -1799,10 +1927,148 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
  */
 function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   return (
-    <div data-plan-card="" className="@container min-w-0" style={CARD_BOX}>
+    <div data-plan-card="" className={`@container min-w-0 ${ctx?.answered ? G_FRAME : G_FRAME_ASK} ${T_ORANGE}`} style={CARD_BOX}>
       <TemplateHead icon="list-todo" title="Plan" gap={8} />
       <TemplateBody>
         <PlanCardBody data={data} onAction={ctx?.onAction} answered={ctx?.answered ?? ""} onDecline={ctx?.onDecline} />
+      </TemplateBody>
+    </div>
+  );
+}
+
+/**
+ * A reminder that a tap opened in the chat (WS-66 RM-4,
+ * `calendar_events_reminders.md` §5.7). The server writes it as the chat's
+ * first row, under the first message. The chips are the one pill row of the
+ * brief (`SuggestionPills`). Done, Not yet and Drop call the member's own
+ * reminder routes at once, and Undo calls `/reopen` (D-CF-5). Later and Make
+ * it a task send the member's words to the model through `onAction`. The
+ * newest row comes from `lib/shell/reminderOpen.ts`, so a chip's answer
+ * shows after a remount. With no `onAction` (the side panel) the card draws
+ * read-only, with no chips.
+ */
+function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const id = str(data.reminderId);
+  const known = useKnownReminder(id);
+  const state = known?.row.state ?? str(data.state);
+  const resolution = known ? known.row.resolution : data.resolution == null ? null : str(data.resolution);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  // The presets of "Later" read the member's SAVED zone, as the window of My
+  // Day does, else the browser's (RX-7).
+  const laterZone = snoozeZone(useMemberZone());
+  // "Later" asks for a time first: three presets, then `/snooze` (RX-2).
+  const [choosing, setChoosing] = useState(false);
+  const acts = ctx?.onAction ? reminderActs({ state, resolution, via: known?.via }) : [];
+  const link = str(data.link).trim();
+  const closed = said ? "" : closedWords(state, resolution);
+  const pickLater = async (words: string) => {
+    if (busy) return;
+    if (words === "Back") {
+      setChoosing(false);
+      return;
+    }
+    const zone = laterZone;
+    const preset = laterPresets(Date.now(), zone).find((p) => p.label === words);
+    if (!preset) return;
+    setChoosing(false);
+    setBusy(true);
+    const got = await runReminderAct(id, "later", fetch, { fireAt: preset.time.iso, tz: zone });
+    setBusy(false);
+    setSaid(got.ok ? actResultWords("later", got.row, zone) : got.words);
+  };
+  const pick = async (words: string) => {
+    const act = actOfWords(words);
+    if (!act || busy) return;
+    if (act === "later") {
+      setChoosing(true);
+      return;
+    }
+    const turn = actTurn(act);
+    if (turn) {
+      ctx?.onAction?.(turn);
+      return;
+    }
+    setBusy(true);
+    const got = await runReminderAct(id, act);
+    setBusy(false);
+    setSaid(got.ok ? actResultWords(act, got.row, str(data.zone) || null) : got.words);
+  };
+  const fold = useCardFold();
+  return (
+    <div className={fold ? `${G_FRAME} ${T_PINK}` : undefined} style={fold ? CARD_BOX : undefined} data-reminder-card="" aria-busy={busy || undefined}>
+      <TemplateHead icon="bell" title={str(data.title, "Reminder") || "Reminder"} aside={str(data.when) || undefined} />
+      <TemplateBody>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {link ? <div className="text-xs text-muted-foreground" data-reminder-link="">{link}</div> : null}
+          {closed ? <div className="text-xs text-muted-foreground" data-reminder-closed="">{closed}</div> : null}
+          <div role="status" className="text-xs text-foreground" data-reminder-said="">{said ?? ""}</div>
+          {acts.length > 0 && !choosing && (
+            <SuggestionPills
+              suggestions={acts.map((a) => REMINDER_CHIPS[a])}
+              onPick={(words) => void pick(words)}
+              label={chipsLabel(acts)}
+              align="start"
+              disabled={busy}
+            />
+          )}
+          {acts.length > 0 && choosing && (
+            <SuggestionPills
+              suggestions={laterPresets(Date.now(), laterZone).map((p) => p.label).concat("Back")}
+              onPick={(words) => void pickLater(words)}
+              label="Remind me again"
+              align="start"
+              disabled={busy}
+            />
+          )}
+        </div>
+      </TemplateBody>
+    </div>
+  );
+}
+
+// ── The hello of a new member (WS-BUD BUD-1, D177) ──────────────────────────
+//
+// The server writes the row and its words (`routes/chat_brief.py`). This card
+// draws the three chips under the text. A tap runs on the client
+// (`lib/shell/buddyHello.ts`): the tour starts, the question goes out as the
+// member's message, or the panel closes. With no `onAction` (the side panel)
+// the card draws read-only, with no chips.
+
+/** The words over the chips. */
+const HELLO_CHIPS_LABEL = "Where to start";
+
+/** The chips. Its own component, so only a card that can act asks for the router. */
+function HelloChips({ chips, onAction }: { chips: Array<{ label: string; message: string }>; onAction: (text: string) => void }) {
+  const router = useRouter();
+  // One chip acts, and all three hold: a second tap would send the question
+  // twice (the reminder chips, `ReminderCard`, hold the same way).
+  const [busy, setBusy] = useState(false);
+  return (
+    <SuggestionPills
+      suggestions={chips}
+      onPick={(id) => {
+        if (busy) return;
+        setBusy(true);
+        runHelloChip(id, onAction, (href) => router.push(href));
+      }}
+      disabled={busy}
+      label={HELLO_CHIPS_LABEL}
+      align="start"
+    />
+  );
+}
+
+function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const chips = arr(data.chips)
+    .map((c) => (c ?? {}) as Data)
+    .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
+    .filter((c) => c.label && c.message);
+  return (
+    <div data-buddy-hello="">
+      {/* No header, icon or chevron: the chat's title already says Welcome. */}
+      <TemplateBody>
+        {ctx?.onAction && chips.length > 0 ? <HelloChips chips={chips} onAction={ctx.onAction} /> : null}
       </TemplateBody>
     </div>
   );
@@ -1873,7 +2139,7 @@ function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
       case "statDashboard":
         return <StatDashboard data={mapped.data} />;
       case "dataGrid":
-        return <DataGrid data={mapped.data} />;
+        return <DataGrid data={mapped.data} nested />;
       case "taskBoard":
         return <TaskBoard data={mapped.data} />;
       case "timeline":
@@ -2160,7 +2426,7 @@ function ReportTemplate({ data }: { data: Data }) {
   // The card is its own size container: its acts drop their words, and its
   // tiles set their row, by the card's width and not the window's.
   return (
-    <div data-report-card="" className="@container min-w-0" style={CARD_BOX}>
+    <div data-report-card="" className={`@container min-w-0 ${G_FRAME} ${T_INDIGO}`} style={CARD_BOX}>
       <TemplateHead icon="file-chart-column" gap={10} title={report.title}
         actions={open || pdfUrl ? <ReportCardActions onOpen={open} pdf={pdfUrl ? pdf : null} pdfName={pdfName} /> : undefined} />
       <TemplateBody>
@@ -2184,7 +2450,7 @@ function ChartCard({ spec }: { spec: Data }) {
   const subtitle = str(spec.subtitle).trim();
   const bare: Data = { ...spec, title: undefined, subtitle: undefined };
   return (
-    <div style={CARD_BOX}>
+    <div className={`${G_FRAME} ${T_PURPLE}`} style={CARD_BOX}>
       <TemplateHead icon="chart-column" title={title || null} aside={subtitle || undefined} />
       <TemplateBody>
         <LiveChart spec={bare} bare />
@@ -2229,6 +2495,8 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
   chart: (data) => <ChartCard spec={data} />,
   report: (data) => <ReportTemplate data={data} />,
+  reminderCard: (data, ctx) => <ReminderCard data={data} ctx={ctx} />,
+  buddyHello: (data, ctx) => <BuddyHello data={data} ctx={ctx} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

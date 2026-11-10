@@ -24,23 +24,32 @@ import {
   EMPTY_MCP_FORM,
   mcpBody,
   mcpFormReady,
+  READ_ONLY_KEY_HELP,
+  READ_ONLY_KEY_LABEL,
+  tickFormSwitch,
   type McpForm,
 } from "../lib/connections";
 
-/**
- * The H-300 switch: "Always ask before any tool runs". One labelled tick on
- * the shared Checkbox, with the help line under it. The Add form and the side
- * panel both draw this one control.
- */
-export function AlwaysConfirmField({
-  checked,
-  disabled,
-  onChange,
-}: {
+interface SwitchFieldProps {
   checked: boolean;
   disabled?: boolean;
   onChange: (next: boolean) => void;
-}) {
+  /** One more line under the help line, such as why the tick is disabled. */
+  note?: string | null;
+}
+
+/**
+ * One labelled tick on the shared Checkbox, with the help line under it.
+ * The two switches of an MCP server draw this one control.
+ */
+function SwitchField({
+  label,
+  help,
+  checked,
+  disabled,
+  onChange,
+  note,
+}: SwitchFieldProps & { label: string; help: string }) {
   const id = useId();
   const helpId = `${id}-help`;
   return (
@@ -55,14 +64,36 @@ export function AlwaysConfirmField({
       />
       <div className="flex min-w-0 flex-col gap-0.5">
         <label htmlFor={id} className="text-sm text-foreground">
-          {ALWAYS_CONFIRM_LABEL}
+          {label}
         </label>
         <span id={helpId} className="text-[11px] text-muted-foreground">
-          {ALWAYS_CONFIRM_HELP}
+          {help}
+          {/* Inside the described span, so a screen reader reads it with the help. */}
+          {note ? (
+            <span className="block" data-switch-note="">
+              {note}
+            </span>
+          ) : null}
         </span>
       </div>
     </div>
   );
+}
+
+/**
+ * The H-300 switch: "Always ask before any tool runs". The Add form and the
+ * side panel both draw this one control.
+ */
+export function AlwaysConfirmField(props: SwitchFieldProps) {
+  return <SwitchField label={ALWAYS_CONFIRM_LABEL} help={ALWAYS_CONFIRM_HELP} {...props} />;
+}
+
+/**
+ * The MCP-C2 switch: "This key can only read". The Add form and the side
+ * panel both draw this one control, under the H-300 switch.
+ */
+export function ReadOnlyKeyField(props: SwitchFieldProps) {
+  return <SwitchField label={READ_ONLY_KEY_LABEL} help={READ_ONLY_KEY_HELP} {...props} />;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -122,9 +153,14 @@ export function McpFormFields({
       <Field label="Agent scope" hint="Agent names, separated by commas. Use * for all agents.">
         <Input value={form.agentScope} onChange={set("agentScope")} />
       </Field>
+      {/* A tick of one switch clears the other (MCP-C2). */}
       <AlwaysConfirmField
         checked={form.alwaysConfirm}
-        onChange={(next) => onChange({ ...form, alwaysConfirm: next })}
+        onChange={(next) => onChange(tickFormSwitch(form, "always_confirm", next))}
+      />
+      <ReadOnlyKeyField
+        checked={form.readOnlyKey}
+        onChange={(next) => onChange(tickFormSwitch(form, "read_only_key", next))}
       />
     </div>
   );

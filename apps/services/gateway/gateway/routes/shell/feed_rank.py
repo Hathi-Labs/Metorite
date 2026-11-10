@@ -57,16 +57,25 @@ GROUPS: tuple[str, ...] = ("now", "needs_you", "ready", "fyi", "later", "handled
 #: change here changes the order, and the seed must change with it.
 BASE: dict[str, int] = {
     # The needs kinds, in the needs feed's own order (KIND_ORDER).
-    "overdue": 60,
-    "approval": 56,
-    "due_today": 52,
-    "notification": 48,
-    "needs_reply": 44,
+    "overdue": 63,
+    "approval": 59,
+    "due_today": 55,
+    "notification": 51,
+    "needs_reply": 47,
+    # WS-66 RM-2b (calendar_events_reminders.md §5.6 RM-2b item 4): the
+    # reminder kinds are needs kinds. They sit below the five others and
+    # above `agent_asks` (43), so the five bases rose by 3 to make room.
+    "reminder_due": 46,
+    "reminder_check": 45,
+    "reminder_unconfirmed": 44,
     # The Calendar kinds of MD-1 (§5.1) and the MD-3 kinds (§5.9 item 2),
     # each below every needs kind. MD-3c adds the rows of all eleven MD-3
     # kinds at once, so MD-3d to MD-3f add only their providers. This table
     # is also the vocabulary of kinds that the prefs accept (``prefs.py``).
     "agent_asks": 43,
+    # WS-ALN ALN-2b: a question that waits on the member by name. It ties
+    # with `agent_asks`, which also waits on an answer.
+    "decision": 43,
     "promise_due": 42,
     "crm_followup_due": 41,
     "block_overlap": 40,
@@ -100,12 +109,6 @@ BASE: dict[str, int] = {
     # Above every kind of Knowledge and the stale task (30), below the
     # overbooked day (32).
     "source_sync_failed": 31,
-    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
-    # reminder. Each one is alone on its entity, so the base orders it
-    # against other cards only. A fired reminder also carries `urgent_at`.
-    "reminder_due": 31,
-    "reminder_check": 29,
-    "reminder_unconfirmed": 25,
 }
 
 #: The urgency terms (§7).
@@ -207,9 +210,10 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     """The old-path group of a kind (§4.3, and §5.9 item 3 for MD-3).
     ``today`` is the member's own date. An unknown kind raises, as ``base``
     does."""
-    if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
+    if kind in ("overdue", "due_today", "approval", "needs_reply", "no_plan_yet",
                 "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
-                "deal_close_passed", "agent_asks"):
+                "deal_close_passed", "agent_asks", "decision"):
+        # A due date is a day, so no hour moves a due task into Now (RX-5).
         return "needs_you"
     if kind == "unblocked":
         return "ready"
@@ -221,9 +225,6 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "needs_you" if facts.get("money") is True else "fyi"
     if kind in ("promise_due", "crm_followup_due"):
         return "now" if _due_within_soon(facts, now) else "needs_you"
-    if kind == "due_today":
-        due = _instant(facts.get("due_at"))
-        return "now" if due is not None and due - now <= SOON else "needs_you"
     if kind == "notification":
         return "needs_you" if facts.get("notification") in ASKING_NOTIFICATIONS else "fyi"
     if kind in ("block_soon", "reminder_due"):

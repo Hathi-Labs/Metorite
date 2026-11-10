@@ -17,6 +17,12 @@
  * required field blocks the save, except a boolean. The rules live in
  * `lib/recordForm.ts`.
  *
+ * CRM-U16 (`crm_platform.md` section 20.20): a deal form also has a Company
+ * and a Contact picker, and a contact form has a Company picker. The company
+ * narrows the contact list to its own contacts first. The deal saves with
+ * `company_id`, and the store attaches the contact as the primary one. In
+ * Mirror mode the pickers are absent.
+ *
  * The 422 rule holds in every case: a refused save keeps the form open, with
  * the typed values. The message shows beside the field that it names, or at
  * the top of the form.
@@ -29,6 +35,7 @@ import { firstField } from "../lib/focus";
 import { useId, useRef, useState, type RefObject } from "react";
 import type { FieldGroup } from "../lib/fields";
 import { useCrmModeValue } from "../lib/modeContext";
+import { linkFields, pickerNoun, pickerPlural, type Pick } from "../lib/recordPicker";
 import {
   createGroups,
   createSubmission,
@@ -38,8 +45,9 @@ import {
 } from "../lib/recordForm";
 import type { CrmRefusal } from "../lib/store";
 import type { EntitySlug } from "../lib/types";
-import { useFieldLayout } from "../lib/useCrmMode";
+import { useFieldLayout, useSourceLabels } from "../lib/useCrmMode";
 import FieldInput from "./FieldInput";
+import RecordPicker from "./RecordPicker";
 
 type FixedField = {
   key: string;
@@ -144,6 +152,14 @@ export function QuickCreateForm({
   const groups: FieldGroup[] = layout?.studio === true ? createGroups(layout) : [];
   const customDefs = groups.flatMap((g) => g.fields);
 
+  const labels = useSourceLabels(true);
+  // CRM-U16: the company and the contact of a new deal, and the company of a
+  // new contact. Mirror mode has none of them.
+  const takesCompany = !locked && (entity === "deals" || entity === "contacts");
+  const takesContact = !locked && entity === "deals";
+  const [company, setCompany] = useState<Pick | null>(null);
+  const [contact, setContact] = useState<Pick | null>(null);
+
   const [values, setValues] = useState<Record<string, string>>({});
   /** The custom values that the member changed. The rest show their default. */
   const [edited, setEdited] = useState<Record<string, unknown>>({});
@@ -186,6 +202,7 @@ export function QuickCreateForm({
       body[field.key] =
         field.kind === "number" ? Number.parseFloat(value) : value;
     }
+    Object.assign(body, linkFields(entity, takesCompany ? company : null, takesContact ? contact : null));
     const { custom, errors } = createSubmission(customDefs, edited, locked);
     setChecked(errors);
     if (Object.keys(errors).length > 0) return;
@@ -240,6 +257,30 @@ export function QuickCreateForm({
             </label>
           );
         })}
+        {takesCompany && (
+          <PickerRow label={pickerNoun("organizations", labels)}>
+            <RecordPicker
+              target="organizations"
+              label={pickerNoun("organizations", labels)}
+              plural={pickerPlural("organizations", labels)}
+              value={company}
+              onChange={setCompany}
+            />
+          </PickerRow>
+        )}
+        {takesContact && (
+          <PickerRow label={pickerNoun("contacts", labels)}>
+            <RecordPicker
+              target="contacts"
+              label={pickerNoun("contacts", labels)}
+              plural={pickerPlural("contacts", labels)}
+              value={contact}
+              onChange={setContact}
+              companyId={company?.id ?? null}
+              companyName={company?.name ?? null}
+            />
+          </PickerRow>
+        )}
         {groups.length > 0 && (
           <CustomFieldGroups
             groups={groups}
@@ -273,6 +314,18 @@ export function QuickCreateForm({
           Create
         </Button>
       </footer>
+    </div>
+  );
+}
+
+/** A picker of the create form, under the caption that the fixed fields use. */
+function PickerRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <span className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </span>
+      {children}
     </div>
   );
 }

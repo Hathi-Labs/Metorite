@@ -1,5 +1,7 @@
 # CRM — the Metorite port, two modes, and the Zoho mirror
 
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
+
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
@@ -108,6 +110,38 @@
 > flag.
 > CRM-C6a, the Native lead-conversion mapping in the `field-mapping` section,
 > dark behind `CRM_FIELD_STUDIO_ORGS` (2026-10-14, migration 261, §20.9).
+
+> **Fixed in §20.6 (task #1096):** the Zoho Mirror sync names each stage and
+> lead status by its Zoho label. An org with the split rows heals on its next
+> picklist read. A chain of labels queues one full read of the records.
+> Built 2026-10-30 on `crm-stage-labels-mt-c6ae3dc2`, not merged. No
+> migration and no flag. Fence:
+> `tests/unit/test_crm_stage_labels_r8.py`.
+
+> **Built from §3.4 (CRM-Z10):** CRM-Z10g, the names of the core records in
+> a Native CRM (D133.1). Built 2026-10-28 on `crm-z10g-labels`, not merged.
+> Migration 311 adds `crm_settings.labels`, `cutover_at` and `cutover_by`.
+> CRM-Z10b writes the two stamps. The CRM-Z10g row of the §3.4 slice table
+> holds the status too. Fence: `tests/unit/test_crm_labels_r8.py`.
+
+> **Built from §3.4 (CRM-Z10):** CRM-Z10b, the switch from the Zoho mirror to
+> Native mode, which keeps every record. Built 2026-10-28 on
+> `crm-z10b-switch`, repaired twice on 2026-10-29 after the reviews, not
+> merged. It is dark behind `CRM_CUTOVER_ORGS`, which ships empty. It adds no
+> migration.
+
+> Its label is "Switch to Metorite, keep the Zoho records", and the CRM-X0
+> action is now "Switch to Metorite, start empty" (D133, amended 2026-10-29).
+> The CRM-Z10b row of the §3.4 slice table holds the status, and §3.4.1 and
+> §3.4.2 hold the watermark and the fold.
+> Fences: `tests/unit/test_crm_cutover_switch_r8.py` and
+> `app/crm/lib/cutoverSwitch.test.ts`.
+
+> `PUT /crm/settings/labels` is admin only, and Mirror mode gets 409.
+> `GET /crm/mode` serves the stored names in Native mode with no flag. Each
+> member reads them, also with no client mode. The start over and "Change CRM
+> setup" each clear the names and the two stamps. The admin renames the record
+> types in Fields, "Record names". A list name alone is enough.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -284,15 +318,15 @@ boundary, and the UI is a courtesy.
 | From | To | Allowed | How |
 |---|---|---|---|
 | no mode | Native or Mirror | Yes | The setup choice |
-| Mirror | Native | Yes | "Make Metorite your CRM": a final sync, then the mode flips and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10) |
+| Mirror | Native | Yes | Two switches, and each name says what happens to the records (D133, amended 2026-10-29). "Switch to Metorite, keep the Zoho records" (CRM-Z10b): a final sync, then the mode flips, every record stays, and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10). "Switch to Metorite, start empty" (CRM-X0): every record goes, after a download offer and a typed `DELETE`, and an empty Native CRM opens |
 | Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
 | Native or Mirror | no mode | Yes, with 0 records and no live connection | Change CRM setup (CRM-U5b) |
 
-**The cutover, measured in the code on 2026-10-27 (owner ask: leave Zoho and keep every record).** Mirror to Native is not built. Today an org that synced from Zoho has three paths, and none keeps its data writable:
+**The cutover, measured in the code on 2026-10-27 (owner ask: leave Zoho and keep every record).** Mirror to Native was not built then. *Corrected 2026-10-28: CRM-Z10b builds it, through `POST /crm/cutover` (the row below).* Before CRM-Z10b, an org that synced from Zoho had three paths, and none kept its data writable:
 
-1. **Disconnect** keeps the records read only, and the org stays in Mirror mode (`routes/crm/connection.py:578`).
+1. **Disconnect** keeps the records read only, and the org stays in Mirror mode (`routes/crm/connection.py`, `disconnect_zoho`).
 2. **Start over** (`POST /crm/reset`) deletes the records.
-3. **No mode change** exists from Mirror to Native. `ALLOWED_MODE_CHANGES` holds none to Native, Native to none, and Mirror to none (`routes/crm/settings.py:106`).
+3. **No mode change** exists from Mirror to Native in `PATCH /crm/settings`. `ALLOWED_MODE_CHANGES` (`routes/crm/settings.py`) holds three pairs: `(None, "native")`, and `("native", None)` and `("mirror", None)` of CRM-U5b. CRM-Z10b adds no `("mirror", "native")` pair, so the PATCH still refuses that change with 422. Fence: `test_crm_upsert_from_source_fence.py::test_the_mode_change_list_has_no_mirror_to_native`.
 
 A flip of the mode alone would also lose four things:
 
@@ -305,14 +339,69 @@ The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
 
 | Slice | What | Fence |
 |---|---|---|
-| CRM-Z10a | The preview: counts in Zoho and in Metorite, what does not move, unmapped owners, labels and fields. No write | A test proves no row is written |
-| CRM-Z10c | The lock follows the mode, not `ext_source`. An imported record shows "Imported from Zoho on <date>" | vitest: editable in Native, locked in Mirror |
-| CRM-Z10d | Custom modules stay visible in Native mode, with a native writer through the one write guard | R8: the counts match after a cutover |
-| CRM-Z10e | The Zoho attachments are copied into Metorite storage before the cutover | Count and bytes match Zoho |
-| CRM-Z10b | The switch: the export, a final sync, the mode flip and the disconnect in one transaction, `ext_source` and `ext_id` kept as provenance, Zoho settings made native, `processed_watermark` rewound, one audit line. One-way | R8: counts equal before and after, and a second click changes nothing |
-| CRM-Z10f | Owner decision: a cutover org keeps its source labels. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
+| CRM-Z10a | ✅ Built 2026-10-28 on `crm-z10-cutover`, not merged, dark (`gateway/routes/crm/cutover.py`, `app/crm/components/CutoverCard.tsx`, `tests/unit/test_crm_cutover_preview_r8.py`). The preview, with no write. Admin only, Mirror mode only (409 `not_mirror` otherwise). Counts in Zoho come from the last good sync run, shown "as of <time>". It makes no live Zoho call in v1. Counts in Metorite cover each table, with Zoho rows and native rows apart. It lists what does not move (attachments), each Zoho owner with no Metorite member and the number of records of each, the labels that stay, each module that is held, unavailable or incomplete, and the last good sync | R8: a hash of each `crm_*` table and of `integration_connections` is equal before and after the call, and a fake source records 0 calls |
+| CRM-Z10c | The lock follows the mode, not `ext_source`. `isLocked(record, mode)` in `lib/connect.ts` locks only in Mirror mode, and while the mode is not known. In Native mode an imported record shows "Imported from Zoho on <date>", where the date is the `created_at` of its local row. `pipelines.py` `_native_pipeline` reads the mode only | vitest: editable in Native, locked in Mirror, locked while the mode is not known. A test: a PATCH of a Zoho pipeline gives 200 in Native and 409 in Mirror |
+| CRM-Z10d | Custom modules stay visible in Native mode and become editable. `PATCH /crm/modules/{module}/records/{id}` takes `name`, `owner_email` and `fields`, and it checks each key against `crm_field_defs` of `module:<ApiName>`. `crm_module_records` joins `MIRROR_RECORD_TABLES`. `mirrored_modules()` returns the profile modules in Native mode when the org holds module records, and the AI catalogue lists them. No create, delete or field-def edit in v1. **Status 2026-10-28:** the gateway is merged (#1422). The sheet (`ModuleRecordSheet`) edits the name, the owner and each field in Native mode, and it stays read only in Mirror mode | R8: a Mirror PATCH gives 409, a Native PATCH gives 200, and the counts match after a cutover |
+| CRM-Z10e | Attachments. Not a gate for the switch (owner, 2026-10-28, D133). The preview says that they stay in Zoho. Later: Z10e-1 picks the scope, the table and the storage. Z10e-2 adds `list_attachments` and `download_attachment` to the `CrmSource` seam, with the scope in `ZOHO_READ_SCOPES`, and each org reconnects once. Z10e-3 adds a tenant table `crm_attachments` to `RESET_TABLES` and the purge tests | Count and `sum(size_bytes)` equal Zoho's, and each `sha256` matches |
+| CRM-Z10g | ✅ Built 2026-10-28 on `crm-z10g-labels`, not merged (migration 311, `gateway/routes/crm/settings.py`, `app/crm/components/RecordNamesCard.tsx`, `tests/unit/test_crm_labels_r8.py`). The migration also adds `cutover_at` and `cutover_by` for CRM-Z10b. Native labels (D133.1). `crm_settings.labels` JSONB NULL (migration, expand only). `GET /crm/mode` serves it in Native mode, with no `CRM_FILL_RANK_ORGS` gate. An admin rename route and control | R8: a renamed label shows in `GET /crm/mode` and survives a restart |
+| CRM-Z10b | ✅ Built 2026-10-28 on `crm-z10b-switch`, repaired 2026-10-29 after the review (one P0, one P1, two P2), not merged, dark behind `CRM_CUTOVER_ORGS` (default empty, the grammar of `CRM_ORGS`, and it needs `CRM_MIRROR_ORGS` too). The button and the dialog title are "Switch to Metorite, keep the Zoho records" (D133, amended 2026-10-29). *Owner, 2026-10-29:* production sets `CRM_CUTOVER_ORGS=*` once this slice passes its staging test, and each org's admin presses the switch. The default in the code stays empty. Files: `gateway/routes/crm/cutover.py`, `app/crm/components/CutoverDialog.tsx`, `app/crm/lib/cutoverSwitch.ts`. *Corrected 2026-10-28:* it adds NO migration, because migration 311 of CRM-Z10g holds `labels`, `cutover_at` and `cutover_by`. The switch has three phases. (1) `POST /crm/cutover/start` checks the mode, the Zoho token (409 `needs_reconnect`), the open import and each module. Then it runs the final sync through the normal engine, each page in its own transaction. It starts no label, vector, mapping, question or digest step. *Corrected 2026-10-29 (review P0):* it always starts its own full run and returns its `run_id`. A good run that is fresh is no shortcut, because a "Sync it on its own" run reads one module, and its row looks the same. `GET /crm/cutover/status` reports the run. (2) `POST /crm/cutover` runs ONE transaction. It takes the advisory connect lock FIRST, then `crm_settings` `FOR UPDATE`, in the order of the start over. It checks the mode, no open run, and that the newest run IS the run of phase 1 (the `run_id` of the body), ended well in the last 15 minutes by the database clock. Any other newest run, a scheduled run that ended after the final run too, is 409 `final_sync_missing`, and nothing changes. A Native org with a cutover stamp skips these checks, so a retry needs no `run_id`. Then it checks each module again. Then it folds the overlay in the Mirror board order (§3.4.2), copies the names of the newest source profile to `crm_settings.labels`, sets `source = 'metorite'` on `crm_field_defs`, rewinds the watermark (§3.4.1), and sets `mode = 'native'`, `cutover_at`, `cutover_by` and no `connection_id`. One audit line, `crm.cutover`, after the commit. (3) After the commit, `connection.disconnect_zoho_reporting` revokes the token and deletes the credential. *Corrected 2026-10-29 (F2):* it holds the connect lock from its status read to its UPDATE, so two calls at one time revoke once and write one audit line. *Corrected:* the old `disconnect_zoho` never fails on a revoke, so the answer now says what Zoho said: `confirmed`, `not_confirmed` or `not_configured`. With `not_confirmed`, the customer removes Metorite from the connected apps in Zoho. A failure of phase 3 leaves a Native org with a live token, and "Finish closing Zoho" runs it again. *Corrected 2026-10-29:* that button reads the status first and posts only when it says `done` (F6). The card reads the status only when `GET /crm/mode` says `cutover_done` (F3). After a lost answer, a second press of the dialog sees `not_mirror`, reads `done` and sends the switch again (review P2). A 409 `module_incomplete` adds its modules to the "Leave out" step (review P2). *Corrected 2026-10-29, round 2:* phase 2 also needs the final run to have READ each key (reason `not_read`, review P1). A run that reaches `MODULES_RESERVE` ends `ok` with no key for a generic module, so such an imported module is `not_read`. A one-module run names its keys in `counts["run_only"]` (no migration), and each other imported key is `not_read` (verifier P3-1). Leave out still overrides it. Only phase 2 applies the rule. One revoke takes 35 s at most (`REVOKE_TIMEOUT_SECONDS`). The dialog keeps the run of a slow sync for the next press. A card that throws draws the start-empty switch in its place. *Corrected 2026-10-30, round 3:* phase 1 starts the final sync with `engine.acquire(final=True)`. That run reads each generic module now, also one that a run read less than `MODULE_READ_EVERY` (an hour) ago. An offset-paged module has no cursor to move, so the final run reads it in full. So the final run costs about one full read of each such module, once. The reserve still applies, and a reserve hit still leaves the key out, so `not_read` catches it. The row carries `counts["run_final"]`, and phase 2 refuses a run without it (409 `final_sync_missing`). The `run_only` rule stays as a second fence. A module with a finished import can wait for its fields again: a reconnect lost its scope for a while, then discovery ran short of credits. The run then counts it `skipped` and reads no record, so phase 2 finds it `not_read` too. *Corrected 2026-10-30, round 4:* the proof of a read is its end in this run, never a key in `counts`. Every core key is always in `counts`, and an import-kind run inherits the module keys of an older import. Each read writes `checked_at` at its end, for every entity, and the final run notes `planned_ms` in `counts["run_final"]`. Phase 2 finds a key `not_read` when no read of it ended after that time. The final run also walks each offset-paged core entity now (the 24 h walk), and a stopped read by offset starts again from page 1. Phase 2 refuses with a `deal_contacts` row (`roles_waiting`, with the number of deals) while deals still wait for their contacts from Zoho. Leave out overrides it, and such a deal then keeps no linked contacts from Zoho. Phase 1 takes that tick. The final run may skip a deleted list that a run read less than `DELETED_EVERY` (an hour) ago. D133 keeps a record that Zoho deletes later, so this gap is accepted. The dialog keeps the final run after a 409 that names modules, and the next press switches with it while phase 2 still takes it. *Corrected 2026-10-30, round 5:* the final run has its own budget: one day's share of the edition, once in 24 hours, less what earlier final runs spent. The scheduled runs can spend the whole daily budget, so without it an org at the floor could never switch. `CREDITS_FLOOR` still stops it on what Zoho reports, so it never drains the Zoho account. Phase 1 passes the Leave out ticks to the engine, and the final run treats those keys as held, so it neither reads nor walks them. For a left-out parent (company, contact, lead or deal), the final run marks its cursor `held_skipped`. If the switch then fails, the next scheduled sync reads each dependent entity in full once, which repairs the links. The `deal_contacts` count is the queue only. *Corrected 2026-10-30, round 6:* the delete check of a walk counts `refused` for four causes, and they count apart. Two of them mean that the read is not complete: `empty_walk` (the walk read no record while rows exist here) and `short_walk` (it read fewer records than Zoho counts). The engine flags `walk_short`, and phase 2 waits ("Zoho sent fewer records than it holds, so Metorite cannot confirm it read them all"). Two of them follow a complete read: `count_unknown` with records read, and `large_delete`. They only kept rows that Zoho may have deleted, which D133 accepts. The engine flags `delete_kept`, and nothing waits. The run log keeps `crm.sync.reconcile_refused`, and the preview keeps the `refused` number. Phase 1 passes the final run only the ticks of keys that it finds not complete. A second audit line, `crm.cutover.disconnect`. A module is not complete when it is held, unavailable, still importing, has records to retry, reads short, or the run counted `failed` for it. *Corrected 2026-10-30, round 6:* a walk that read fewer records than Zoho holds also waits (reason `walk_short`, see below). *Corrected:* one function, `cutover.module_state`, decides it for the preview and the switch. The admin may tick any such module in "Leave out", a core module too. The write guard, the overlay routes and the auto-lead step read the mode `FOR SHARE`, so a write that read `mirror` finishes before the fold. A second call answers `already_done`. The admin types `SWITCH`. It never calls `seed_native_pipeline`. The records, the pipelines and their stages, the lost reasons, `ext_source`, `ext_id` and the sync history stay | R8 (`tests/unit/test_crm_cutover_switch_r8.py`, items 1 to 21 of the audit): the counts and each `(ext_source, ext_id)` are equal before and after. The mode is `native`, `connection_id` is NULL, the switch stores the names, and Zoho saw one revoke. The fold keeps the board of the five fixture cases. The watermark rewinds, also during a cycle that holds the mode. A second call changes nothing. An open run, a stale final run and each refusal write nothing. A failure rolls back all of phase 2. A run that raced the commit stops with `mode_changed`. Two calls at one time switch once. A one-module run, a commit with the id of another run, and a run that ended after the final run are each 409 `final_sync_missing` and write nothing. Two closes of Zoho at one time revoke once. vitest (`cutoverSwitch.test.ts`): the Mirror board of each case equals its Native board, column and hue. The run id goes to phase 2, a lost answer finishes on the second press, and "Finish closing Zoho" posts only after the switch. vitest (`components/crmZ10b.test.ts`): the two labels are unique, and both choices show once each with `can_switch`. Round 2: a run that hit the reserve and a one-module run are each 409 `module_incomplete` (`not_read`) and write nothing, on the real engine. A slow revoke stops at the limit (`test_crm_connection.py`). A kept run is read before a new start, and a card that throws keeps start empty on the screen. Round 3: a module read 10 minutes before the final run, then edited in Zoho, is read by the final run, and the edit is in Metorite after the switch. A scheduled run with its own id is 409 `final_sync_missing` and writes nothing. A module that waits for its fields is `not_read`. Round 4, on the real engine: the final run reads an offset-paged module in full, walks an offset-paged core entity, and reads a stopped read by offset from page 1. An import-kind final run with inherited module keys finds them `not_read`. Deals that wait for their contacts are 409 `module_incomplete` with a `deal_contacts` row and write nothing, and Leave out switches. Round 5: after a day whose runs spent the whole budget, the final run still completes, and the floor still stops it. A left-out offset-paged key is not walked, and the switch completes. A delete check that refuses after a complete read (`count_unknown`, `large_delete`) does not block. Round 6: an empty final walk and a short final walk each block with `walk_short` and write nothing. Phase 1 passes only the ticks of keys that are not complete |
+| CRM-Z10f | ✅ Decided 2026-10-27 (D133). A cutover org keeps its source labels. The admin can rename them. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
 
-The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run).
+The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run). Fracktal goes first. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d (D133).
+
+### 3.4.1 The watermark of auto-lead at the switch
+
+In Mirror mode the auto-lead step stamps `processed_watermark` and makes no lead, because Zoho makes them. `T0` is the start time of the final sync. At the switch, CRM-Z10b rewinds `crm_auto_lead_cursors.processed_watermark` of each email account of the org to `T0`, when `T0` is earlier. It never goes earlier than `T0`. Mail before `T0` was the job of Zoho, and the unknown-sender check (no `crm_contacts` or `crm_leads` row holds the address) stops a duplicate lead.
+
+*Corrected 2026-10-28, after the audit of CRM-Z10b:*
+
+- The watermark counts `rules_processed_at`, the time the mail rules classified a message. It does not count the time that the message arrived.
+- `T0` is `crm_sync_runs.started_at` of the final run.
+- The rewind touches no `last_run_at` and no `activated_at`, and no cursor of another org.
+- The rewind needs a lock in the auto-lead step. The step reads the mode `FOR SHARE` in the transaction of its stamp, and it reads its cursor again under that lock. So a Mirror cycle stamps before the rewind, and a later cycle reads the rewound watermark.
+- Mail that Zoho turns into a lead between `T0` and the revoke can give a duplicate lead. The switch accepts it (agent default 5 below). Tell the customer to stop using Zoho first.
+
+Fence: `test_crm_cutover_switch_r8.py`, items 7 and 8.
+
+### 3.4.2 The fold of the overlay at the switch
+
+*Added 2026-10-28 (CRM-Z10b). It corrects the fold of the first CRM-Z10b row.* The board must look the same after the switch as just before it. Mirror mode draws the board from the overlay (`ui_*`). Native mode draws it from `position`, `color` and `probability`, by `position`, then the name, with a retired row last.
+
+So the switch writes those three columns in the order and the hue that Mirror drew. `cutover.fold_cutover_overlay` is the one fold, and only `cutover.py` names it.
+
+- **Deal stages, with a saved order.** When any stage has a `ui_position`, each stage goes by its `ui_position`. Each stage with none goes after them, in the Zoho picklist order (`compareAdminOrder` in `lib/board.ts`).
+- **Deal stages, with no saved order.** Each stage goes by its place in the default pipeline (`placesOf`). Each stage that the pipeline does not list follows, in the picklist order. ⚠️ A NULL `ui_position` never folds into the picklist order alone. That order is not the board (D137).
+- **Lead statuses.** Each status goes by its effective position (`core.EFFECTIVE_STATUS_COLUMNS`), as the Leads board does.
+- **Retired rows.** A hidden stage, and one that Zoho no longer lists, goes last, and keeps `hidden` and `source_gone_at`.
+- **Colour.** The hue that Mirror drew: `ui_color`, else the stage type, else a name keyword (`keywordHue` in `statusAccent.ts`), else gray. A stored gray would paint a won lane gray in Native mode.
+- **Win chance.** `probability` takes `ui_probability` when an admin set one. Then each `ui_*` value is NULL, on both tables.
+- **Known limit.** Native mode has one order. A pipeline that lists its stages in another order shows the one order after the switch. The preview counts such pipelines (`pipelines_in_another_order`), and the switch does not wait for them.
+
+Fences: `tests/fixtures/crm_cutover_board_order.json` holds five cases. The R8 suite runs them through the SQL, and `app/crm/lib/cutoverSwitch.test.ts` runs them through `orderLanes`, `toLeadLanes` and `stageAccent`.
+
+**The agent's defaults, which the owner may change** (after D133, amended 2026-10-28):
+
+1. The switch refuses a dead Zoho token (409 `needs_reconnect`).
+2. A revoke that Zoho does not confirm still completes the switch, and the admin sees it.
+3. "Leave out" also works for each of the five core modules.
+4. Native mode has one global stage order.
+5. The switch accepts a duplicate lead from Zoho mail between `T0` and the revoke.
+6. The "Open in Zoho" links go away, because the disconnect drops the keys that build them.
+
+**Two switches, two names (D133, amended 2026-10-29).** *Closed 2026-10-29: this was open before the production run.* The setup hub offered a CRM-X0 action with the label of the CRM-Z10b switch. The two had opposite effects (`DESIGN_SYSTEM.md` §10). The owner keeps both options, and each name now says what happens to the records:
+
+- **"Switch to Metorite, keep the Zoho records"** is the CRM-Z10b switch. The admin types `SWITCH`.
+- **"Switch to Metorite, start empty"** is the CRM-X0 action. It removes every record. The admin types `DELETE`, after the download offer.
+- Each label is also the title of its dialog, and both labels live in `app/crm/lib/setup.ts`.
+- With `can_switch` (the org is on `CRM_CUTOVER_ORGS`), the cutover card shows both, each once. The switch that keeps the records is the main button. The switch that starts empty has the danger tone. One line under each says what happens to the records. The hub then leaves its copy of the start-empty switch out.
+- With no `can_switch` (the default), the card shows no switch. The hub shows the start-empty switch in its old place.
+
+Fences:
+
+- `components/crmZ10b.test.ts`: each label is unique. With `can_switch`, both choices show once each. Without it, only the start-empty switch shows.
+- `components/crmX0.test.ts`: the scan of the hub's files covers the cutover files again.
+
+Fence: an R8 test with a mail stamped before `T0` (no lead) and one after it (a lead).
 
 ### 3.5 The architecture: one store, two writers
 
@@ -1605,7 +1694,7 @@ each of these on a real database:
   of a module are not in the CRM store, so `ModuleList.tsx` holds the paging
   state. It keeps the rules of the store: `appendPage`, a short page ends the
   list, and the newest request wins.
-- `RecordShell.tsx` holds the drawer, the header facts and the tab bar.
+- `RecordShell.tsx` holds the card, the header facts and the tab bar. D181 replaced the drawer with the shared frame (`one_record_card.md`).
   `RecordSheet` and `ModuleRecordSheet` both use it, so the two record pages
   have one look.
 - Fences: `tests/unit/test_crm_modules_routes_r8.py` and
@@ -4319,7 +4408,11 @@ Done when:
    they hold no label (CRM-Q26 item 9).
 8. One request goes to `tier-powerful`. The prompt holds the numbers as
    JSON, and the rule to use only these numbers and add none. It holds no
-   record name, no note text and no email address. `max_tokens` is 800.
+   record name, no note text and no email address. `max_tokens` is 1500.
+   The request names the job `writing`, so it asks for no thinking
+   (`acb_llm.jobs`, task 1128). At 800, the model used the whole cap on 6
+   of 6 calls on production. An empty answer logs
+   `crm.digest.empty_answer` and counts as `empty`, not as a rejection.
 9. One formatter writes each number for the prompt and for the check. The
    code finds each number of the text in the input. A text with a number
    that is not in the input is not stored, and the try counts.
@@ -4329,8 +4422,8 @@ Done when:
     member, the step skips and logs a count.
 11. **Cost bound.** One request for each org and week, and 3 tries at most
     in a week (`tries`). The input is 8,000 characters at most, about 2,000
-    tokens, and the output is 800 tokens at most. So an org spends 3
-    requests at most, about 8,400 tokens, in one week.
+    tokens, and the output is 1500 tokens at most. So an org spends 3
+    requests at most, about 10,500 tokens, in one week.
 12. A test with a fake model asserts the bound of item 11. The credits of a
     real run are a post-flip check, below, not part of the build.
 13. **Delivery, in the app.** `GET /crm/digests?limit=4` serves the newest
@@ -4439,7 +4532,7 @@ The build made these choices, which the list above does not name.
 of 6 stages, 3 months and the labels is about 4,580 characters of input,
 about 1,150 tokens, with the house voice. With a text of about 250 tokens,
 one week costs about 1,400 tokens on `tier-powerful`. The bound is 3 requests of at most 2,000
-tokens in and 800 out, so 8,400 tokens for each org and week. The post-flip
+tokens in and 1500 out, so 10,500 tokens for each org and week. The post-flip
 check above reads the real credits.
 
 R8: `tests/unit/test_crm_digest_r8.py`, with the start over in
@@ -8365,7 +8458,7 @@ customer they are the next build after §19.2.
 | Inline edit in lists | Edit a cell, with Tab and Enter to move | CRM-X9, and CRM-Z9 or Native mode |
 | Bulk bar (CRM-S4) | Select rows, then change the owner, stage, close date or tag, or delete, with undo | CRM-X9. Move `app/projects/components/BulkBar.tsx` to `src/components/` first |
 | Quick add in a lane | "+ Add" at the foot of a lane | Native mode |
-| Quick create with lookups | Company and contact pickers on a new deal, "Create another", and a duplicate warning | CRM-S5, for the warning |
+| Quick create with lookups | Company and contact pickers on a new deal, "Create another", and a duplicate warning | Built as CRM-U16 (§20.20), except the duplicate warning. That waits for CRM-S5. "Create another" is not built |
 | Delete with undo | Delete in the record menu, then an Undo toast | Native mode |
 | CSV import (CRM-S3), merge (CRM-S5), field editor (CRM-S6, superseded by CRM-C4), web forms (CRM-S8), field history (CRM-S10) | The §6 rows | Native mode |
 | Stage transition forms | The move dialog gains a checklist and optional fields for each transition | Native mode |
@@ -8838,7 +8931,7 @@ SELECT DISTINCT ON (a.deal_id)
 
 **Non-goals.**
 
-- A docked panel in place of the drawer (§8.1). The sheet stays a `Modal` with
+- A docked panel in place of the drawer (§8.1). ⚠️ D181 reversed this on 2026-11-06: `one_record_card.md`. The sheet stays a `Modal` with
   `end`, and `sheet` on a phone.
 - The Tasks tab of §8.1. This slice ships a Fields tab in its place. The Tasks
   tab comes with CRM-S1 and CRM-X5, when tasks live in `pm_tasks`.
@@ -9019,12 +9112,15 @@ each drop in the UI. An agent never drops the records of a live org.
    | State | Main action | Other actions |
    |---|---|---|
    | No mode | Choose: Connect Zoho, or Use Metorite | None |
-   | Mirror, connected | Sync now | Disconnect. Switch to Metorite. Start over |
-   | Mirror, disconnected or needs a reconnect | Reconnect Zoho (keeps the records) | Switch to Metorite. Start over |
+   | Mirror, connected | Sync now | Disconnect. Switch to Metorite, start empty. Start over |
+   | Mirror, disconnected or needs a reconnect | Reconnect Zoho (keeps the records) | Switch to Metorite, start empty. Start over |
    | Native | None | Connect Zoho. Start over |
 
    The mirror banner and the title-bar line link to this card. No other
-   card offers "Change setup".
+   card offers "Change setup". *Amended 2026-10-29 (D133):* the label was
+   "Switch to Metorite". When the org is on `CRM_CUTOVER_ORGS`, the cutover
+   card under the hub shows this switch with the CRM-Z10b switch. The hub
+   then leaves it out (§3.4).
 
 2. **Reconnect keeps the records.** A reconnect to the SAME Zoho org resumes
    the sync with the records in place. The callback compares the Zoho org id
@@ -9042,8 +9138,8 @@ each drop in the UI. An agent never drops the records of a live org.
    access rule applies. It streams, so a large CRM does not fill memory.
 
 5. **The start-over dialog.** Each change that needs an empty CRM opens it.
-   These changes are Switch to Metorite, Connect Zoho from Native mode,
-   Start over, and a different Zoho org.
+   These changes are Switch to Metorite, start empty, Connect Zoho from
+   Native mode, Start over, and a different Zoho org.
    - Step 1 shows the counts for each entity, and says that the change
      removes them.
    - Step 2 offers "Download a copy" (item 4). The dialog marks it as done
@@ -9689,8 +9785,11 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 ### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
 
 **Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 257. The two
-items that waited for CRM-C2 are built after its merge. See "Built as" at
-the end of this section.
+items that waited for CRM-C2 are built after its merge. The label fix of
+items 7 and 8 (task #1096) merged 2026-10-30 in PR #1533, with review rounds
+1 and 2. The saved restart of a stopped read (task #1117) is built
+2026-10-31 on `crm-label-restart-mt-4062833c`, not merged. See "Built as" at
+the end of this section, and "Fixed 2026-10-30".
 
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
 and report shows what it shows today. Item 7 is a fix of the sync.
@@ -9704,6 +9803,9 @@ The **source values** come from Zoho in Mirror mode, and from the admin in
 Native mode. The **overlay values** are Metorite-only. The sync never writes
 them, and no Zoho write reads them. The **effective value** is the overlay
 value when it is set, else the source value.
+
+One exception: the merge door of item 8 writes the overlay of the row that
+it keeps (task #1096).
 
 **Migration 257 (expand only, R6).** Each new column is nullable or has a
 default. The three tables already have the tenant key and FORCE RLS (241).
@@ -9772,9 +9874,18 @@ stage, which CRM-C2 leaves to this slice.
    - The picklist call matches a row by `ext_id` first, then by name. A
      Zoho rename then changes `name` in place. The row keeps its overlay
      and its deals.
-   - No SQL of the sync names an overlay column or `color`.
-     `_STAGE_TYPE_SQL` (`:756`) and `_FORECAST_SQL` (`:748`) keep their
-     work.
+   - **The name is the Zoho label** (task #1096). The sync names each Stage
+     and Lead_Status value by `display_value`, and `actual_value` is the
+     fallback. A pipeline stage takes the same rule. A Zoho rename changes
+     `display_value` only, and a record carries the label.
+   - A pipeline stage finds its row by the Zoho id of its map entry first,
+     then by the label. The pipeline step adds a row and a membership only.
+     The stage type pass (`_STAGE_TYPE_SQL`) takes the same order. A
+     profile from before task #1096 has no Zoho id, so its stages go by
+     name.
+   - No SQL of the sync names an overlay column or `color`. The one
+     exception is the merge door of item 8. `_STAGE_TYPE_SQL` (`:756`) and
+     `_FORECAST_SQL` (`:748`) keep their work.
 8. **A rename that collides.** A record pull can run before the picklist
    read. It then inserts a row under the new name with a NULL `ext_id`.
    The picklist call finds the `ext_id` row with the old name, and a rename
@@ -9790,6 +9901,17 @@ stage, which CRM-C2 leaves to this slice.
      merge needs no repoint there, because the new name stays the name.
    - A saved view (`crm_views`) whose `status` filter holds the id of the
      name row gets the id of the `ext_id` row.
+   - **The overlay rule** (task #1096). The overlay of the `ext_id` row
+     wins. A NULL overlay column of the `ext_id` row takes the value of the
+     name row. An empty `required_fields` of the `ext_id` row takes the
+     list of the name row.
+   - **The hidden rule** (task #1096, review round 1). `hidden` is NOT
+     NULL, so the merge cannot tell "never set" from "shown on purpose".
+     The merged row shows when either row showed (`k.hidden AND d.hidden`).
+     An admin can hide the empty `ext_id` lane while the name row holds the
+     deals. A lane that shows in error costs less than a hidden lane that
+     holds deals. A hidden lane moves to the end and leaves the stage
+     pickers.
    - It then deletes the name row and renames the `ext_id` row.
    - The savepoint never swallows a failed merge. A failure fails the
      picklist step, and the sync logs it.
@@ -9992,11 +10114,91 @@ partial unique indexes of the table above.
   Zoho reorder, a Zoho probability and the Zoho id of each value reach the
   mirror within a day, with no wait for a reconcile.
 
+**Fixed 2026-10-30 (task #1096).** The Fracktal board showed six Zoho stages
+under the wrong name, and their deals sat in extra lanes at the end.
+
+- **The cause.** The sync named each picklist value and each pipeline stage
+  by `actual_value`. A Zoho rename keeps `actual_value` and changes
+  `display_value`, the label. A deal carries the label in `Stage`. So the row
+  with the Zoho id kept the old name. Each record pull added a row under the
+  label, with no Zoho id and no pipeline place.
+- **The rule.** `engine._picklist_values` and `mapping.pipeline_stages` take
+  `display_value` first and `actual_value` as the fallback. The order stays
+  `sequence_number`. Each pipeline stage carries the `id` of its map entry.
+- **The heal.** The next picklist read of a split org names the value by
+  its label. That name finds the label row, and item 8 folds it into the
+  `ext_id` row. The merge moves the deals or leads, the pipeline places and
+  the saved views. The overlay follows the rule of item 8.
+- **The chain** (review round 1). The label of one value can be the
+  `actual_value` of another. Example: S1 has `actual_value` "Alpha" and the
+  label "Beta". S2 has `actual_value` "Beta" and the label "Gamma". The old
+  rule named the S2 row "Beta", so each deal of S1 went onto the S2 row.
+  The heal renames the rows, but a rename moves no deal. An incremental
+  read lists a deal only after it changes in Zoho. So the deals of S1 stay
+  under "Gamma".
+- **The check of a chain.** Before it writes, `_mirror_statuses` checks
+  for a row of a listed value that holds the label of another listed value.
+  A row that holds its own label does not count, also when a second value
+  shares that label. The check does not depend on the Zoho order. A check
+  on the park of `_source_status` alone misses the chain when S2 comes
+  first. The same check covers two values that trade labels. It runs inside
+  `ctx.page`, so a Native org never reaches it.
+- **A label that a retired value held** (review round 2). Example: Zoho
+  retires S2 ("Beta"), and an admin then renames S1 to "Beta". A changed
+  deal of S1 carries "Beta" and lands on the retired row. The picklist read
+  parks that row as "Beta [S2]", and the deal stays in the parked lane. So
+  the check also counts a retired row when a holder of the label has its
+  own row. The park renames the row, so the next check finds nothing. With
+  no such row, the new value adopts the retired row, and no read is due.
+- **The full read of a chain.** When the check finds a row, the step queues
+  ONE full read of the entity (Deals for Stage, Leads for Lead_Status). That
+  read maps each record by its label again. A healed org has no such row,
+  so the next picklist read queues nothing. A plain rename queues no full
+  read, because the fold of item 8 moves the deals.
+- **The mark of the label read** (review round 2). The queue is its own
+  list, `label_reread`, in the state of the `zoho:field_rules` cursor, in
+  the same transaction. The read carries the mark `label_reread` in the
+  cursor of its entity while it runs, so a stop resumes it. The last page
+  of a read with the mark takes the entity off the list. The `reread` list
+  of the field rules stays apart, so a read of that list cannot clear this
+  entry. One read that both lists want counts for both.
+- **A label read and the contact roles** (review round 2). A label read
+  changes no contact role, and no admin chooses its cost. On the credit
+  floor, one role call for each deal costs days of budget. So a label read
+  queues a role call only for a deal that an incremental read would list.
+  That is a deal with `Modified_Time` at or after the cursor of the entity.
+  The read moves the cursor past that deal, so no later read lists it. A
+  read for a rule, a read after a hold and a walk still queue each deal.
+- **A read that stopped** (review round 2). A read for a rule or a label
+  read can stop on its budget at page N. Those pages used the old row
+  names. When the check fires in a later run, that read starts over from
+  page 1. It still counts for each rule on the list, it still queues each
+  deal for a rule, and the mark `recovering` stays. A resumed read with no
+  mark goes on and clears nothing, so the next run starts the label read.
+  A label read that stopped goes on from its page when the check does not
+  fire, unless its cursor holds the restart below.
+- **The saved restart** (task #1117). A run can stop after the check and
+  before the next page of the read. The check writes `label_restart` into
+  the cursor of its own entity, in the transaction of the rename. It writes
+  the key only when the read of that entity is in progress. The next run
+  then starts a read for a rule or a label read from page 1. The first page
+  of that read writes a new cursor state, so the key goes.
+- **The step order.** Each run reads the picklists before discovery writes
+  the pipelines (`_execute`). `_pipeline_stage_status` matches a stage by the
+  Zoho id first. So a run whose picklist read fails still puts each place on
+  the `ext_id` row.
+- **The Zoho writer.** `sync_zoho.build_payload` sends the stage name to Zoho
+  as `Stage` and `Lead_Status`. No loop and no route reach it (CRM-Z9). It is
+  not changed. CRM-Z9 must check that Zoho takes the label before it opens.
+- **The switch.** `cutover.fold_cutover_overlay` uses the name only to order
+  ties and to choose a colour by keyword, as the Mirror board does. It needs
+  no change.
+
 **Verification.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
+uv run pytest tests/unit/test_crm_stage_labels_r8.py tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
@@ -11588,6 +11790,9 @@ Owner, 2026-10-20: the board order and the win chance are two settings.
 1. **The order never follows the probability.** An admin sets the order of
    the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
    without an admin order uses the source position, then the pipeline place.
+   *Amended 2026-10-27 by D137 and CRM-U11 (§20.15): Mirror mode without an
+   admin order uses the place in the Zoho pipeline first, and no type group
+   moves a column.*
 2. **Every stage has a win chance.** Migration 288 adds `probability` and
    `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
    status holds 0, for both kinds (D-CRM-10).
@@ -11638,3 +11843,407 @@ the drawer, and tap again.
 
 Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
 source fences. It checks that `AppShell` draws only what the page emits.
+
+### 20.15 CRM-U11: the stage settings are the board (owner report, 2026-10-27)
+
+**Status.** ✅ Built 2026-10-28 on branch `crm-stage-order`, and the verifier gave PASS. Decision D137. Metorite: task #833 under
+epic #477. The spec audit of 2026-10-27 checked it against the code at
+72094831d and gave GO-NARROWED.
+
+**Follow-up, task #838 (2026-10-30).** The stage menu of a record and the stage filter
+chips follow the board order too. Both call `orderStageList` in `lib/board.ts`, which calls `orderLanes` with the places of the pipeline on screen. The reports funnel stays on `position`.
+
+**Two scope rules from the audit.**
+
+- **Native mode with two pipelines or more** keeps the read-only list and its
+  note "Stage editing for several pipelines is not available yet." The new
+  screen serves Mirror mode, and Native mode with one pipeline or none.
+- **A Native stage that sits after Won or Lost** now shows there, because no
+  type group moves it. Production holds two Native orgs on 2026-10-27, and
+  each has only the six seed stages, in order. So no org changes, and no data
+  fix runs.
+
+**Gate.** AGENT-SAFE. No flag, no migration and no gateway change. The order
+route (`PUT /crm/statuses/{kind}/order`) and the reset route
+(`POST /crm/statuses/{kind}/order/reset`) exist. If the build finds that the
+gateway must change, stop and report.
+
+**The owner's report.** The deal stages were "very complicated" to set up.
+The Kanban columns did not show "like it is currently showing up in ZOHO".
+The owner asked for the Zoho order, or an easy setting.
+
+**Measured on production, 2026-10-27 (Fracktal).**
+
+- The pipeline "Fracktal Sales Pipeline" lists 12 stages in this order:
+  Re-Evaluate, Confirmation and Advance, New Deal, Discovery Meeting, Sample
+  parts, Proposal / Quote Sent, Negotiation/Review, Awaiting PO, PO Received,
+  Closed Won, Payment Complete, Closed Lost.
+- Five more stages are outside the pipeline: Meeting Scheduled (0 deals),
+  Delivered & Installed (10), Discovery Meeting Done (4), New Lead (8) and
+  Negotiation / Tendering (2).
+- Each of the 17 stages has a `ui_position` equal to its place in the global
+  Zoho picklist times 10. An admin saved the order once, and it was a copy of
+  the picklist, not of the pipeline.
+
+**Why the board was wrong.** Three causes:
+
+1. With one pipeline, `resolvePipeline` returns null. The board sends no
+   `pipeline_id`, and no lane has a pipeline place.
+2. With a saved order, `orderLanes` reads `ui_position` and never the
+   pipeline place. With no saved order, the place only breaks a tie of the
+   global position (`lib/board.ts`).
+3. `orderLanes` puts the open stages first, then on hold, then won, then
+   lost. A drag in settings that crossed a group moved no column.
+
+**Why the settings were hard.** Each row of `MirrorStatusGrid` holds a drag
+handle, two arrows, the Zoho win chance, the Metorite win chance, a colour,
+a hide box, a Rules toggle, Save, Cancel and "Reset to Zoho". The list holds
+stages outside the pipeline with no mark. A separate read-only card lists the
+pipelines. A strip repeats the order above the list. The list order is not
+the board order, because of cause 3.
+
+#### The order rule (D137)
+
+`orderLanes(lanes, mode, places)` stays the one order. `places` maps a status
+id to its place in the pipeline that the board shows. That is the chosen
+pipeline, or the default pipeline when the board shows every deal. A lane's
+own `pipeline_position` wins when the payload has one. The page builds
+`places` from `GET /crm/pipelines`, which it reads already.
+
+1. **No type group.** The open, on hold, won and lost groups go. A stage that
+   Zoho no longer lists, and a hidden stage, still go to the end.
+2. **Mirror mode, no saved order:** the place in the pipeline first. The
+   stages with no place follow, by source position. Then the name.
+3. **Mirror mode, a saved order:** `ui_position`. A row with none follows, by
+   source position. Then the name.
+4. **Native mode:** `position`, then the name.
+5. **The Leads board:** the same rule, with no pipeline. Mirror mode with no
+   saved order uses the Zoho picklist order.
+6. **The win chance never moves a column.**
+
+#### The Deal stages screen
+
+The screen is one list, and the list is the board.
+
+1. **Heading and one line.** "Deal stages". Then: "These are the columns of
+   your Deals board, left to right. Drag a stage, or use its arrows, to move
+   its column."
+2. **Mirror mode: "Column order".** Two choices, "Same as Zoho" and "Custom".
+   It shows "Custom" when the kind has a saved order. "Same as Zoho" asks first
+   when a saved order exists: "Your custom order will be lost." It then calls
+   the reset route. A move while "Same as Zoho" shows saves a custom order, and
+   the choice then shows "Custom". Under it, one line: "Zoho owns the stage
+   names. Your order, colours and win chances stay in Metorite. Nothing here
+   changes Zoho."
+3. **A pipeline picker** (`SelectButton`) sits above the list when the org
+   has two pipelines or more. The read-only "Pipelines" card goes.
+4. **The list.** Each stage of the kind once, in the order of `orderLanes`
+   for the pipeline on screen, empty stages included. One row, one line: the
+   drag handle, Up and Down, the colour dot, the name, then a tag only where it
+   applies: "Won", "Lost", "On hold", "Hidden", "Not in the Zoho pipeline" or
+   "Removed in Zoho". At the right: the win chance as text, such as "40%", and
+   an "Edit" button. No input, Save, Cancel or Reset sits on a row.
+5. **A move saves at once.** The row moves, then the order route saves every
+   id of the kind. On a failure the row goes back, and the error shows. When
+   the list shows a part of the stages (two pipelines), the stages on screen
+   take their own slots of the full order in their new order, and each other
+   stage keeps its slot. A pure function in `lib/settings.ts` does it.
+6. **Edit opens a `Modal`** with the stage name as its title. It holds the
+   colour, the win chance, "Show this column on the board" (the inverse of
+   hide) and "Warn when a deal stays more than N days". A deal stage also keeps
+   "Fields a deal needs to enter this stage", the checkboxes of
+   `REQUIREABLE_FIELDS` (WS-26h). The move gate reads them, so they stay, in
+   both modes. A lead status has neither. In Mirror mode, the win
+   chance shows "Zoho: 40%" and a "Use Zoho's value" action. A won stage fixes
+   the win chance at 100 and a lost stage at 0, with the reason in one line.
+   Native mode adds the name, the type (Open, On hold, Won, Lost, each with
+   one line of help) and Delete, which asks first. One Save and one Cancel.
+7. **Native mode: "Add stage"** under the list opens the same `Modal`, empty.
+   A new stage lands before the first won or lost stage.
+8. **Lead statuses** use the same list and the same `Modal`, with the Leads
+   board as the board and no pipeline picker.
+
+The OrderStrip, the inline inputs, the row buttons Save, Cancel and "Reset
+to Zoho", and the Rules toggle go. Lost reasons do not change in this slice.
+
+**Fracktal after the deploy.** Its saved order stays, because nothing
+rewrites an admin's choice. The owner picks "Same as Zoho" once to get the
+pipeline order.
+
+#### Done when
+
+1. A test of `orderLanes` with the Fracktal shape above gives the 12 pipeline
+   stages in the pipeline order, then the 5 others in picklist order, with no
+   saved order. With the saved order, it gives the `ui_position` order. No
+   type group and no win chance moves a stage.
+2. With one pipeline and no `pipeline_id`, the board orders by the places of
+   the default pipeline.
+3. The settings list and the board read the same function with the same
+   input, so a move shows the same order in both.
+4. The pure merge of a part order into the full order has tests: a move
+   inside the part, a part at the start, a part at the end, and a part
+   with gaps.
+5. The four captures of `visual-review` (light mode, compact density, a
+   changed accent, 390 px) of the Deal stages screen in Mirror mode and in
+   Native mode, and of the Edit `Modal`.
+6. `npx tsc --noEmit` passes, and `npx vitest run` passes on the CRM tests.
+   The PR names each fence test that D137 changes, with the old rule and the
+   new one.
+
+Fences (R7): `boardStages.test.ts`, `board.test.ts`, `crmC3.test.ts` and
+`crmU6.test.ts` change to D137. `crmU11.test.ts` holds the Fracktal case, the
+merge cases and a source fence that no type group sits in `orderLanes`.
+
+### 20.16 CRM-U12: plain words and no dead ends in CRM setup (2026-10-27)
+
+**Status.** ✅ Built 2026-10-27 on branch `crm-u12-plain-words` (PR pending). Visual-review captures not taken. Metorite: under epic #477.
+
+**Gate.** AGENT-SAFE. No flag, no migration and no gateway change. Copy and
+small UI changes only. The layout of the settings sections does not change
+here. The owner decides that layout first.
+
+**Why.** Owner, 2026-10-27: the CRM setup must be "straightforward and easy
+to understand for the person setting things up", and "not complex to
+understand or overloaded". A read-only audit of the setup screens on
+2026-10-27 found the items below in the code, with file and line evidence.
+
+**Not in this slice.** `PipelineSettings.tsx` (CRM-U11 owns it), the field
+studio words that copy Zoho on purpose (Picklist, Lookup), the merge of
+sections, the one inbox for AI proposals, and the draft of the Field map.
+
+#### The changes
+
+1. **First open (`FirstOpen.tsx`).** Remove the three disabled provider rows
+   (HubSpot, Salesforce, Pipedrive) and their "Coming soon" badges. Put one
+   muted line in their place: "HubSpot, Salesforce and Pipedrive come later."
+   Replace "You can change this later in Settings" with the truth: "To change
+   this later, you start over, and the CRM records are removed."
+2. **The Native conversion card (`ConvertMappingCard.tsx`).** Its title is
+   "When a lead converts", not "Field mapping". The Mirror Field map keeps its
+   title.
+3. **Fields, read only (`FieldsCard.tsx`).** Show the type with the labels of
+   `lib/fieldStudio.ts` `TYPE_LABELS`, so one word names one type. Remove the
+   "Zoho" tag that shows on every row. Make "Edit fields in Zoho" a link when
+   the Zoho address is known (the helper the record page uses). A Native admin
+   with no field editing reads: "Field editing is not on for your
+   organization yet." No other dead end stays.
+4. **Sync health (`SyncHealthCard.tsx`, `lib/syncHealth.ts`).** Business
+   words in place of engine words:
+
+   | Now | New |
+   |---|---|
+   | Entity | Records |
+   | Skipped | Left out |
+   | Not linked | No matching record |
+   | Failed | Could not save |
+   | Not mapped | Did not fit |
+   | Partial read | Some missing |
+   | Hold it | Pause syncing this |
+
+   The details table shows five columns by default: Records, In Zoho, In
+   Metorite, Difference and Sync. The other counts move into an expand on
+   each row.
+5. **The Field map (`FieldMapCard.tsx`, `lib/fieldMap.ts`).** "Stale" reads
+   "Zoho changed this". "Target column" reads "Metorite field". The "Map"
+   button reads "Add to draft", because it adds to a draft and applies
+   nothing. CRM-U13 may remove the draft. Until then the label tells the
+   truth.
+6. **Dead code.** Delete `ComingSoonCard` (`SettingsCards.tsx`) and its
+   tests.
+
+#### Done when
+
+1. Each change above is on screen, and no test asserts an old word.
+2. `npx tsc --noEmit` passes, and `npx vitest run src/app/crm` passes, except
+   the six known CRLF failures (layoutBoundary ×2, railSessions, emailLink,
+   reportsLiveOverview ×2).
+3. A grep of `src/app/crm` for the old words of item 4 and item 5 finds none
+   in a string that a user reads.
+4. The `visual-review` captures (light mode, compact density, a changed
+   accent, 375 px) of First open, Fields and Sync health. If a screen cannot
+   draw without a Zoho-mirrored org, the PR says so and shows what it could.
+
+Fences (R7): the tests that hold each changed string. In build mode no new
+fence file is needed (`engineering_practice.md` §7a).
+
+### 20.17 CRM-U13: five sections, one list for the AI, one-step Field map (2026-10-27)
+
+**Status.** 📝 Specified 2026-10-27. Decision D134. Waits for CRM-U11 and CRM-U12 to merge, because it changes the same screens. Not yet audited.
+
+**Gate.** AGENT-SAFE. No flag and no migration. A gateway change is not expected. The audit confirms it per slice.
+
+**Evidence.** The read-only audit of the CRM setup screens, 2026-10-27. It counted 11 rail rows for a Mirror admin and five or six places where the AI asks for an approval, with no "done" signal.
+
+#### The sections (D134.1)
+
+| Section | Who | What it holds | From today |
+|---|---|---|---|
+| Connection | admin | The Zoho link and its state, Sync now, sync trouble, and who can open the CRM. "Advanced" folds the record counts, the module table and holds, the runs, the credits, Disconnect, the two switches to Metorite (§3.4) and Start over | Setup and sync, Sync health, Access |
+| Needs your input | admin | Each thing the AI asks, in one list, with a count on the rail | Open questions, Suggestions, the Field map proposals, "Your choices in the chat" |
+| Fields | admin | Mirror: each Zoho field and where it shows in Metorite, one row each, with one control. Native: the field studio, and a tab "When a lead converts" | Fields, Field mapping |
+| Pipeline | each member reads, an admin changes | Three tabs: Deal stages, Lead statuses, Lost reasons | three sections |
+| AI rules | each member | Today's Business rules, renamed | Business rules |
+
+- A member sees Pipeline and AI rules.
+- A Native admin sees Connection (the mode and the access), Fields, Pipeline and AI rules.
+- The main view of Connection drops the rows "Mode", "Data centre" and "Connected by". They move into "Advanced".
+- "Sync now" and the last sync show once, in Connection.
+- Until the setup is done, Connection opens first and shows three steps with a done mark on each: Connect Zoho, Review what the AI found, Choose who can open the CRM. After that, an admin lands on "Needs your input" when it holds an item, else on Pipeline.
+- `lib/settingsSections.ts` keeps each old id as an alias of its new section (`crmC1.test.ts` fences the ids).
+- **Change history** is a sixth section (CRM-M1, `crm_conversational.md` §8). It is for an admin, in both modes, last in the rail. U13 keeps it as a section of its own.
+
+#### Needs your input (D134.2)
+
+1. One list. Each item is one card: one question in one line, the AI's suggestion as the highlighted choice, "Other…" and a "Why?" fold that holds the reason and what the answer changes.
+2. The list shows three items, then "Show more".
+3. The main button "Accept the AI's suggestions" accepts the suggestion of each item in the list, through the existing routes. It reports how many it accepted and how many need a person, because they have no suggestion.
+4. Each accepted item shows in "Your answers", where an admin can change it or undo it.
+5. A suggestion of a module (CRM-Q20-2) is a card of the same list, with its preview.
+6. A Field map proposal is one line: "Zoho field X fills Y", with Accept and Change.
+7. A member's choice in chat waits here for an admin, with Confirm and Change.
+8. "Run the AI analysis again" sits once, in a "More" menu of the section.
+
+#### Fields and the Field map (D134.3)
+
+1. A pick applies at once. The client sends the draft and its approval as one action, through the routes that exist (`POST /crm/mapping/plans`, then the approve). The toast says "Saved. The next sync fills it."
+2. The Draft box, its words and the second press go. The rule-by-rule Approve and Reject go too, because "Needs your input" holds the proposals.
+3. "Change history" opens the versions. "Go back" restores one, and asks first.
+4. Mirror rows: the unmapped fields first, then the mapped ones. Each row shows the Zoho field, where it shows in Metorite, a status in plain words, and one control.
+
+#### Slices
+
+| Slice | What | Size |
+|---|---|---|
+| CRM-U13a | The five sections, the aliases, Connection with "Advanced", the setup steps, Pipeline tabs, AI rules | L |
+| CRM-U13b | Needs your input, with accept-all and "Your answers" | L |
+| CRM-U13c | The Field map in one step, and Fields merged | M to L |
+
+U13a goes first. U13b and U13c can run side by side after it.
+
+#### Done when (each slice adds its own after the audit)
+
+1. A Mirror admin sees five rail rows, a member two, and a Native admin four. Each old `?section=` link opens the new section.
+2. One press of "Accept the AI's suggestions" accepts each item that has a suggestion, and the count on the rail falls to the items that need a person.
+3. One pick on the Field map saves it, and "Change history" lists it as a new version.
+4. The four `visual-review` captures (light mode, compact density, a changed accent, 390 px) of each new section.
+
+### 20.18 CRM-U14: the order of the cards on the Deals board (2026-10-28)
+
+**Status.** ✅ Built 2026-10-28 on branch `crm-u14-card-order`. Not merged. Not deployed.
+
+The owner saw the cards of a Deals column in a different order from Zoho. The cause: a mirrored deal held the import time in `status_changed_at`, so the default order was close to random. Zoho's own `Stage_Modified_Time` sat unused in `custom`.
+
+What the slice does:
+
+1. The Zoho deal mapping sets `status_changed_at` from `Stage_Modified_Time` on each upsert. A deal with no value keeps the stored clock.
+2. Each sync run repairs the rows stored before this change. The step is `crm_sync/engine.py` `_restamp_stages`. It writes through the fenced door `core.restamp_deal_stage_from_source`, 500 rows a batch, 20 batches a run, Zoho rows only. A repeat writes nothing. No migration.
+3. "Board options" gets "Sort cards": Recently moved (default), Recently changed, Closing date, Amount and Next step. `?card_sort=` takes `stage_age`, `recently_changed`, `close_date`, `amount` and `next_activity`. Any other value is a 422.
+
+Fences: `tests/unit/test_crm_stage_card_order_r8.py` (R8), `tests/unit/test_crm_upsert_from_source_fence.py` (the new door is sync-only).
+
+Known gap: some tenants send no `Modified_Time` on Deals (see `crm_sources/zoho/client.py`, `list_changed`). For them `ext_modified_at` is NULL. "Recently changed" then uses `updated_at`.
+
+### 20.19 CRM-U15: plain everyday screens (2026-10-29)
+
+**Status.** ✅ Built 2026-10-29 on branch `crm-u15-plain-screens`. Not merged. Not deployed. Frontend only.
+
+The owner asked for a CRM that is "straightforward and easy to understand". The code audit of 2026-10-28 found five problems on the daily screens. This slice fixes them.
+
+1. **One clear Mirror line.** A thin strip under the app bar says once: "This is a read-only copy of your Zoho. You can add notes, calls and tasks here. Create and edit records in Zoho." Native shows nothing. A field row has no lock icon. A click on a locked value shows "Edit this in Zoho." New and Convert stay on screen, greyed out, with the reason "Create records in Zoho" and "Convert leads in Zoho". A card that cannot move stays undraggable. Notes, calls and tasks stay open. Files: `MirrorBanner.tsx` (`MirrorNote`), `LockedValue.tsx`, `FieldsPanel.tsx`, `FieldInput.tsx`, `page.tsx`, `lib/connect.ts`. Fence: `crmU15.test.ts`, "part A".
+2. **A pencil in Native.** An editable field row in Native shows a pencil on hover and on keyboard focus. The tick and X still save. There is no save on blur. Files: `FieldsPanel.tsx`. Fence: `crmU15.test.ts`, "part B".
+3. **Plain words.** These change: the Convert dialog, the board hint, and "Not in Zoho" (was "Only in Metorite"). The filter groups are "Dates / Choices / Numbers / Other". Each Reports block has one short line. Its method sits behind an info icon. Zoho labels stay (D133). Files: `ConvertModal.tsx`, `KanbanBoard.tsx`, `Reports.tsx`, `lib/connect.ts`, `lib/filterFields.ts`. Fence: `crmU15.test.ts`, "part C".
+4. **No stale or doubled controls.** The dashed end-of-board "New deal" tile is gone. The hint names "Board options". The stale "+" comment is gone. No lane quick add. Files: `KanbanBoard.tsx`, `page.tsx`. Fence: `crmU15.test.ts`, "part D".
+5. **Loading and error.** A list and a board show a skeleton on the first read. The error banner has Retry. A failed board read clears the lanes, and the board says "The board did not load." Files: `RecordList.tsx`, `KanbanBoard.tsx`, `page.tsx`, `lib/store.ts`. Fence: `crmU15.test.ts`, "part E".
+
+Left out on purpose: a lane quick add and the settings screens (CRM-U13). The strip has no Zoho link, because no page-level address exists. The record sheet keeps its own link.
+
+### 20.20 CRM-U16: a deal gets its company and contacts (2026-10-29)
+
+**Status.** ✅ Built 2026-10-29 on branch `crm-u16-deal-pickers`. Not merged. Not deployed. Frontend only. The gateway already takes `company_id` on a deal and a contact, so no gateway change was needed.
+
+The audit of 2026-10-28 found that "Add a deal for a company" could not be finished. The New deal form had no Company or Contact. The deal page showed no Company. The Related tab could star and remove a contact, but not add one. This slice closes all four gaps.
+
+1. **One picker.** `RecordPicker.tsx` is one search box with the shared `OptionList` under it. The member types, and the hits open at once. Down and Up move, Enter picks, and Escape closes the list only. The list opens below the box. A held value adds one "Clear" row, and an empty picker has none. The placeholder is "Search companies…", with the CRM's own plural. The search is debounced and calls the list route with `?q=`. `lib/recordPicker.ts` holds the search and the link fields.
+2. **New deal.** The form has a Company picker and a Contact picker. A company narrows the contact list to its own contacts first. Any other contact stays pickable. The form sends `company_id`. The store then attaches the contact as the main contact (`POST /crm/deals/{id}/contacts`). If the attach fails, the deal stays, and the error says so.
+3. **New contact.** The form has a Company picker. It sends `company_id`.
+4. **Deal page.** Company is a fact in the summary header and a row on Overview. In Native, the pencil opens the picker, and a pick saves `company_id`. In Mirror, the row is a locked value ("Edit this in Zoho."). The record page reads the company name with one read of the company, as it does for a contact.
+5. **Related tab.** "Add contact" opens the contact picker, with the deal's company first. The first contact of a deal becomes the main one. Later contacts do not. A contact that is on the deal already is left as it is. Star and remove stay. Mirror shows none of it.
+6. **Words.** The labels come from the CRM's own names for the entities (`GET /crm/mode` labels, CRM-Z10g). The default words are "Company" and "Contact".
+
+Mirror mode offers none of these writes. The server guard (`assert_writable`) still refuses them. The golden file `__fixtures__/c4b-flag-off/create.html` changed on purpose, because the New deal form now has two pickers.
+
+Files: `components/RecordPicker.tsx`, `components/QuickCreateModal.tsx`, `components/FieldsPanel.tsx`, `components/RecordSheet.tsx`, `lib/recordPicker.ts`, `lib/fields.ts`, `lib/store.ts`. Fence: `components/crmU16.test.ts`.
+
+Left out on purpose: the duplicate warning (CRM-S5), "Create another", and a company picker on a lead.
+
+### 20.21 CRM-U17: one way to save, one set of words, and three defects (2026-11-01)
+
+**Status.** CRM-U17a is built on branch `crm-ux-save-words-mt-6b2c2bd8` (2026-11-01), not merged. CRM-U17b is specified and not built. Owner choice, 2026-11-01: point 6 of the CRM UX brainstorm and the three defects come first. Metorite task #1318, under the CRM epic.
+
+**Gate.** AGENT-SAFE. No flag and no migration. One gateway change: the label of one system field (`routes/crm/core.py:706`). Everything else is frontend.
+
+**Evidence.** The read-only inventory of origin/main `fc1b5edb6`, 2026-11-01. CRM settings use nine save patterns. Two places open a modal on top of a modal. All three defects are real. `page.tsx` and `lib/` are under `workbench/control_plane/src/app/crm/`. A bare component name is under `src/app/crm/components/`, and `routes/` is under `apps/services/gateway/gateway/`.
+
+**Slices.** U17a goes first. U17b follows, because it changes the same files.
+
+| Slice | What | Size |
+|---|---|---|
+| CRM-U17a | The three defects, a refused edit keeps the input, no modal on a modal, one set of words | M |
+| CRM-U17b | `SaveMark` and `useAction` (UXD-5 items 1, 2 and 8, task #908), and the CRM settings use them | M to L |
+
+#### CRM-U17a
+
+1. **Native modules show in the rail.** `page.tsx:203` reads the modules in Mirror mode only, so a Native org gets no "More modules" group. Read them in both modes. The server already returns the Native modules that hold records (`routes/crm/modules.py:241-264`). Correct its old docstring at `:429`.
+2. **No raw module name.** `lib/modules.ts:128-133` `moduleLabel` falls back to the API name. The fallback becomes a readable name: `service_requests` reads "Service requests". `ModuleRecordSheet.tsx:148` has its own raw fallback (`… || module`), and it takes the same readable name.
+3. **Loading is not empty.** The statuses start as `[]` (`lib/store.ts:315-317`), and `loadVocabulary` has no loading state (`:359-370`). The store records "loading", "loaded" and "failed" for the vocabulary.
+   - Until the first read lands, the stage list, the lead statuses, the lost reasons and the read-only lists (`SettingsCards.tsx:55`, `:124`) show a loading row.
+   - A failed read shows its reason and Retry.
+   - "No stages yet" and the other empty lines show only after a read that returned no rows.
+   - The loading, empty and loaded states keep one height (M1).
+4. **A refused stage edit keeps the input.** `saveStatus` re-reads in `finally` (`lib/store.ts:820-823`). The new object then fails the draft base check (`lib/settings.ts:420-422`), and the boxes snap back. After a refusal, the draft stays. The reason shows next to Save.
+5. **No modal on a modal.**
+   - The stage delete confirm (`PipelineSettings.tsx:1185`) and the field retire confirm (`FieldStudio.tsx:600`, `FieldStudioFieldDialog.tsx:445`) open inside another Modal. Each becomes a confirm step in the same Modal, or the first Modal closes before the confirm opens.
+   - The answer of the sum picker (`OpenQuestions.tsx:725`) and "Use" in the suggestion preview (`Suggestions.tsx:109`) raise a toast while their Modal is open. `components/ui/Toast.tsx:102-110` forbids that. The Modal closes first.
+6. **One set of words.**
+
+   | Now | New | Where |
+   |---|---|---|
+   | Probability | Win chance | `components/FieldsPanel.tsx:146`, the system field label at `routes/crm/core.py:706`, the messages at `lib/settings.ts:201`, `:206-208`, `:328` |
+   | hidden, Hidden, "Show this column on the board" | Hidden, and the box "Hide on the board" (checked means hidden), with the hint "A hidden stage still shows while it holds a deal." | `PipelineSettings.tsx:837-842`, `:1368`, `FieldsCard.tsx:128` |
+   | "The server refuses…", "the order shown is the server's", "not set up on this server", "The server restarted…" | Words that say what happened and what to do, with no "server" | `PipelineSettings.tsx:1188`, `lib/settings.ts:153-154`, `lib/syncHealth.ts:159`, `:163`, `lib/cutoverSwitch.ts:200` |
+   | `Gateway error ${status}` | "That did not work. Try again." with no status code | `lib/api.ts:124`, the fallback of every CRM refusal that has no detail |
+   | A raw type id (`textarea`, `multiselect`) | The `TYPE_LABELS` word, through `typeLabel` | `FieldMapCard.tsx:314`, `ConvertMappingCard.tsx:91`. The fallback of `lib/fieldStudio.ts:96` becomes readable too |
+   | A raw id (`max_dwell_days`, a JSON list of keys, `won`, `lost`) | The field's label, and "Won" or "Lost" | `lib/settings.ts:206`, `:222`, `:232`, `components/StatusPill.tsx:197-199` |
+
+   Kept on purpose. "Retire" in the field studio is a different act: the field leaves every form and list. "Pause syncing this" is a different act too. "Picklist" and "Lookup" copy Zoho (U12). The words of the Field map draft and its "column" stay, because CRM-U13c rewrites that card.
+
+**Done when (U17a).**
+1. In a Native org whose custom module holds records, the rail shows the module under "More modules", with its label.
+2. No title, subtitle or list label shows a raw API name.
+3. On a slow network the stages page shows a loading row and never "No stages yet". A failed read shows its reason and Retry.
+4. A refused stage edit keeps every typed value, and the reason shows next to Save.
+5. No Modal opens while another Modal is open, and no toast rises over an open Modal.
+6. A grep of `src/app/crm` finds none of the old words of item 6 in a string that a user reads.
+7. `npx tsc --noEmit` passes. `npx vitest run src/app/crm` passes, except the six known CRLF failures.
+8. The `visual-review` captures (light mode, compact density, a changed accent, 390 px) of the stage settings, the rail with a Native module, and the stage delete confirm.
+
+#### CRM-U17b
+
+1. **The shared parts.** Build `SaveMark` (`src/components/ui/SaveMark.tsx`) and `useAction` (`src/lib/useAction.ts`) to the contract of `DESIGN_SYSTEM.md` §12, plus the one helper that turns a failure into words (UXD-5 item 8). They are UXD-5 items 1, 2 and 8. The rest of UXD-5 stays in task #908.
+   - `SaveMark` shows "Saving…" after 300 ms, then "Saved ✓", and fades. A failure sits in its place with Retry.
+   - A reversible change registers its undo in `lib/undo.ts`. Ctrl+Z undoes it, and the SaveMark shows "Undo" while "Saved ✓" shows. This puts Undo where the eye is (§12 beat 3), and no toast rises for a change that is on the screen.
+2. **The CRM settings use them.** Each control that saves on change shows a SaveMark beside it. These are Access, the order of stages and lost reasons, the Hidden boxes, Column order "Custom", the selects of "When a lead converts", the Sync health boxes, the field studio order and Restore, and the rename of a lost reason.
+   - A reversible change offers Undo.
+   - A failure shows in the SaveMark and keeps the input.
+   - The page banner shows only when a page fails to load.
+   - The toasts "Access saved" and "Record names saved" go, because the SaveMark shows the result.
+3. **Business rules.** "Remove" deletes a rule at once with no way back (`BusinessRules.tsx:129`). It offers Undo, which writes the rule again.
+
+Left out on purpose. The stage edit Modal and the field dialog stay. The pipeline editor on the board (brainstorm point 3) and the form designer (point 4) replace them later. The two steps of the Field map stay for CRM-U13c.
+
+**Done when (U17b).**
+1. Unit tests for each beat of `useAction`: the 300 ms pending, Saved, Undo through `lib/undo.ts`, the rollback, Retry, the kept input, and one submit for each intent (M3).
+2. Each control of item 2 shows "Saved ✓" after a save and its reason after a failure. Ctrl+Z undoes the last reversible change.
+3. The `visual-review` captures of the SaveMark in its three states, in the four contexts.
+
+Fences (R7): the tests that hold each changed string and each beat. In build mode the slice adds no new fence file (`engineering_practice.md` §7a).

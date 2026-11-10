@@ -12,7 +12,7 @@ machine can check; the rest is here.
 
 ## 0. There is ONE look — read this first
 
-**Owner directive, 2026-08-31: the theming engine is retired.** Metorite
+**Owner directive, 2026-08-31: the theming engine is retired.** (Since 2026-10-31 the one look is glass. §0a says so.) Metorite
 shipped four switchable themes (RapidTool, Fluent, Material, Graphite) until
 that day. It now ships the Control Plane's original look, and every app and
 sub-app renders in it. `Fluent`, `Material`, `Graphite`, the `data-theme`
@@ -29,6 +29,28 @@ sandbox publishes them as its `--cc-*` interface. Monaco and Shiki take their
 own theme names. The contrast gate measures them. It is a mirror, and
 `themes.test.ts` fails if it drifts from the stylesheet. Change a value in
 both, or in neither.)*
+
+### 0a. The one look is glass (D143, D149, 2026-10-31)
+
+The owner chose Aroh's design language, **glass**, as the look. On 2026-10-31
+the owner ended the trial: "We confirm that we want to be on the new UI ...
+We don't need to keep the switch." Glass is the only look, for every member,
+in every build. `project-docs/specs/glass_look.md` owns it.
+
+- The server renders `<html data-look="glass">` on every page. No gate, no
+  switch and no stored choice turns classic on. `NEXT_PUBLIC_UI_LOOK` is dead.
+- ⚠️ GL-Z1 is built, and GL-Z2 is next. Until GL-Z2, `globals.css` still holds
+  the classic `:root` and `.light` blocks, and the glass token blocks come after
+  them. Do not edit the classic values. Edit the glass blocks.
+- A glass difference in a component still goes behind the `glass:` variant, for
+  example `rounded-lg glass:rounded-full`. GL-Z2 folds each one into a plain
+  class. Write for glass, and do not write a classic fallback.
+- The glass materials (`glass-chrome`, `glass-menu`, `glass-surface`,
+  `glass-press`, `glass-scroll-edge`) and the glass type styles
+  (`text-subhead`, `text-body` and the others) go only behind `glass:`.
+- `src/lib/theme/glassLook.test.ts` fences the rules, and it measures the
+  contrast of the glass pairs.
+- Settings → Appearance holds no Design switch.
 
 **What a member may still change**, at Settings → Appearance — these adjust the
 one look, they do not replace it:
@@ -161,10 +183,11 @@ A literal is right only when the value is **not a theme decision**:
    Facebook" button is Meta's, not ours.
 3. **Identity** — a per-person avatar hue derived from their email must be
    *stable*; deriving it from the theme defeats the thing it is for.
-4. **Our brand mark.** The Metorite comet keeps its own gradient in every mode
-   and under every accent (owner, 2026-10-11). A comet that an accent turns
-   pink is no longer the mark. `components/MetoriteMark.tsx` holds the stops,
-   copied from `brand/`, and `app/icon.svg` is the tab icon.
+4. **Our brand mark.** The Metorite comet keeps its own colour under every
+   accent (owner, 2026-10-11). It is solid black in light mode and solid white
+   in dark mode, with no gradient (owner, 2026-10-30). A comet that an accent
+   turns pink is no longer the mark. `components/MetoriteMark.tsx` holds the
+   fills, copied from `brand/`, and `app/icon.svg` is the tab icon.
 
 "It would be a lot of work to migrate" is not on this list — that is debt, and
 it belongs in the conformance test's baseline where it stays visible.
@@ -217,6 +240,11 @@ import Badge from "@/components/ui/Badge";
 `Button` — `variant`: `primary | secondary | ghost | destructive | text`;
 `size`: `sm | md | lg | icon-xs | icon-sm | icon | none`; plus `icon`,
 `loading`, `radius`, `layout`.
+
+`Switch` (`components/ui/Switch.tsx`, GL-2) — the one on/off switch:
+`checked`, `onChange`, `label`, `disabled`, `classic`. Pass `label` unless a
+`<label>` around it names it. No other file draws `role="switch"`. Fence:
+the "one switch" test in `src/components/rawControls.test.ts`.
 
 **Why this is a component and not a documented class string.** Colour can be a
 class. *Control personality* cannot: the hover state layer, the outline on
@@ -334,7 +362,9 @@ The rules for NEW motion:
   the transform origin at the anchor. A section never scales.
 - **A reveal travels 16 px or less.** A longer travel reads as a slide show.
 - **Only a status loops.** A spinner, the typing dots and a live dot loop,
-  because each one says "working". Nothing else loops.
+  because each one says "working". An agent's card loops too: the edge
+  travels while the agent works, and it breathes while the agent is idle
+  (EA-13h). Nothing else loops.
 - **Every animation answers reduced motion.** An entrance shows at once. A
   decoration stops. A status loop may stay, or slow down, because a still
   spinner reads as a hang.
@@ -414,6 +444,34 @@ change them.
 
 ---
 
+## 4b. The motion vocabulary
+
+Owner directive, 2026-10-28: "enough animations and effects to make things
+interesting without becoming overly complex". Each change of state on the
+screen takes one motion from this table, and no other. Each motion uses the
+tokens of §4, moves `transform` and `opacity` only (G3), and answers reduced
+motion. A rollback plays its motion in reverse, so the member sees the act
+undone.
+
+| Name | When | What moves | Token | Reduced motion |
+|---|---|---|---|---|
+| **Appear** | An item is made or arrives: a task, a record, a row, a calendar block | It rises 8 px and fades in at its place. The neighbours make room through a view transition. Then the arrive tint (`useFlash`) shows for 1.2 s | `--motion-duration` | It shows at once, with the tint |
+| **Leave** | An item is archived, deleted or snoozed, or it leaves the view | It fades and drops to a scale of 0.98. The neighbours close the gap through a view transition. No height animates | `--motion-duration` | It goes at once |
+| **Travel** | An item changes place: a card to another column, a mail to a folder, a task to a day | A view transition carries it from the old place to the new one | `--panel-duration` | It jumps, and the arrive tint marks it |
+| **Grow** | A popup, a menu, a dialog or a sheet opens | It grows from its anchor at a scale of 0.96, with the origin at the anchor. The close is shorter | `--motion-duration`, `--sheet-duration` | It shows at once |
+| **Confirm** | An act succeeded where the eye is: a save, a send, a status change, an approve | The control's label turns into the result ("Saved", "Sent", "Approved"). A check mark draws once. After 1.5 s the label returns | `--motion-duration` | The label changes, and nothing draws |
+| **Undo window** | A reversible act ran (M5) | The toast rises 8 px from its corner. A thin bar under it shrinks (`scaleX`) for the length of the window | `--sheet-duration` | The bar becomes a count in seconds |
+| **Count** | A number changes with no click: an unread count, a lane total | The number takes the accent tint once, for 600 ms. It sits in a `role="status"` region (M9) | `--motion-duration` | The tint shows, and nothing fades |
+| **Working** | A live status: a run, typing, a sync, an agent's card | Only the loops of §4: the spinner, the dots, the live dot, and the agent's edge (it travels while the agent works, and its glow breathes by opacity while the agent is idle) | §4 | Slower, never gone. The idle glow stands still, because an idle agent is not busy |
+| **Attention** | Something waits on the member: a question, a failed act | One ring of the accent or the warning colour, once, when it arrives. It never loops | `--motion-duration` | The ring shows, still |
+
+A motion that is not in this table is not used. Adding one changes this
+table first, in the same PR. UXD-6 builds these motions into the shared parts.
+Until it lands, the table is ADVISORY, and `theme/motion.test.ts` holds only
+G1 to G4.
+
+---
+
 ## 5. Apps that run in the sandbox
 
 Custom Apps, generative-UI cards and React artifacts run in an **opaque-origin
@@ -465,6 +523,11 @@ Check `src/components/` before writing a tab bar, filter pills or a page header.
   phone swipes it. `FilterPills` and the Email quick filters use it. Use it for
   any chip row that can outgrow its pane, and do not write a second one.
 * `PageHeader` — the page's title, subtitle and whole-surface actions.
+* A page grid inside an app follows its container width with `@container`
+  queries, as the Projects reports and `genUITemplates` do. The window width
+  does not show the shell rail or a side column.
+* A side column beside a page grid starts at `lg`, with a `Modal` sheet below.
+  The 260 px rail leaves too little room at `md`. `StudioPage` is the example.
 
 ```tsx
 import PageHeader from "@/components/PageHeader";
@@ -691,6 +754,7 @@ tint, in both modes. It also measures each `-foreground` ink on its solid
 fill. So light mode needs a darker value than dark mode. `--warning` is a
 dark amber on white and a bright yellow on near-black (H-174). `--success`,
 `--destructive` and `--info` are also darker in light mode (H-193).
+`Badge tone="info"` is the blue chip. Use it for a state that is neither good nor bad, and never use `primary` for a state (H-435).
 
 **No status tone may have a ratchet entry.** The test "every status tone
 clears AA" fails if `KNOWN_SHORTFALLS` names one of the five. A new tone
@@ -843,6 +907,9 @@ dependency and no second look. This changes the two-speed rule of
    `workbench/control_plane/src` without that line. Fence: the "Visual review
    line" step of the Frontend job in `.github/workflows/pr-check.yml`, a
    required check. `tests/unit/test_fence_lists.py` keeps the step there.
+   The step reads the LIVE body (CIV-8). When the line is missing, edit the PR
+   body and run `gh run rerun <run id> --failed`. Do not push a commit for it.
+   A push starts a whole new run of about 17 jobs.
 4. **The UI checklist of the diff review.** Item 8 of `diff-reviewer` reads
    the code for the rules that no test sees. For a UI diff it runs in build
    mode too. The full adversarial review still follows the tier of the slice
@@ -931,3 +998,69 @@ carry.
 | 2026-10-27 | `nextlevelbuilder/ui-ux-pro-max-skill` | The interaction rules M1 to M17 of this section. No style and no palette |
 | 2026-10-27 | `ibelick/motion-primitives` | No code. It needs the `motion` library, and most of it is effects for a sales page. One idea is kept, and it is not tested: a list item that grows into its detail through the View Transitions API |
 | 2026-10-27 | `design-taste` and `better-design`, read again | Nothing new |
+
+---
+
+## 12. The action contract
+
+Owner directive, 2026-10-28: "a more deliberate feel about all the user
+actions, so that a user will know exactly how to perform an action, and he's
+also sure that the action that he's performed actually works properly."
+
+Each act that changes data takes four beats. A member who sees all four never
+asks "did that work?".
+
+1. **Find it.** The act has a visible control with a label or a tip. A frequent
+   act has a key, and its tip and its menu row show the key in a `<Kbd>`. The
+   command bar (⌘K) offers it. A control that shows on hover also shows on
+   touch and on focus.
+2. **Feel it.** The control answers the press within 100 ms, with its pressed
+   state. A wait over 300 ms shows the verb with a spinner on the control
+   itself: "Saving…" or "Sending…". The control keeps its width (M2). A
+   second press does nothing (M3).
+3. **Know it.** The result shows where the eye is: the change itself, with its
+   motion (§4b), and Confirm on the control. A toast tells the result only when
+   the change is off the screen, or for a bulk act. Its words name the verb,
+   the object and the place: "Moved 3 tasks to Done".
+4. **Undo or recover.**
+   - A reversible act runs at once and offers Undo (M5) through the one undo
+     stack (`lib/undo.ts`), in the toast and with Ctrl+Z.
+   - An irreversible act asks first, in `ConfirmDialog`, with the count and
+     "This cannot be undone". Never the browser's `confirm()` or `alert()`.
+   - A failure never loses what the member typed. The input stays, an
+     optimistic change rolls back with its motion, and the reason sits next to
+     the control with Retry.
+   - A page banner is only for a page that failed to load.
+   - The words say what happened and what to do. Never a raw status such as
+     "HTTP 500", and never `String(err)`.
+   - A background write that fails, such as a sync, raises the one failure
+     toast. The shell mounts it once.
+
+**The same act gives the same answer** in each app and on the phone. An
+archive gives an Undo toast in Email, Projects, Knowledge and CRM alike.
+
+### The shared parts
+
+| Part | What it does |
+|---|---|
+| `useAction` | Runs the four beats for a write: the 300 ms pending, Confirm, Undo through `lib/undo.ts`, the rollback with its motion, Retry, and the kept input |
+| `SaveMark` | "Saving…", then "Saved ✓", next to a field (M7). A failure shows in its place, with Retry |
+| `<Kbd>` | Shows a key in a tip, a menu row and the command bar |
+| `lib/undo.ts` | The one undo stack. No app builds a second one |
+| `SyncFailureToast` | The one failure toast for background writes, mounted once by the shell |
+
+An app adds no second toast, undo engine, confirm or command palette (D87 to
+D89).
+
+### Fences
+
+ADVISORY until each ships.
+- **G9:** no `confirm(` or `alert(` in `src/`. UXD-8 adds it to
+  `uiGates.test.ts`.
+- **G10:** a write in a component that does not go through `useAction`. UXD-5
+  adds this ratchet.
+- **The browser specs of UI-G2** hold beats 2 to 4 on the top acts of each
+  app.
+
+The audit of 2026-10-28 (origin/main `7452a78f5`) measured where each app
+stands. The Metorite sub-epic UX-D (UXD-1 to UXD-12) holds the fixes.

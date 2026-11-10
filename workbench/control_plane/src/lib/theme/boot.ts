@@ -42,6 +42,11 @@ import {
 /**
  * The script source. Generated rather than hand-written so the density scale
  * and storage keys stay in lockstep with the modules that own them.
+ *
+ * The look (D149): glass is the only look, and the server renders it. The
+ * script holds no look code, so it cannot add or remove the attribute. It
+ * only clears the `cc-look` key that the old Design switch left behind.
+ * `glassLook.test.ts` fences both.
  */
 export function themeBootScript(): string {
   const scales = JSON.stringify(DENSITY_SCALE);
@@ -49,12 +54,15 @@ export function themeBootScript(): string {
   const accentInkProps = JSON.stringify(ACCENT_INK_PROPERTIES);
   const mode = JSON.stringify(MODE_STORAGE_KEY);
   const sep = JSON.stringify(SCOPE_SEPARATOR);
+  // A member who chose Classic stored this key. Nothing reads it now.
+  const look = `try{ls.removeItem(k(${JSON.stringify(STORAGE_KEYS.look)}));}catch(e){}
+`;
 
   return `(function(){try{
 var d=document.documentElement,ls=window.localStorage;
 var s=ls.getItem(${JSON.stringify(APPEARANCE_SCOPE_KEY)});
 function k(n){return s?n+${sep}+s:n;}
-if(s){try{var m=ls.getItem(k(${mode}));if(m)ls.setItem(${mode},m);else ls.removeItem(${mode});}catch(e){}}
+${look}if(s){try{var m=ls.getItem(k(${mode}));if(m)ls.setItem(${mode},m);else ls.removeItem(${mode});}catch(e){}}
 var scale=${scales};
 var den=ls.getItem(k(${JSON.stringify(STORAGE_KEYS.density)}))||ls.getItem(k(${JSON.stringify(STORAGE_KEYS.orgDensity)}));
 if(scale[den])d.style.setProperty(${JSON.stringify(DENSITY_PROPERTY)},String(scale[den]));

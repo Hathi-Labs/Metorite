@@ -111,7 +111,7 @@ function Row({
 
 function Heading({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-3 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+    <div className="px-3 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground glass:normal-case glass:tracking-normal glass:text-caption">
       {children}
     </div>
   );

@@ -12,8 +12,16 @@
 import Icon from "@/components/Icon";
 
 import { projectChipText } from "../lib/myTasks";
+import { PRIVATE_TASK_LABEL } from "../lib/personalTree";
 
-export function ProjectPathChip({ path }: { path: readonly string[] | null | undefined }) {
+export function ProjectPathChip({
+  path,
+  isPrivate = false,
+}: {
+  path: readonly string[] | null | undefined;
+  /** OP-12b — the task sits in the private space: a small lock, labelled "Private". */
+  isPrivate?: boolean;
+}) {
   const text = projectChipText(path ?? []);
   if (!text) return null;
   return (
@@ -24,6 +32,9 @@ export function ProjectPathChip({ path }: { path: readonly string[] | null | und
     >
       <Icon name="FolderKanban" className="h-3 w-3 shrink-0" aria-hidden />
       <span className="truncate">{text.label}</span>
+      {isPrivate ? (
+        <Icon name="Lock" className="h-3 w-3 shrink-0" role="img" aria-label={PRIVATE_TASK_LABEL} />
+      ) : null}
     </span>
   );
 }

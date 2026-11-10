@@ -108,3 +108,41 @@ describe("hover-revealed controls reach a touch-capable display", () => {
     ).not.toContain("@media");
   });
 });
+
+describe("a revealed toolbar takes its clicks on a touch-capable display", () => {
+  it("nothing uses `group-hover:pointer-events-auto` or `focus-within:pointer-events-auto`", () => {
+    // Tailwind wraps `group-hover:` in @media (hover: hover), so the buttons
+    // are shown by `reveal-on-hover` and take no click. `focus-within` keeps a
+    // clicked button live after the toolbar hides.
+    const offenders = sourceFiles().filter((rel) =>
+      /(?:group-hover|focus-within):pointer-events-auto/.test(
+        strip(readFileSync(join(SRC, rel), "utf8")),
+      ),
+    );
+    expect(
+      offenders,
+      "Use the `reveal-on-hover-live` utility from globals.css. It has no media " +
+        "query and uses :has(:focus-visible).",
+    ).toEqual([]);
+  });
+
+  it("the calendar card toolbar uses `reveal-on-hover-live`", () => {
+    const grid = readFileSync(
+      join(SRC, "app", "calendar", "components", "TimeGrid.tsx"),
+      "utf8",
+    );
+    expect(grid).toContain("reveal-on-hover-live");
+  });
+
+  it("`reveal-on-hover-live` exists, carries no media query and never uses :focus-within", () => {
+    const css = readFileSync(join(SRC, "app", "globals.css"), "utf8");
+    const at = css.indexOf("@utility reveal-on-hover-live");
+    expect(at, "globals.css no longer defines `reveal-on-hover-live`").toBeGreaterThan(-1);
+    const body = css.slice(at, css.indexOf("\n}", at));
+    expect(body).toContain(".group:hover &");
+    expect(body).toContain(":has(:focus-visible)");
+    expect(body).not.toContain("@media");
+    expect(body).not.toContain("focus-within");
+    expect(body).toContain("pointer-events: auto");
+  });
+});

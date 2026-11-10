@@ -4,9 +4,10 @@ Spec: ``project-docs/specs/external_agent_access.md`` EA3-51 (§6.1) and §15,
 the row EA-6h with the acceptance H1 to H9.
 
 A connected agent may delete a task after the member says yes in the agent.
-The gate has four layers. (1) The member's own switch, default OFF, in
-Integrations, AI agents (``user_settings.agent_delete_enabled``, migration
-295). (2) The tool ``delete_task`` carries ``destructiveHint: true``, and its
+The gate has four layers. (1) The member's own switch, in Integrations, AI
+agents (``user_settings.agent_delete_enabled``, migrations 295 and 316). It
+is ON until the member turns it off (EA-6i, the owner, 2026-10-30), and
+``test_agent_delete_default_r8.py`` holds its four states. (2) The tool ``delete_task`` carries ``destructiveHint: true``, and its
 text tells the agent to get an explicit yes first. (3) The call sends
 ``expected_version`` and ``confirm_title``. (4) The server deletes through
 ``tasks.delete_task_in``, the one core.
@@ -16,7 +17,9 @@ Two halves, as in ``test_mcp_edge_archive.py``.
 **Database-free (always runs).** The edge app runs in process with a fake
 token store and a fake gateway. It proves the tool record (H8), the body
 that the tool sends, the answer table, the switch read at ``tools/list``
-(H1), and that no text names a delete while the switch is off.
+(H1), and that no text names a delete while the switch is off. MCP-G9 adds
+one exception: the entry of ``delete_comment``, which deletes only a comment
+of the agent's own client, follows the writes flag and not the switch.
 
 **R8 (a real database, as a NON-privileged role, on a phase-4-promoted
 catalog of its own).** The edge calls the REAL gateway app through
@@ -206,10 +209,22 @@ class TestTheToolAtTheEdge:
 
     async def test_h1_with_the_switch_off_no_text_names_a_delete(self, edge, monkeypatch):
         """Off: ``tools/list``, ``instructions`` and the prompt say nothing
-        about a delete. With the runs flag on too, so every text shows."""
+        about a delete. With the runs flag on too, so every text shows.
+
+        MCP-G9 (task 843): the one exception is the entry of
+        ``delete_comment``. The switch is "Let my AI agents delete tasks", and
+        that tool deletes only a comment of the agent's own client, under the
+        writes flag (``external_agent_access.md`` §9.2). Its entry names no
+        task delete. Every other entry stays under the rule."""
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
         edge.gateway.answers[SWITCH] = (200, {"delete_enabled": False})
-        said = [json.dumps((await _post(_rpc("tools/list"))).json()["result"])]
+        listed = (await _post(_rpc("tools/list"))).json()["result"]
+        comment_delete = [t for t in listed["tools"] if t["name"] == "delete_comment"]
+        assert len(comment_delete) == 1, "MCP-G9 shows delete_comment with the switch off"
+        assert "delete_task" not in json.dumps(comment_delete).lower()
+        assert "delete a task" not in json.dumps(comment_delete).lower()
+        listed["tools"] = [t for t in listed["tools"] if t["name"] != "delete_comment"]
+        said = [json.dumps(listed)]
         said.append((await _post(_rpc("initialize", {
             "protocolVersion": "2025-11-25", "capabilities": {},
             "clientInfo": {"name": "t", "version": "1"}}))).json()["result"]["instructions"])
@@ -386,18 +401,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_mcpdelete"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -582,16 +588,23 @@ class TestTheSwitch:
 
     pytestmark = _DB_GATE
 
-    async def test_the_switch_is_off_until_the_member_turns_it_on(self, live):
+    async def test_the_switch_is_on_until_the_member_turns_it_off(self, live):
+        """EA-6i: a member with no settings row has not chosen, so the GET
+        says on and the edge lists the tool. Only an explicit off hides it."""
+        with live.admin.begin() as c:
+            c.execute(text("DELETE FROM user_settings WHERE user_id = :u"), {"u": OTHER})
         r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
         assert r.status_code == 200, r.text
+        assert r.json() == {"delete_enabled": True}
+        assert "delete_task" in await _listed(live, "other_member")
+        await _switch(live, False, OTHER)
+        r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
         assert r.json() == {"delete_enabled": False}
+        assert "delete_task" not in await _listed(live, "other_member")
         await _switch(live, True, OTHER)
         r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
         assert r.json() == {"delete_enabled": True}
         await _switch(live, False, OTHER)
-        r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
-        assert r.json() == {"delete_enabled": False}
 
     async def test_the_body_takes_one_boolean(self, live):
         for body in ({"delete_enabled": True, "extra": 1}, {"delete_enabled": "maybe"}, {}):

@@ -91,6 +91,26 @@ describe("/ with the My Day flag", () => {
     expect(html).toContain("All apps");
   });
 
+  it("holds the grid back while the brief loads, so the page paints once (BR-2c-2)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_BRIEF_CARD", "1");
+    const html = await renderHome();
+    expect(html).toContain('data-testid="my-day"');
+    // The skeleton stands in for the grid: no card of it is drawn yet.
+    expect(html).not.toContain('data-testid="needs-you"');
+    expect(html).not.toContain('data-testid="today"');
+    expect(html).not.toContain('data-testid="brief-card"');
+    expect(html).toContain('aria-hidden="true"');
+  });
+
+  it("never lets the brief state gate the page with the brief flag off (BR-2c-2)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_BRIEF_CARD", "");
+    const html = await renderHome();
+    expect(html).toContain('data-testid="needs-you"');
+    expect(html).toContain('data-testid="today"');
+  });
+
   it("shows no card for an app the member lacks", async () => {
     vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
     access.features = ["email"];

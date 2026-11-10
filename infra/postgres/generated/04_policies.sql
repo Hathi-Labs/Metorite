@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 187
+-- Tables in this phase: 191
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -149,6 +149,20 @@ ALTER TABLE audit_event ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_event FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_event_tenant_isolation ON audit_event;
 CREATE POLICY audit_event_tenant_isolation ON audit_event
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_entries FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_entries_tenant_isolation ON calendar_entries;
+CREATE POLICY calendar_entries_tenant_isolation ON calendar_entries
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_entry_attendees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_entry_attendees FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees;
+CREATE POLICY calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -1437,5 +1451,208 @@ ALTER TABLE kb_node_access ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_node_access FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS kb_node_access_tenant_isolation ON kb_node_access;
 CREATE POLICY kb_node_access_tenant_isolation ON kb_node_access
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jobs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS jobs_tenant_isolation ON jobs;
+CREATE POLICY jobs_tenant_isolation ON jobs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE unattended_incidents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unattended_incidents FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS unattended_incidents_tenant_isolation ON unattended_incidents;
+CREATE POLICY unattended_incidents_tenant_isolation ON unattended_incidents
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE unattended_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unattended_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS unattended_runs_tenant_isolation ON unattended_runs;
+CREATE POLICY unattended_runs_tenant_isolation ON unattended_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE brief_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE brief_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS brief_runs_tenant_isolation ON brief_runs;
+CREATE POLICY brief_runs_tenant_isolation ON brief_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE brief_claims ENABLE ROW LEVEL SECURITY;
+ALTER TABLE brief_claims FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS brief_claims_tenant_isolation ON brief_claims;
+CREATE POLICY brief_claims_tenant_isolation ON brief_claims
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_skills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_skills FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_skills_tenant_isolation ON studio_skills;
+CREATE POLICY studio_skills_tenant_isolation ON studio_skills
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_skill_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_skill_versions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_skill_versions_tenant_isolation ON studio_skill_versions;
+CREATE POLICY studio_skill_versions_tenant_isolation ON studio_skill_versions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE package_install ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_install FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS package_install_tenant_isolation ON package_install;
+CREATE POLICY package_install_tenant_isolation ON package_install
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE package_contribution ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_contribution FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS package_contribution_tenant_isolation ON package_contribution;
+CREATE POLICY package_contribution_tenant_isolation ON package_contribution
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_objects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_objects FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_objects_tenant_isolation ON studio_objects;
+CREATE POLICY studio_objects_tenant_isolation ON studio_objects
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_object_fields ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_object_fields FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_object_fields_tenant_isolation ON studio_object_fields;
+CREATE POLICY studio_object_fields_tenant_isolation ON studio_object_fields
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_records FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_records_tenant_isolation ON studio_records;
+CREATE POLICY studio_records_tenant_isolation ON studio_records
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_record_hot ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_record_hot FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_record_hot_tenant_isolation ON studio_record_hot;
+CREATE POLICY studio_record_hot_tenant_isolation ON studio_record_hot
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE goal_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS goal_records_tenant_isolation ON goal_records;
+CREATE POLICY goal_records_tenant_isolation ON goal_records
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_project_authorities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_project_authorities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_project_authorities_tenant_isolation ON pm_project_authorities;
+CREATE POLICY pm_project_authorities_tenant_isolation ON pm_project_authorities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_decisions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_decisions_tenant_isolation ON pm_decisions;
+CREATE POLICY pm_decisions_tenant_isolation ON pm_decisions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_agent_guidance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_guidance FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_guidance_tenant_isolation ON pm_agent_guidance;
+CREATE POLICY pm_agent_guidance_tenant_isolation ON pm_agent_guidance
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_change_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_change_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_change_log_tenant_isolation ON crm_change_log;
+CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE package_field_value ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_field_value FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS package_field_value_tenant_isolation ON package_field_value;
+CREATE POLICY package_field_value_tenant_isolation ON package_field_value
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycles FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycles_tenant_isolation ON pm_cycles;
+CREATE POLICY pm_cycles_tenant_isolation ON pm_cycles
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycle_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycle_tasks FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycle_tasks_tenant_isolation ON pm_cycle_tasks;
+CREATE POLICY pm_cycle_tasks_tenant_isolation ON pm_cycle_tasks
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycle_committed ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycle_committed FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycle_committed_tenant_isolation ON pm_cycle_committed;
+CREATE POLICY pm_cycle_committed_tenant_isolation ON pm_cycle_committed
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycle_capacity ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycle_capacity FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycle_capacity_tenant_isolation ON pm_cycle_capacity;
+CREATE POLICY pm_cycle_capacity_tenant_isolation ON pm_cycle_capacity
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_signature_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_images FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_images_tenant_isolation ON email_signature_images;
+CREATE POLICY email_signature_images_tenant_isolation ON email_signature_images
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_project_updates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_project_updates FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_project_updates_tenant_isolation ON pm_project_updates;
+CREATE POLICY pm_project_updates_tenant_isolation ON pm_project_updates
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_templates FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_templates_tenant_isolation ON pm_templates;
+CREATE POLICY pm_templates_tenant_isolation ON pm_templates
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_template_applies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_template_applies FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_template_applies_tenant_isolation ON pm_template_applies;
+CREATE POLICY pm_template_applies_tenant_isolation ON pm_template_applies
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_lead_pipeline_stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_lead_pipeline_stages FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages;
+CREATE POLICY crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_signature_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_settings_tenant_isolation ON email_signature_settings;
+CREATE POLICY email_signature_settings_tenant_isolation ON email_signature_settings
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

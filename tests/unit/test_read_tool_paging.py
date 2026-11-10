@@ -144,6 +144,8 @@ ALLOWED: dict[str, str] = {
         'A digest. Each section prints its count, and query_inbox pages the mail.',
     'apps/agents/agent-email-assistant/agents.py::_one::(items or [])[:5]':
         'A digest. Each section prints its count, and query_inbox pages the mail.',
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py::_why::' '.join(str(exc).split())[:120]":
+        'A failed step of a day flow. It keeps the first 120 characters of the error text, no row is lost.',
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::evicted[:5]':
         "A plan receipt. It prints the count and '…', and my_tasks_list(view='next') lists the tasks.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::unplaced[:5]':
@@ -229,8 +231,15 @@ ALLOWED: dict[str, str] = {
         'answer names its size and how to read the rest.',
     'packages/acb_skills/acb_skills/todo_tools.py::manage_todo_list::title[:120]':
         'Text, not rows: the cut shortens one string.',
-    'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
+    'packages/acb_skills/acb_skills/web_tools.py::frame_page::text[:limit]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
+    'packages/acb_skills/acb_skills/web_tools.py::_html_bytes::answer.body[:limit]':
+        'Bytes of one web page, not rows: the ONE cut of the HTML that a read decodes '
+        'on the event loop. The strip uses MAX_HTML_BYTES (WEB-1 repair 2), and the '
+        'local reader uses MAX_LOCAL_HTML_BYTES (WEB-2).',
+    'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
+        "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
+        "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
     'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
         "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
@@ -242,6 +251,44 @@ ALLOWED: dict[str, str] = {
     'apps/skills/skill-projects/skill_projects/guarded.py::_convert_list::names[:CONVERT_LIST_LIMIT]':
         "A confirm card's list of child names (WS-64 OP-10 fix round 1). It ends with "
         "'and N more', the card states the full count, and the convert takes every child.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_clip::text[:limit - 3]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_fields_problem::missing[:MAX_FIELD_NAMES]":
+        "Field names in one refusal sentence (STU-B2c-2b), not rows. The refusal "
+        "writes nothing and opens no request, and the next call names any key "
+        "left, so no field is lost.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_fields_problem::unknown[:MAX_FIELD_NAMES]":
+        "Field names in one refusal sentence (STU-B2c-2b), not rows. The refusal "
+        "writes nothing and opens no request, and the next call names any key "
+        "left, so no field is lost.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_line_of::text[:limit * 4]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::' '.join(text.split()[:5])[:MAX_NAME_CHARS]":
+        "Text: the first five words of a brief, joined, then cut. Words, not rows.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::text.split()[:5]":
+        "Text: the first five words of a brief become a draft name. Words, not rows.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::text[:MAX_PURPOSE_CHARS]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::title[:1]":
+        "Text: the first letter of a name, upper-cased. Not rows.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_slug::re.sub('^[^a-z]+', '', words)[:40]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_shown_diff::diff[:MAX_DIFF_LINES]":
+        "The cut list ends with one line that counts the rest ('... N more'). Each patch call returns the diff again.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_shown_errors::errors[:MAX_ERRORS]":
+        "The cut list ends with one line that counts the rest ('... N more'). The errors come back after each patch, so none is lost for good.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_looks_like_a_card::one_line(sent)[:40]":
+        "Text, not rows: the first 40 characters of one string, compared with the stored text to spot a card view.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_looks_like_a_card::one_line(stored)[:40]":
+        "Text, not rows: the first 40 characters of one string, compared with the sent text to spot a card view.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_route_short::value[:80]":
+        "Text, not rows: one action id cut to 80 characters, as the 422 of the skill route quotes it.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_object_names::names[:RECORD_ACTIONS_LINE_MAX]":
+        "No row is lost: the text keeps the count, and ends with 'and N more' for the names it cuts (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::name[:48 - len(tail)]":
+        "Text, not rows: one object name cut so that the action id fits the 48-character limit of the manifest (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::base[:48 - len(str(n))]":
+        "Text, not rows: one action id cut so that it fits the limit with its number (STU-BETA-2).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -256,8 +303,18 @@ ALLOWED: dict[str, str] = {
 #: and says so (65). WS-64 OP-10 fix round 1 capped the convert card's list
 #: of child names as the app's dialog caps it, and it says "and N more" (66).
 #: WS-27bn RA-3 added the waiting card's cut, the sibling of the card's
-#: `rows[:rows_max]`. Its text prints every row with no cut (67).
-ALLOWED_CEILING = 67
+#: `rows[:rows_max]`. Its text prints every row with no cut (67). STU-G1 added nine cuts in
+#: `studio_tools.py`: seven cut one string, and two end with a '... N more'
+#: line (76). WEB-1 repair 2 bounded the text work of `fetch_page` on the
+#: event loop: two byte cuts of one page, each with its reason (78). STU-F2d
+#: fix rounds 2 and 3 added three string cuts in `studio_tools.py`: one action
+#: id as the route quotes it, and two 40-character prefixes that spot a card
+#: view (81). STU-BETA-2 added one: the plan card names six objects at most
+#: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
+#: STU-B2c-2b added two: a refusal names at most two field keys, and it writes
+#: nothing, so the next call names the rest (86). CAL-4 added one: the error text
+#: of a failed day-flow step, cut to 120 characters (87).
+ALLOWED_CEILING = 87
 
 
 def _stringy(node: ast.AST) -> bool:

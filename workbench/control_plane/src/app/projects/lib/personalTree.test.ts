@@ -5,17 +5,28 @@
  * personal node. The e2e case `e2e/projects-my-work.spec.ts` draws the section.
  */
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ProjectRow } from "./api";
 import {
   PERSONAL_SECTION_LABEL,
+  displayNodeName,
+  displayProjectName,
+  displayRowProject,
+  rememberPersonalRoot,
   firstTeamSpaceId,
+  personalEmptyLine,
+  personalHeading,
+  personalPlaceCount,
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
   splitPersonal,
 } from "./personalTree";
+import { emptyCopy } from "./dashboardRows";
+import { openCount as overviewOpen } from "./myTasks";
+import { openCount as sidebarOpen } from "./progressWheel";
 import { projectMenuItems } from "./projectMenu";
 import { nodeLevel, nodeKind, pathTo } from "./tree";
 
@@ -57,7 +68,7 @@ const labels = (items: ReturnType<typeof projectMenuItems>) =>
 
 describe("personalRoots (the flag)", () => {
   it("is the caller's tree with the flag on", () => {
-    expect(personalRoots(data, true)).toEqual([personalRoot]);
+    expect(personalRoots(data, true)).toEqual([{ ...personalRoot, name: "Personal" }]);
   });
   it("is empty with the flag off, so nothing is drawn", () => {
     expect(personalRoots(data, false)).toEqual([]);
@@ -163,5 +174,99 @@ describe("firstTeamSpaceId (fix round 1)", () => {
   });
   it("is null for a member with no team space", () => {
     expect(firstTeamSpaceId([personalRoot])).toBeNull();
+  });
+});
+
+// ── OP-12b: one name, one heading ───────────────────────────────────────────
+
+describe("the Personal heading is the private space (OP-12b)", () => {
+  const stored = node("root", { name: "My tasks", personal: true, children: [personalArea] });
+
+  it("never draws the root as its own row", () => {
+    const { root, rows } = personalHeading(personalRoots({ personal: [stored] }, true));
+    expect(root?.id).toBe("root");
+    expect(rows.map((r) => r.id)).toEqual(["area"]);
+    expect(rows.some((r) => r.id === "root")).toBe(false);
+  });
+
+  it("shows the root as Personal whatever the stored name is", () => {
+    const [shown] = personalRoots({ personal: [stored] }, true);
+    expect(shown.name).toBe("Personal");
+    expect(displayNodeName(stored)).toBe("Personal");
+  });
+
+  it("keeps a second root as a row, so nothing is hidden", () => {
+    const second = node("second", { personal: true });
+    expect(personalHeading([stored, second]).rows.map((r) => r.id)).toEqual(["area", "second"]);
+  });
+});
+
+describe("displayNodeName", () => {
+  it("gives Personal for a personal root and the stored name for any other node", () => {
+    expect(displayNodeName({ name: "My tasks", personal: true })).toBe("Personal");
+    expect(displayNodeName({ name: "My tasks", personal: true, parent_project_id: "r" })).toBe("My tasks");
+    expect(displayNodeName({ name: "My tasks" })).toBe("My tasks");
+    expect(displayNodeName({ name: "Ops", personal: false })).toBe("Ops");
+  });
+
+  it("names a hit by its project id", () => {
+    expect(displayProjectName("root", "My tasks", "root")).toBe("Personal");
+    expect(displayProjectName("p1", "My tasks", "root")).toBe("My tasks");
+  });
+});
+
+describe("the empty Personal line", () => {
+  it("shows with no children and hides with one", () => {
+    expect(personalEmptyLine([node("root", { personal: true, children: [] })])).toMatch(/^No personal /);
+    expect(personalEmptyLine([personalRoot])).toBeNull();
+    expect(personalEmptyLine([])).toBeNull();
+  });
+
+  it("names the folder in the private space's own empty state", () => {
+    const text = emptyCopy(
+      {
+        id: "root", name: "Personal", level: "space", tasks: 11, overdue: 0, projects: 0,
+        by_category: { done: 7 }, children: [],
+      },
+      { personal: true },
+    );
+    expect(text).toBe("11 tasks (4 open), in no folder. Add a folder or a project to group them.");
+  });
+});
+
+describe("counts say what they count", () => {
+  it("the sidebar count and the Overview open count agree for one node", () => {
+    const summary = { tasks: 11, by_category: { done: 6, cancelled: 1 } };
+    const row = node("root", { personal: true, tasks: 11, done: 6, cancelled: 1 });
+    expect(sidebarOpen(row)).toBe(4);
+    expect(overviewOpen(summary)).toBe(4);
+  });
+});
+
+describe("a server row from the personal root reads Personal (OP-12b fix round 1)", () => {
+  it("maps by project id, and by stored name when the row has no id", () => {
+    rememberPersonalRoot([node("root", { name: "My tasks", personal: true })]);
+    expect(displayRowProject({ project_id: "root", project_name: "My tasks" })).toBe("Personal");
+    // No id, no match: a team project named "My tasks" keeps its name.
+    expect(displayRowProject({ project_name: "My tasks" })).toBe("My tasks");
+    expect(displayRowProject({ project_id: "pb", project_name: "My tasks" })).toBe("My tasks");
+    expect(displayRowProject({ project_id: "pb", project_name: "Sales" })).toBe("Sales");
+  });
+
+  it("every surface that prints a server project_name goes through the seam", () => {
+    for (const file of ["NeedsAttentionList", "TriageRail", "ReportsView", "AnalyticsPanels"]) {
+      const source = readFileSync(`src/app/projects/components/${file}.tsx`, "utf-8");
+      expect(source, file).toContain("displayRowProject(");
+      expect(source, file).not.toMatch(/\{(row|hit|f|r)\.project_name\}/);
+    }
+  });
+});
+
+describe("the Folders and projects tile", () => {
+  it("counts every live folder and project under the root, at any depth", () => {
+    const deep = node("deep", { kind: "folder", children: [node("p1"), node("p2", { archived_at: "2026-10-30" })] });
+    const filed = node("filed", { archived_at: "2026-10-30", children: [node("inside")] });
+    expect(personalPlaceCount(node("root", { children: [deep, filed, node("p3")] }))).toBe(3);
+    expect(personalPlaceCount(node("root"))).toBe(0);
   });
 });

@@ -26,8 +26,8 @@ R7 fences named here:
 * ``by-code-class``: each tool that can write files says so in its risk.
 * ``by-code-cap``: a report of every section keeps to 12 visuals. A table
   that the cap leaves out says why, and keeps its notes.
-* ``by-code-currency``: the CRM route sends no currency, so a report of
-  amounts says that they are summed across deal currencies.
+* ``by-code-currency``: each CRM amount has its own currency code, a second
+  currency sits in ``others``, and the report never says amounts are summed.
 
 Mutations this file kills, one for each behaviour (run 2026-10-16, 12 of 12):
 the gate makes a report with no ``make_report``. The pipeline value tile
@@ -75,11 +75,14 @@ TAG_STAGE = "Qualified <b>"
 PIPELINE = {
     "stages": [
         {"status": {"id": "s1", "name": TAG_STAGE, "color": "gray"},
-         "count": 3, "amount": 4200000.0, "weighted": 1260000.0},
+         "count": 3, "currency": "INR", "amount": 4200000.0, "weighted": 1260000.0,
+         "others": [{"currency": "USD", "amount": 2500.0, "weighted": 900.0}]},
         {"status": {"id": "s2", "name": URL_STAGE, "color": "gray"},
-         "count": 2, "amount": 1800000.4, "weighted": 900000.0},
+         "count": 2, "currency": "INR", "amount": 1800000.4, "weighted": 900000.0,
+         "others": []},
     ],
-    "count": 5, "amount": 6000000.4, "weighted": 2160000.0,
+    "count": 5, "currency": "INR", "amount": 6000000.4, "weighted": 2160000.0,
+    "others": [{"currency": "USD", "amount": 2500.0, "weighted": 900.0}],
 }
 FUNNEL = {
     "stages": [
@@ -93,18 +96,25 @@ FUNNEL = {
 }
 WIN_LOSS = {
     "window_days": 90, "since": "2026-07-18", "won": 4, "lost": 6, "win_rate": 40.0,
-    "won_amount": 900000.0, "lost_amount": 1200000.0, "average_cycle_days": 21.5,
+    "currency": "INR", "won_amount": 900000.0, "lost_amount": 1200000.0,
+    "others": [{"currency": "USD", "won_amount": 700.0, "lost_amount": 300.0}],
+    "average_cycle_days": 21.5,
     "closed_without_date": 1,
     "lost_reasons": [
-        {"label": "Price www.cheaper.test", "deals": 4, "amount": 800000.0, "attributed": True},
-        {"label": "Not recorded", "deals": 2, "amount": 400000.0, "attributed": False},
+        {"label": "Price www.cheaper.test", "deals": 4, "currency": "INR",
+         "amount": 800000.0, "attributed": True,
+         "others": [{"currency": "USD", "amount": 300.0}]},
+        {"label": "Not recorded", "deals": 2, "currency": "INR", "amount": 400000.0,
+         "attributed": False, "others": []},
     ],
 }
 OWNERS = {
     "owners": [
-        {"owner_email": "<asha>@x.io", "open_deals": 5, "weighted": 1500000.0,
-         "won_amount": 300000.0},
-        {"owner_email": None, "open_deals": 2, "weighted": 100000.0, "won_amount": 0.0},
+        {"owner_email": "<asha>@x.io", "open_deals": 5, "currency": "INR",
+         "weighted": 1500000.0, "won_amount": 300000.0,
+         "others": [{"currency": "USD", "weighted": 400.0, "won_amount": 50.0}]},
+        {"owner_email": None, "open_deals": 2, "currency": "INR", "weighted": 100000.0,
+         "won_amount": 0.0, "others": []},
     ],
     "window_days": 90, "omitted": 3,
 }
@@ -305,8 +315,7 @@ async def test_crm_report_makes_the_report_from_the_route_data(
     data, body = _report(chat)
     for report in (data, body):
         CRM_CHECKS[kind](report)
-        money = [crm_tools.CURRENCY_NOTE] if kind != "funnel" else []
-        assert report["sources"] == [f"CRM {kind}, {report['date']}", *money]
+        assert report["sources"] == [f"CRM {kind}, {report['date']}"]
         assert report["title"].startswith("CRM report · ")
     assert {k: v for k, v in data.items() if k != "path"} == body
 
@@ -322,7 +331,8 @@ async def test_the_crm_pdf_holds_the_route_numbers(
     pdf = _pdf_text(chat, data)
     assert "Open deals" in pdf and "6000000 INR" in pdf and "2160000 INR" in pdf
     assert "Value by stage (INR)" in pdf and "Qualified <b>" in pdf
-    assert "Amounts are summed across deal currencies." in pdf
+    assert "summed across" not in pdf
+    assert "plus USD 2,500" in pdf and "Other currencies" in pdf
 
 
 async def test_a_long_pipeline_keeps_to_the_caps_and_says_so(
@@ -424,21 +434,23 @@ async def test_the_projects_pdf_holds_the_route_numbers(
     assert "Median hours" in pdf and "30.5" in pdf
 
 
-def test_the_crm_route_carries_no_currency_so_the_report_says_how_it_summed() -> None:
-    """by-code-currency (review of #1080). The report route sums
-    ``crm_deals.amount`` over every currency and sends no currency field. So
-    the report keeps the INR label of the text answer and says so in its
-    sources. HANDOFF H-333 owns the route fix."""
+def test_the_crm_report_labels_each_amount_with_its_own_currency() -> None:
+    """by-code-currency (HANDOFF H-333). Each money model names its currency
+    and holds the other currencies in ``others``. The report prints each amount
+    with its own code, and it never says that amounts are summed."""
     from gateway.routes.crm import reports as crm_routes
 
     for model in (crm_routes.PipelineReport, crm_routes.StageTotals,
                   crm_routes.WinLossReport, crm_routes.LostReasonShare,
-                  crm_routes.OwnerLeaderboard, crm_routes.OwnerRow):
-        assert not any("currency" in f for f in model.model_fields), model
+                  crm_routes.OwnerRow):
+        assert "currency" in model.model_fields and "others" in model.model_fields, model
     for kind, data in CRM_DATA.items():
         spec = crm_tools._crm_report_spec(kind, json.loads(json.dumps(data)))
-        money = kind != "funnel"
-        assert (crm_tools.CURRENCY_NOTE in spec["sources"]) is money, kind
+        blob = json.dumps(spec)
+        assert "summed across" not in blob, kind
+        if kind != "funnel":
+            assert "USD" in blob, kind
+            assert "(INR)" in blob or kind == "win-loss", kind
 
 
 def test_a_note_of_the_card_ends_with_one_full_stop() -> None:

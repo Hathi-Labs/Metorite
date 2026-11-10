@@ -213,6 +213,7 @@ async def _decide(
             temperature=0.0,
             max_tokens=160,
             response_format={"type": "json_object"},
+            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         tokens = _tokens_used(resp)
@@ -242,8 +243,9 @@ async def _craft(
     try:
         from acb_llm.context import acompletion_with_fallback
 
+        # A live talking point: the fast tier, for latency (task 1128).
         resp, _used = await acompletion_with_fallback(
-            model="tier-balanced",
+            model="tier-fast",
             fallback_model="tier-fast",
             messages=[
                 {"role": "system", "content": _system(_CRAFT_SYSTEM + "\n\n" + voice_prompt("chat"), instructions)},
@@ -254,7 +256,8 @@ async def _craft(
                 )},
             ],
             temperature=0.3,
-            max_tokens=80,
+            max_tokens=120,
+            job="writing",
         )
         return (resp.choices[0].message.content or "").strip(), _tokens_used(resp)
     except Exception as exc:

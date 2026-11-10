@@ -29,7 +29,7 @@
  */
 
 import { destinations } from "./destinations";
-import { type NodeLevel, type ProjectNode, nodeKind, nodeLevel } from "./tree";
+import { type NodeLevel, type ProjectNode, displayNodeName, nodeKind, nodeLevel } from "./tree";
 
 export interface PickerNode {
   node: ProjectNode;
@@ -85,7 +85,7 @@ export function pickerNodes(
     const entry: PickerNode = {
       node: row.node,
       id: row.node.id,
-      name: row.node.name,
+      name: displayNodeName(row.node),
       depth: row.depth,
       level: nodeLevel(nodeKind(row.node), generations),
       pickable: refusal === null,

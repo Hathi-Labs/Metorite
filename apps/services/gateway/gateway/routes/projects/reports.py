@@ -82,6 +82,7 @@ from gateway.routes.projects.core import (
     actor,
     insert_row,
     load_visible_project,
+    reader_day_start,
     reportable_with_ancestors_clause,
     require_row,
     resolve_visibility,
@@ -1261,7 +1262,8 @@ async def render_body(  # noqa: C901 - one branch for each section, which the lo
             ).fetchone()
             overdue = (
                 await db.execute(
-                    text(overdue_by_project_sql(open_where)), params,
+                    text(overdue_by_project_sql(open_where)),
+                    {**params, "day_start": await reader_day_start(db, vis.email)},
                 )
             ).fetchall()
             # WS-27bn R5f. The route's blocked list, from the one helper.

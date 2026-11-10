@@ -55,9 +55,11 @@ def _iv(last: timedelta | None = timedelta(hours=30), started: bool = True,
 # ── pz26-parser ────────────────────────────────────────────────────────────
 
 
-def test_the_table_is_the_ten_areas_of_the_spec_in_order() -> None:
-    assert list(ap.AREAS) == ["role", "goals", "good_day", "decisions", "detail",
-                              "rhythm", "channels", "energy", "peeves", "people"]
+def test_the_table_is_the_twelve_areas_of_the_spec_in_order() -> None:
+    # PZ-32: `name` and `language` come first (personalization.md 14.3).
+    assert list(ap.AREAS) == ["name", "language", "role", "goals", "good_day",
+                              "decisions", "detail", "rhythm", "channels", "energy",
+                              "peeves", "people"]
     assert all(q.endswith("?") for q in ap.AREAS.values())
     assert ap.INTERVIEW_STATES == ("asked", "answered", "skipped", "never")
     assert (ap.DUE_HOURS, ap.WAIT_DAYS) == (24, 14)
@@ -154,8 +156,9 @@ def test_start_sets_started_at_once_and_no_last_asked() -> None:
 def test_open_areas_follow_the_table_and_the_limit() -> None:
     assert ap.open_areas(None, NOW) == list(ap.AREAS)
     assert ap.open_areas(None, NOW, 5) == list(ap.AREAS)[:5]
-    assert ap.open_areas(None, NOW, 1) == ["role"]
-    assert ap.open_areas(_iv(role=("answered", timedelta(days=1))), NOW, 2) == ["goals", "good_day"]
+    assert ap.open_areas(None, NOW, 1) == ["name"]
+    assert ap.open_areas(_iv(name=("answered", timedelta(days=1))), NOW, 2) == [
+        "language", "role"]
 
 
 @pytest.mark.parametrize("state,days,open_", [
@@ -173,16 +176,17 @@ def test_the_due_line_waits_more_than_twenty_four_hours() -> None:
     due = ap.interview_due_line(_iv(last=timedelta(hours=24, minutes=1)), NOW)
     exact = ap.interview_due_line(_iv(last=timedelta(hours=24)), NOW)
     assert quiet == "" and exact == ""
-    assert due.startswith("Interview (one question is due): role: ")
-    assert ap.AREA_INTENTS["role"] in due
-    assert f"Example, do not read it out: «{ap.AREAS['role']}»" in due
+    first = next(iter(ap.AREAS))
+    assert due.startswith(f"Interview (one question is due): {first}: ")
+    assert ap.AREA_INTENTS[first] in due
+    assert f"Example, do not read it out: «{ap.AREAS[first]}»" in due
     assert "Ask it only if it fits the moment, at the end of your reply" in due
-    assert 'profile_interview("asked", "role")' in due
+    assert f'profile_interview("asked", "{first}")' in due
 
 
 def test_the_line_names_the_first_open_area() -> None:
-    iv = _iv(role=("answered", timedelta(days=2)), goals=("skipped", timedelta(days=2)))
-    assert "good_day: " in ap.interview_due_line(iv, NOW)
+    iv = _iv(name=("answered", timedelta(days=2)), language=("skipped", timedelta(days=2)))
+    assert "role: " in ap.interview_due_line(iv, NOW)
 
 
 def test_a_decline_sets_started_at_only_and_no_line_ever_comes() -> None:
@@ -314,7 +318,7 @@ def test_a_due_line_follows_the_block(run, clock, writes) -> None:  # noqa: F811
     assert block.startswith(epb.GOLDEN)
     lines = block.splitlines()
     assert lines[-2] == ap.BLOCK_FOOTER
-    assert lines[-1].startswith("Interview (one question is due): role: ")
+    assert lines[-1].startswith("Interview (one question is due): name: ")
 
 
 def test_no_interview_key_leaves_the_block_unchanged(run, clock, writes) -> None:  # noqa: F811
@@ -464,7 +468,7 @@ def test_may_ask_for_a_due_question_but_not_after_a_decline() -> None:
     assert ap.may_ask(_iv(), NOW)  # due
     assert not ap.may_ask(ap.start_interview(None, NOW - timedelta(days=9)), NOW)
     assert not ap.may_ask(None, NOW)
-    assert ap.due_area(_iv(), NOW) == "role"
+    assert ap.due_area(_iv(), NOW) == "name"
 
 
 # ── Fresh evidence for a chat mark `answered` (review of the 2026-10-27 fix) ─

@@ -156,14 +156,17 @@ def integer(value: Any, ceiling: int = _INT_CEILING) -> int | None:
     return int(parsed)
 
 
-def instant(value: Any) -> datetime | None:
+def instant(value: Any, *, zoned: bool = False) -> datetime | None:
+    """A Zoho instant. With *zoned*, a value with no offset or ``Z`` gives None."""
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    if parsed.tzinfo:
+        return parsed
+    return None if zoned else parsed.replace(tzinfo=UTC)
 
 
 def day(value: Any) -> date | None:
@@ -492,6 +495,12 @@ def map_record(
                 )
         elif entity == "deal":
             status_name = text_value(fields.get("Stage"))
+            # CRM-U14: Zoho's own stage time is the card order and the age
+            # clock. A deal with none keeps the stored value. The raw value
+            # also stays in ``custom``, which the repair step reads.
+            staged = instant(fields.get("Stage_Modified_Time"), zoned=True)
+            if staged is not None:
+                values["status_changed_at"] = staged
             pipeline = pipeline_ref(fields)
             account = lookup_id(fields.get("Account_Name"))
             if account:
@@ -1001,11 +1010,18 @@ def stage_type_hint(entry: Mapping[str, Any]) -> str | None:
 
 
 def pipeline_stages(pipeline: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The stages of one pipeline in Zoho's order: ``name``, ``sequence``,
-    ``forecast_category`` and ``type`` (``won``, ``lost`` or ``None``).
+    """The stages of one pipeline in Zoho's order: ``name``, ``ext_id``,
+    ``sequence``, ``forecast_category`` and ``type`` (``won``, ``lost`` or
+    ``None``).
 
     The key is ``maps`` (what the API documents). ``stages`` is read too, for
     the same reason the adapter reads two keys for the pipelines.
+
+    ``name`` is the Zoho label (``display_value``), and ``actual_value`` is
+    the fallback (task #1096). A Zoho rename changes the label only, and a
+    deal carries the label in ``Stage``. The engine's picklist read uses the
+    same rule. ``ext_id`` is the ``id`` of the map entry, the id of the Stage
+    picklist value, or ``None``. The order stays ``sequence_number``.
     """
     raw: list[Any] = []
     for key in ("maps", "stages"):
@@ -1017,12 +1033,13 @@ def pipeline_stages(pipeline: Mapping[str, Any]) -> list[dict[str, Any]]:
     for index, entry in enumerate(raw):
         if not isinstance(entry, dict):
             continue
-        name = text_value(entry.get("actual_value") or entry.get("display_value"))
+        name = text_value(entry.get("display_value")) or text_value(entry.get("actual_value"))
         if not name or name == "-None-":
             continue
         sequence = integer(entry.get("sequence_number"))
         out.append({
             "name": name,
+            "ext_id": text_value(entry.get("id")),
             "sequence": sequence if sequence is not None else index + 1,
             "forecast_category": _forecast_name(entry),
             "type": stage_type_hint(entry),

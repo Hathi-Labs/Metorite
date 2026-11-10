@@ -62,6 +62,7 @@ export default function BrandingTab() {
     style: DarkStyle;
     own: OwnDark | null;
     savedMain: string;
+    savedMark: string | null;
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -162,7 +163,13 @@ export default function BrandingTab() {
       setEditError("");
       setEditKey((k) => k + 1);
       // The saved bytes go back unchanged (`savePayload`).
-      setEditInitial({ style, own, savedMain: current.dataUri.slice(current.dataUri.indexOf(",") + 1) });
+      const savedMarkUri = branding?.logoMark?.dataUri ?? null;
+      setEditInitial({
+        style,
+        own,
+        savedMain: current.dataUri.slice(current.dataUri.indexOf(",") + 1),
+        savedMark: savedMarkUri ? savedMarkUri.slice(savedMarkUri.indexOf(",") + 1) : null,
+      });
       setEditing(source);
     } catch (e) {
       setError(e instanceof Error ? e.message : "The saved logo could not be opened.");
@@ -206,7 +213,7 @@ export default function BrandingTab() {
         <SettingsHeader
           title="Organization"
           subtitle="How your company appears to everyone in it"
-          backHref="/settings/models"
+          backHref="/settings/organization"
           backLabel="Back to settings"
         />
       </div>
@@ -329,6 +336,7 @@ export default function BrandingTab() {
             initialStyle={editInitial?.style ?? null}
             initialOwn={editInitial?.own ?? null}
             savedMain={editInitial?.savedMain ?? null}
+            savedMark={editInitial?.savedMark ?? null}
           />
         ) : null}
       </div>

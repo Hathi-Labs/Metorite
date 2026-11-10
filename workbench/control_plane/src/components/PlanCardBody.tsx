@@ -281,7 +281,7 @@ export default function PlanCardBody({ data, onAction, answered = "", onDecline 
           role="group"
           aria-label="Edit several tasks"
           data-plan-bulk=""
-          className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-border bg-secondary/40 px-2 py-1.5 text-[11px] text-muted-foreground"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-border bg-secondary/40 px-2 py-1.5 text-[11px] text-muted-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:text-caption"
         >
           <span aria-live="polite" className="text-foreground">
             {picked.size === 0 ? "Click the tasks to pick them." : `${picked.size} picked`}
@@ -403,7 +403,7 @@ export function TimelineStrip({ timeline, year }: { timeline: PlanTimeline; year
   return (
     <div data-plan-timeline="" aria-hidden="true" onPointerLeave={() => setHover(null)}>
       <div
-        className="relative rounded-md bg-secondary/60 px-1.5 py-1"
+        className="relative rounded-md bg-secondary/60 px-1.5 py-1 glass:rounded-[10px]"
         style={{ height: timeline.bars.length * timeline.rowPx + 8 }}
       >
         {timeline.weeks.map((w) => (
@@ -477,7 +477,7 @@ export function RowLine({ row, year, ticked, locked, bulk, picked, cyclic = fals
     <li
       data-plan-row={row.key}
       data-plan-off={ticked ? undefined : ""}
-      className={`group/row flex min-w-0 items-start gap-2 rounded-lg border px-2 py-1.5 @[34rem]:rounded-md @[34rem]:border-transparent @[34rem]:px-1 @[34rem]:py-1 ${
+      className={`group/row flex min-w-0 items-start gap-2 rounded-lg border px-2 py-1.5 @[34rem]:rounded-md @[34rem]:border-transparent @[34rem]:px-1 @[34rem]:py-1 glass:rounded-[10px] glass:@[34rem]:rounded-[14px] ${
         picked ? "border-primary/40 bg-primary/10" : "border-border"
       }`}
     >
@@ -575,7 +575,7 @@ export function RowEditor({ row, rows, kept, ticked, ownersList, onTick, onCell,
     <li
       data-plan-row={row.key}
       data-plan-open=""
-      className="rounded-lg border border-border bg-secondary/40 p-2"
+      className="rounded-lg border border-border bg-secondary/40 p-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary"
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         // An open list (the effort unit) takes its own Escape first.

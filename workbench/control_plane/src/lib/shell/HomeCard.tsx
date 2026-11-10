@@ -27,6 +27,7 @@ export function HomeCard({
   link,
   eyebrow,
   titleHref,
+  titleClassName = "",
   footer,
   className = "",
   testId,
@@ -43,6 +44,8 @@ export function HomeCard({
   eyebrow?: React.ReactNode;
   /** The title links here: the door to the entity (§4.2 item 7). */
   titleHref?: string;
+  /** Extra classes of the heading, such as `break-words` for a long lead. */
+  titleClassName?: string;
   footer?: React.ReactNode;
   className?: string;
   testId?: string;
@@ -54,13 +57,13 @@ export function HomeCard({
       aria-labelledby={headingId}
       data-testid={testId}
       data-home-card=""
-      className={`min-w-0 rounded-xl border border-border bg-card ${className}`}
+      className={`min-w-0 rounded-xl border border-border bg-card glass:rounded-[16px] glass:border-transparent glass:glass-raised ${className}`}
     >
       {eyebrow ? <div className="px-4 pt-3 text-xs text-muted-foreground">{eyebrow}</div> : null}
       <header className={`flex items-center gap-2 px-4 pb-2 ${eyebrow ? "pt-1" : "pt-3.5"}`}>
         {icon ? <Icon name={icon} size={15} className="shrink-0 text-muted-foreground" /> : null}
         {/* `tabIndex={-1}`: focus lands here when the card's last row leaves. */}
-        <h2 id={headingId} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+        <h2 id={headingId} tabIndex={-1} className={`text-sm font-semibold text-foreground outline-none ${titleClassName}`}>
           {titleHref ? (
             // `cc-link`: the house keyboard focus ring of a text link
             // (globals.css, one declaration with `.cc-control`).
@@ -144,8 +147,11 @@ export function moveFocusAfterLeave(from: HTMLElement | null): void {
   const card = from.closest("[data-feed]") ?? from.closest("[data-home-card], [data-needs-panel]");
   if (!card) return;
   const own = from.hasAttribute("data-leaves-card") ? from.closest("[data-home-card]") : null;
+  // A feed row draws its acts twice, one form for a phone and one from `sm`,
+  // and CSS hides one (task 1898). A hidden control takes no focus, so only
+  // a drawn one is a target.
   const acts = [...card.querySelectorAll<HTMLElement>("[data-row-act]")].filter(
-    (a) => a === from || !own?.contains(a),
+    (a) => a === from || (!own?.contains(a) && a.getClientRects().length > 0),
   );
   const target = focusTarget(acts, from, card.querySelector<HTMLElement>("h2, [data-leave-focus]"));
   // After React has taken the row out.

@@ -16,9 +16,27 @@ the brief once. This route answers in one of two ways:
 **One composition** (D-CF-6, accepted 2026-10-22). The brief is
 ``reach.plan.brief_parts`` over ``reach.loop.snapshot``: the same feed read
 and the same lines that the WhatsApp brief sends (``proactive_reach.md``
-§9.1). Nothing here writes a line of its own, and no model runs. My Day's own
-``brief`` card (``my_day_feed.md`` MD-7) is not built yet. When it is, it reads
-the same parts.
+§9.1). Nothing here writes a line of its own, and no model runs.
+
+**The stored run first** (WS-BRIEF BR-2c-1, ``core_brief.md`` §5 item 2).
+With ``BRIEF_IN_APP`` on for the org (``brief.flags.in_app``), the route
+reads the member's stored brief through the read of ``GET /brief/today``
+(``brief_today.read_today``). A ``ready`` or ``delivered`` run gives the
+lead, and its claims give the pills, in position order
+(:func:`stored_parts`). The route then reads no feed. The gather wrote each
+claim's text with ``plan.line``, so the pills are the lines of
+``plan.brief_parts`` of the same cards. The pills stay text: a link chip
+needs a tool event, and a stored row has none.
+
+The stamp and the row id of a stored post are the run's ``local_date``,
+and the route refuses (204) when that date is stamped. So one run makes one
+post, on any number of fresh chats, before or after the day start. A run
+dated before the feed day is not today's brief, and the route composes
+from the feed instead. With no such run, or when the stored read fails
+(``chat_brief.stored_failed``), the route composes from the feed as before.
+With the switch off, the route reads no store, and its answer is byte for
+byte the answer before BR-2c-1. The chat writes nothing to the run: the run
+itself sets ``delivered`` (``brief.run``).
 
 **Only the server creates an agent row** (D-PM-39, ``projects_ai_chat.md``
 §20). The row goes in through the one minter, ``routes/agent.py``
@@ -33,7 +51,7 @@ member, and no fold sealed it. ``test_rooms.py`` keeps the mint keyword in
 ``chat_brief_posted_on``, in ``user_settings.my_day_prefs``, written through
 ``routes/shell/prefs.py`` ``_write`` (MD-2d's one-key merge). It holds the
 member's local date (``Day.feed_day``), so a chat opened at 23:50 and one at
-00:10 are two days. A layout save never touches it (migration 259). A
+00:10 are two days. A stored post stamps the run's ``local_date`` instead. A layout save never touches it (migration 259). A
 complete read with no brief stamps the day too, and an incomplete read
 leaves ``chat_brief_retry_after``, so the next fresh chats of the day read
 no feed (review of #1216).
@@ -55,12 +73,15 @@ Fences: ``tests/unit/test_chat_brief_turn.py`` (pure) and
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from gateway.brief import flags as brief_flags
+from gateway.brief import store as brief_store
 from gateway.reach import loop, plan
 from gateway.rooms import resolve_room_access
 
@@ -112,6 +133,73 @@ def brief_event(parts: plan.BriefParts) -> dict[str, Any]:
     """The custom event of the row, as ``chat_fold`` stores one. A cutoff of
     0 and no segments draw the text first and the card under it."""
     return {"name": "generative_ui", "value": brief_card(parts), "segmentCutoff": 0}
+
+
+# ── The stored run (BR-2c-1) ─────────────────────────────────────────────────
+
+#: The states of a stored run that the first turn shows.
+STORED_STATES: frozenset[str] = frozenset({"ready", "delivered"})
+#: The shape of the template lead, ``plan.brief_lead``: "<title>. <n>
+#: thing(s) need(s) you.". A lead in another shape (a model lead of
+#: BR-2a-2) keeps the date title and no "more" note.
+_TEMPLATE_LEAD = re.compile(r"^(?P<title>.+)\. (?P<n>\d+) things? needs? you\.$")
+
+
+def stored_parts(run: brief_store.Run,
+                 claims: list[brief_store.Claim]) -> tuple[str, plan.BriefParts] | None:
+    """The lead and the parts of a stored run, or None when the run has
+    no lead or no claim. Pure.
+
+    The lines are the claims' text in position order. The title and the
+    count come from the template lead, so ``rest`` counts the brief items
+    that the claims do not show, as ``plan.brief_parts`` counts them.
+    """
+    lead = (run.lead or "").strip()
+    lines = [c.text for c in sorted(claims, key=lambda c: c.position)]
+    if not lead or not lines:
+        return None
+    match = _TEMPLATE_LEAD.match(lead)
+    if match is not None:
+        title = match["title"]
+        rest = max(0, int(match["n"]) - len(lines))
+    else:
+        title = f"Your day, {plan._date_words(run.local_date)}"
+        rest = 0
+    return lead, plan.BriefParts(title, lines, rest)
+
+
+async def _stored_brief(org: str, user: UserContext, email: str, now: datetime,
+                       today: date) -> tuple[date, str, plan.BriefParts] | None:
+    """The member's stored brief, in the bound tenant: the run's date, the
+    lead and the parts. None when no run is served
+    (``brief_today.read_today``), or when the run is dated before *today*,
+    the feed day. The store scopes each read to the member and the bound
+    org."""
+    from gateway.routes.brief_today import read_today
+
+    found = await read_today(org, user, email, "brief", now)
+    if found is None:
+        return None
+    run, claims = found
+    if run.local_date < today:
+        return None
+    got = stored_parts(run, claims)
+    if got is None:
+        return None
+    lead, parts = got
+    return run.local_date, lead, parts
+
+
+async def _stored_or_none(org: str, user: UserContext, email: str, now: datetime,
+                          today: date) -> tuple[date, str, plan.BriefParts] | None:
+    """:func:`_stored_brief`, and None when it fails. A failed read logs
+    ``chat_brief.stored_failed`` with the error class only, and the route
+    composes from the feed. It never answers 500."""
+    try:
+        return await _stored_brief(org, user, email, now, today)
+    except Exception as exc:
+        _log.warning("chat_brief.stored_failed", error=type(exc).__name__)
+        return None
 
 
 # ── The reads ────────────────────────────────────────────────────────────────
@@ -278,25 +366,40 @@ async def post_brief(
     # Two devices that pass this read at the same moment can each post a
     # brief into their own chat. That is accepted: the stamp is a day mark,
     # not a lock, and the second brief is the same text in a second chat.
-    if brief_done_today(await _marks(email), today, now):
-        return _nothing(response)
+    marks = await _marks(email)
 
-    snap = await loop.snapshot(org, user, now)
-    if not snap.complete:
-        # Not the day's answer yet. A retry mark keeps the next fresh chats
-        # from reading the whole feed again for a while (review of #1216).
-        _log.info("chat_brief.read_incomplete", session_id=session_id[:12])
-        await _mark(email, BRIEF_RETRY_KEY, (now + BRIEF_RETRY_AFTER).isoformat())
-        return _nothing(response)
-    parts = plan.brief_parts(snap.cards, snap.local_date, now=snap.now)
-    if parts is None:
-        # A complete read with nothing to say is the day's answer: stamp it,
-        # so no later fresh chat reads the feed again today.
-        await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
-        return _nothing(response)
+    # BR-2c-1: the stored run first, only with the switch on. Off, the
+    # route reads no store, so its answer is the answer before BR-2c-1.
+    stored = (await _stored_or_none(org, user, email, now, today)
+              if brief_flags.in_app(org) else None)
+    if stored is not None:
+        # The stamp and the row id are the run's date, so one run makes one
+        # post. The feed day moves with the day start, and the run's date
+        # does not.
+        day, lead, parts = stored
+        if marks.get(BRIEF_STAMP_KEY) == day.isoformat():
+            return _nothing(response)
+    else:
+        if brief_done_today(marks, today, now):
+            return _nothing(response)
+        snap = await loop.snapshot(org, user, now)
+        if not snap.complete:
+            # Not the day's answer yet. A retry mark keeps the next fresh chats
+            # from reading the whole feed again for a while (review of #1216).
+            _log.info("chat_brief.read_incomplete", session_id=session_id[:12])
+            await _mark(email, BRIEF_RETRY_KEY, (now + BRIEF_RETRY_AFTER).isoformat())
+            return _nothing(response)
+        composed = plan.brief_parts(snap.cards, snap.local_date, now=snap.now)
+        if composed is None:
+            # A complete read with nothing to say is the day's answer: stamp it,
+            # so no later fresh chat reads the feed again today.
+            await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
+            return _nothing(response)
+        parts = composed
+        lead = plan.brief_lead(parts)
+        day = snap.local_date
 
-    lead = plan.brief_lead(parts)
-    message_id = brief_message_id(snap.local_date)
+    message_id = brief_message_id(day)
     agent = (room.agent_name or "").strip() or DEFAULT_AGENT
     posted = await asyncio.to_thread(
         _post_row, session_id, message_id, member=email, agent_name=agent,
@@ -305,5 +408,202 @@ async def post_brief(
     )
     if not posted:
         raise HTTPException(status_code=503, detail="The brief could not be posted. Try again.")
-    await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
+    await _mark(email, BRIEF_STAMP_KEY, day.isoformat())
     return {"posted": True, "message_id": message_id, "preview": lead}
+
+
+# ── BUD-1: the hello (D177, `onboarding.md` §13) ─────────────────────────────
+
+#: The row id of the hello. The stamp is the dedupe, not this id: each tab
+#: mints its own session, so a fixed id would not stop a second tab.
+HELLO_MESSAGE_ID = "buddy-hello"
+#: The template the hello draws its chips with (``genUITemplates.tsx``).
+HELLO_TEMPLATE = "buddyHello"
+#: The chat's name. The hello is the first thing a new member sees there.
+HELLO_TITLE = "Welcome"
+#: The words of the hello: ONE constant. ``{opener}`` is the greeting for the
+#: member's time of day, with the first name when there is one: "Good morning,
+#: Vijay." or "Good morning." (PZ-39). It names no model and no inner service.
+HELLO_COPY = (
+    "{opener} Welcome to Metorite. It can look like a lot at first, and "
+    "that's okay. You don't have to learn it all today. I'm here whenever "
+    "you need me. Ask me anything, and I'll show you where it is."
+)
+#: The chips, as ids the client maps to an action (``buddyHello`` in
+#: ``genUITemplates.tsx``). The ids are the contract with the client.
+HELLO_CHIPS: tuple[dict[str, str], ...] = (
+    {"id": "tour", "label": "Show me around"},
+    {"id": "ask", "label": "What can you do here?"},
+    {"id": "look", "label": "I'll look around"},
+)
+_NAME_SQL = (
+    "SELECT NULLIF(btrim(display_name), '') FROM app_user "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) "
+    "LIMIT 1"
+)
+
+
+def hello_text(
+    display_name: str | None, zone: str | None = None, now: datetime | None = None,
+) -> str:
+    """The hello for a member: the greeting for the hour of *zone*, then the
+    first word of the display name when there is one. Pure, so a unit test
+    holds it. The greeting comes from ``acb_common.today.greeting_for``, the
+    one table (PZ-39)."""
+    from acb_common.today import greeting_for
+    from gateway.reach.plan import first_name
+
+    word = greeting_for(zone, now)
+    # One first-name rule for the product. No name gives a greeting alone.
+    name = first_name(display_name, "") if str(display_name or "").split() else ""
+    return HELLO_COPY.format(opener=f"{word}, {name}." if name else f"{word}.")
+
+
+def hello_event() -> dict[str, Any]:
+    """The custom event of the hello row. A cutoff of 0 draws the text first
+    and the chips under it (``reminder_event`` is the model)."""
+    return {
+        "name": "generative_ui",
+        "value": {
+            "type": "template",
+            "props": {"name": HELLO_TEMPLATE, "data": {"chips": list(HELLO_CHIPS)}},
+        },
+        "segmentCutoff": 0,
+    }
+
+
+def _display_name(org: str, email: str) -> str | None:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(org) as s:
+        row = s.execute(text(_NAME_SQL), {"org": org, "m": email}).first()
+    return None if row is None or row[0] is None else str(row[0])
+
+
+_ZONES_SQL = (
+    "SELECT (SELECT timezone FROM user_settings "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:m) "
+    "ORDER BY updated_at DESC LIMIT 1), "
+    "(SELECT NULLIF(btrim(timezone), '') FROM people "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) LIMIT 1)"
+)
+
+
+def _member_zone(org: str, email: str) -> str:
+    """The member's zone for the hello: ``user_settings.timezone``, then
+    ``people.timezone``, through ``resolve_zone``. Read from the member's own
+    rows in the bound tenant, never from the request (R5). A failed read gives
+    the defaults of ``resolve_zone()`` and never fails the hello."""
+    from acb_common.today import resolve_zone
+
+    try:
+        from acb_graph import tenant_session
+        from sqlalchemy import text
+
+        with tenant_session(org) as s:
+            row = s.execute(text(_ZONES_SQL), {"org": org, "m": email}).first()
+        return resolve_zone(*(str(v or "") for v in (row or ())))
+    except Exception as exc:
+        _log.warning("chat_brief.hello_zone_failed", error=type(exc).__name__)
+        return resolve_zone()
+
+
+def _set_title(org: str, session_id: str, title: str) -> None:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(org) as s:
+        s.execute(
+            text("UPDATE chat_session SET title = :t WHERE id = :id"),
+            {"t": title, "id": session_id},
+        )
+
+
+async def _claim_hello(email: str) -> bool:
+    """Claim ``buddy_hello_at`` first-write-wins, in ONE statement
+    (``stamp-first``). True when this call's time is the stored one. The
+    loser sees the winner's time and posts nothing."""
+    from gateway.routes.admin import me
+
+    stamp = me._server_stamp()
+    async with me._tenant_session() as db:
+        stored = await me._write_shell(db, email, {"buddy_hello_at": stamp}, "stamp-first")
+    return me.stored_shell(stored).get("buddy_hello_at") == stamp
+
+
+async def _release_hello(email: str) -> None:
+    """Give the claim back when the post failed, so the next visit tries
+    again. Best effort: a failure here only loses the hello."""
+    from gateway.routes.admin import me
+
+    try:
+        async with me._tenant_session() as db:
+            await me._write_shell(db, email, {"buddy_hello_at": None}, "stamp")
+    except Exception as exc:
+        _log.warning("chat_brief.hello_release_failed", error=str(exc)[:160])
+
+
+@router.post(
+    "/sessions/{session_id}/buddy-hello",
+    summary="Post the first-visit hello as the first assistant turn (BUD-1)",
+)
+async def post_buddy_hello(
+    session_id: str,
+    response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> Any:
+    """200 with the row's id and text, 204 for no row (the stamp is taken, or
+    the room is shared), 404 while ``GUIDE_ORGS`` is off or for a session the
+    member cannot reach. The tenant and the member come from the session."""
+    from acb_common.guide_flags import guide_allowed
+
+    org = str(getattr(user, "organization_id", None) or "")
+    email = (user.email or "").strip()
+    if not org or not email or not guide_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email, organization_id=org,
+    )
+    if not room.can_read:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("say hello"))
+    if room.is_shared:
+        return _nothing(response)
+
+    # The stamp first, atomically: the loser gets 204 and no row.
+    try:
+        won = await _claim_hello(email)
+    except Exception as exc:
+        _log.warning("chat_brief.hello_claim_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="The hello could not be posted. Try again.") from exc
+    if not won:
+        return _nothing(response)
+
+    name = await asyncio.to_thread(_display_name, org, email)
+    zone = await asyncio.to_thread(_member_zone, org, email)
+    lead = hello_text(name, zone, _now())
+    agent = (room.agent_name or "").strip() or DEFAULT_AGENT
+    posted = False
+    try:
+        posted = await asyncio.to_thread(
+            _post_row, session_id, HELLO_MESSAGE_ID, member=email, agent_name=agent,
+            organization_id=org, lead=lead, event=hello_event(),
+            now_ms=int(_now().timestamp() * 1000),
+        )
+    except Exception as exc:
+        _log.warning("chat_brief.hello_post_failed", error=str(exc)[:160])
+    if not posted:
+        await _release_hello(email)
+        raise HTTPException(status_code=503, detail="The hello could not be posted. Try again.")
+    # The row exists, so the stamp stays whatever the title does: a missing
+    # title is cheap, a second hello is not. A crash between the claim and the
+    # post leaves a stamp with no row, and that stays accepted: a lost hello
+    # is cheaper than a double one.
+    try:
+        await asyncio.to_thread(_set_title, org, session_id, HELLO_TITLE)
+    except Exception as exc:
+        _log.warning("chat_brief.hello_title_failed", error=str(exc)[:160])
+    return {"posted": True, "message_id": HELLO_MESSAGE_ID, "preview": lead, "title": HELLO_TITLE}

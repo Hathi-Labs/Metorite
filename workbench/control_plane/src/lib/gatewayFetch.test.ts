@@ -26,6 +26,7 @@ import {
   resetGatewayBreaker,
   retryDeadlineMs,
   withJsonContentType,
+  withManualRedirect,
 } from "@/lib/gatewayFetch";
 
 // The breaker is process state. Each test starts with every breaker closed.
@@ -811,5 +812,54 @@ describe("the path guard (gatewayPath.ts, layer 2)", () => {
     );
     expect(res.status).toBe(200);
     expect(fake).toHaveBeenCalledOnce();
+  });
+});
+
+// H-280, rule 11. `fetch` follows a redirect with the same headers, so the
+// internal bearer and the member identity would reach a path that the path
+// guard never checked.
+describe("rule 11 — a redirect is the gateway's answer, not a hop", () => {
+  it("passes a 3xx back with its Location, and never calls the target", async () => {
+    const port = await freePort();
+    const seen = gatewayLater(port, 0, (req, _body, res) => {
+      if (req.url === "/chat/sessions/s1") {
+        res.writeHead(307, { Location: "/internal/drain" });
+        res.end();
+        return;
+      }
+      res.end("{}");
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const res = await gatewayFetch(
+      `http://127.0.0.1:${port}/chat/sessions/s1`,
+      { method: "DELETE", headers: { ...IDENTITY } },
+      { retry: false },
+    );
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/internal/drain");
+    // One request reached the gateway: the redirect was not followed.
+    expect(seen.map((s) => s.method)).toEqual(["DELETE"]);
+  });
+
+  it("keeps a redirect mode that the caller names", async () => {
+    const port = await freePort();
+    const seen = gatewayLater(port, 0, (req, _body, res) => {
+      if (req.url === "/a") {
+        res.writeHead(302, { Location: "/b" });
+        res.end();
+        return;
+      }
+      res.end("{}");
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const res = await gatewayFetch(`http://127.0.0.1:${port}/a`, { redirect: "follow" }, { retry: false });
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(2);
+  });
+
+  it("sets manual only when the caller named no mode", () => {
+    expect(withManualRedirect({}).redirect).toBe("manual");
+    const error = { redirect: "error" as const };
+    expect(withManualRedirect(error)).toBe(error);
   });
 });

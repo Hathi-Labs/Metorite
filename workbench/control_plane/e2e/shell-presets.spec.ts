@@ -50,8 +50,10 @@ const EMPTY = { preset: null, answered: null, pins: null, known: null, cardOrder
  * Integrations is held by every member since D-EA-9 (2026-10-14), for its AI
  * agents view. No answer stars it (`answerStars`), so it shows only when the
  * member keeps every held app, or stars it.
+ * Appearance is an Admin app for every member since GL-11 (8f497e7b8,
+ * 2026-11-01), so it sits in `known` too, and no answer stars it.
  */
-const KNOWN = ["/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/integrations"];
+const KNOWN = ["/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/settings/appearance", "/integrations"];
 
 /** A stored Engineer layout: Personal Center, and the preset's apps. */
 const ENGINEER_STARS = ["/calendar", "/email", "/projects", "/chat"];
@@ -188,9 +190,10 @@ test("a first visit asks, an answer ticks the defaults, and Done saves the ticks
   // MEMBER holds Approvals, so every answer ticks it (the approver's door).
   await expect(tick(page, "Approvals")).toBeChecked();
   await expect(tick(page, "People")).not.toBeChecked();
-  // The settings pages are not apps, so they are not in the list.
+  // My Profile is a page, not an app, so it is not in the list. Appearance
+  // is an app since GL-11 (8f497e7b8), and no answer ticks it.
   await expect(tick(page, "My Profile")).toHaveCount(0);
-  await expect(tick(page, "Appearance")).toHaveCount(0);
+  await expect(tick(page, "Appearance")).not.toBeChecked();
   // It says where to change this later, and names the real controls.
   const later = appsStep(page).getByTestId("layout-apps-later");
   await expect(later).toContainText("All apps");
@@ -261,7 +264,7 @@ test("Skip for now is stored, a reload does not ask again, and every app shows",
     ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
-    ["admin", ["Approvals", "Integrations"]],
+    ["admin", ["Approvals", "Appearance", "Integrations"]],
   ]);
   await expect(question(page)).toHaveCount(0);
   expect(store.puts).toHaveLength(1);
@@ -404,6 +407,47 @@ test("a founder's welcome follows the question and the apps, one dialog at a tim
   await welcome.getByRole("button", { name: "Explore on my own first" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page).toHaveURL(/\/settings\/appearance$/);
+});
+
+// ── OB-0: every way out closes the founder's welcome at once ────────────────
+//
+// Owner report 2026-11-01: on production the dialog did not close. Each way
+// out called `router.replace`, which waits on the server, and the dialog
+// stayed until that round trip ended. Here every RSC request hangs, as a slow
+// server's does. Mutation, seen to fail first: put `router.replace(pathname)`
+// back in `close`, and all three cases fail with the dialog still open.
+
+const founderWelcome = (page: Page) => page.getByRole("dialog", { name: "Your organization is ready" });
+const FOUNDER = { ...MEMBER, is_admin: true, roles: ["owner"] };
+
+test.describe("a slow server never holds the founder's welcome open", () => {
+  const ways: Array<[string, (page: Page) => Promise<void>]> = [
+    ["the header's X", (page) => founderWelcome(page).getByRole("button", { name: "Close" }).click()],
+    ["Escape", (page) => page.keyboard.press("Escape")],
+    ["Explore on my own first", (page) => founderWelcome(page).getByRole("button", { name: "Explore on my own first" }).click()],
+  ];
+  for (const [name, leave] of ways) {
+    test(`${name} closes it at once on My Day`, async ({ page }) => {
+      await stub(page, { ...EMPTY, answered: "skipped" }, { me: FOUNDER, myDay: true });
+      await page.goto("/?welcome=new-org");
+      await expect(founderWelcome(page)).toBeVisible();
+      await page.route("**/*", (route) => (route.request().headers()["rsc"] === "1" ? undefined : route.fallback()));
+      await leave(page);
+      await expect(page.getByRole("dialog")).toHaveCount(0, { timeout: 1_000 });
+      await expect(page).toHaveURL(/localhost:\d+\/$/);
+    });
+  }
+
+  test("Back after Invite my team does not bring it back", async ({ page }) => {
+    await stub(page, { ...EMPTY, answered: "skipped" }, { me: FOUNDER, myDay: true });
+    await page.goto("/?welcome=new-org");
+    await founderWelcome(page).getByRole("button", { name: "Invite my team" }).click();
+    await expect(page).toHaveURL(/\/settings\/organization$/);
+    await page.goBack();
+    await expect(page).toHaveURL(/localhost:\d+\/$/);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(founderWelcome(page)).toHaveCount(0);
+  });
 });
 
 // ── Round 2: a write fault never traps the member ───────────────────────────
@@ -840,7 +884,7 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
     ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
-    ["admin", ["Approvals", "Integrations"]],
+    ["admin", ["Approvals", "Appearance", "Integrations"]],
   ]);
   await expect(sidebar(page).getByText(/my apps/i)).toHaveCount(0);
 
@@ -849,14 +893,14 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
   const launcher = page.getByRole("dialog", { name: "All apps" });
   await launcher.getByRole("button", { name: "Hide Chat from sidebar" }).click();
   expect(store.puts.at(-1)).toMatchObject({
-    pins: ["/calendar", "/email", "/projects", "/people", "/approvals", "/integrations"],
+    pins: ["/calendar", "/email", "/projects", "/people", "/approvals", "/settings/appearance", "/integrations"],
     known: KNOWN,
   });
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([
     ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
-    ["admin", ["Approvals", "Integrations"]],
+    ["admin", ["Approvals", "Appearance", "Integrations"]],
   ]);
   // Show it again: back under AI Studio.
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
@@ -871,7 +915,7 @@ test("every category's apps can be hidden: Personal Center, AI Studio and Admin 
   await page.goto("/settings/appearance");
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
   const launcher = page.getByRole("dialog", { name: "All apps" });
-  for (const name of ["Calendar", "My Email", "Chat", "Approvals", "Integrations"]) {
+  for (const name of ["Calendar", "My Email", "Chat", "Approvals", "Appearance", "Integrations"]) {
     await launcher.getByRole("button", { name: `Hide ${name} from sidebar` }).click();
   }
   await page.keyboard.press("Escape");

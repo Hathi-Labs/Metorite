@@ -519,3 +519,45 @@ def test_the_durable_copy_goes_only_when_the_model_reads_the_note(fake_redis, mo
     assert kept == 1, "buffering must keep the durable copy"
     assert "check the invoice" in result
     assert left == 0, "the copy goes once the model has read the note"
+
+
+# ---------------------------------------------------------------------------
+# 9. WS-63 PZ-31: the typed flag travels with the steer
+# ---------------------------------------------------------------------------
+#
+# Only a steer that the member TYPED may ground a profile write
+# (``acb_common.assistant_profile.add_steered_words``). The flag rides the
+# stored signal and the bus command, and it survives each path that puts a
+# steer back in the store. Mutations: the command drops the flag, the
+# default becomes True, or ``return_unconsumed`` or ``give_back`` drops it.
+
+def test_pz31_the_signal_and_its_command_carry_the_typed_flag(fake_redis, monkeypatch):
+    sent: list[dict[str, Any]] = []
+
+    async def _dispatch(_tid: str, cmd: dict[str, Any]) -> bool:
+        sent.append(dict(cmd))
+        return False
+
+    from orchestrator import stream_relay
+    monkeypatch.setattr(stream_relay, "dispatch_control", _dispatch)
+    typed = asyncio.run(steer.send_steer("t-typed", "bob@x.io", "skip staging", typed=True))
+    plain = asyncio.run(steer.send_steer("t-typed", "bob@x.io", "and the owner"))
+    assert (typed["typed"], plain["typed"]) == (True, False), "the default is False"
+    assert [c["typed"] for c in sent] == [True, False]
+    stored = [json.loads(x) for x in fake_redis.lists["cc:steer:t-typed"]]
+    assert [s["typed"] for s in stored] == [True, False]
+    # Only a real True is typed.
+    assert steer.make_signal(thread_id="t", author="a", text="b", typed="yes")["typed"] is False
+
+
+def test_pz31_a_steer_put_back_in_the_store_keeps_its_typed_flag(fake_redis):
+    """``return_unconsumed`` builds the signal again, and ``give_back``
+    copies it. Neither may drop the flag."""
+    steer.buffer_guidance("t-back", "alice@x.io", "I like tea", signal_id="s-t", typed=True)
+    steer.buffer_guidance("t-back", "alice@x.io", "and coffee", signal_id="s-f")
+    asyncio.run(steer.return_unconsumed("t-back"))
+    taken = asyncio.run(steer.take_pending_steers("t-back"))
+    assert [(s["id"], s["typed"]) for s in taken] == [("s-t", True), ("s-f", False)]
+    asyncio.run(steer.give_back("t-back", taken))
+    again = asyncio.run(steer.take_pending_steers("t-back"))
+    assert [(s["id"], s["typed"]) for s in again] == [("s-t", True), ("s-f", False)]

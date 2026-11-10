@@ -212,8 +212,13 @@ test.describe("the Email chat cards send the same payload", () => {
       void d.accept();
     });
     await cardWith(page, "Draft reply").getByRole("button", { name: "Send", exact: true }).click();
+    // The shared dialog asks, never the browser's confirm box (UXD-3).
+    const ask = page.getByRole("dialog").filter({ hasText: "Send this reply?" });
+    await expect(ask).toContainText("It goes from Ops <ops@example.com>.");
+    expect(await calls(page)).toEqual([]);
+    await ask.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByText("Sent", { exact: true })).toBeVisible();
-    expect(asked).toEqual(["Send this reply from Ops <ops@example.com>?"]);
+    expect(asked).toEqual([]);
     expect(await calls(page)).toEqual([
       {
         method: "POST",
@@ -244,8 +249,13 @@ test.describe("the Email chat cards send the same payload", () => {
     });
     const card = cardWith(page, "Created rule: Invoices");
     await card.getByRole("button", { name: "Delete", exact: true }).click();
+    // The shared dialog asks, never the browser's confirm box (UXD-3).
+    const ask = page.getByRole("dialog").filter({ hasText: "Delete this rule?" });
+    await expect(ask).toContainText("Invoices");
+    expect(await calls(page)).toEqual([]);
+    await ask.getByRole("button", { name: "Delete", exact: true }).click();
     await expect(card.getByText("Deleted.")).toBeVisible();
-    expect(asked).toEqual(['Delete rule "Invoices"?']);
+    expect(asked).toEqual([]);
     expect(await calls(page)).toEqual([{ method: "DELETE", path: `/api/email/rules/${RULE_ID}`, body: null }]);
   });
 
@@ -295,7 +305,7 @@ test.describe("the Email waiting card draws the shared header, and no toggle whi
     // an act sat there, so a folded card lost its buttons and said nothing.
     await startTurn(page, [...RULE_EVENT, ...SETTINGS]);
     const rule = page.locator('[data-rollup-card="tool:t-rule"]');
-    await rule.locator("[data-rollup-toggle]").click();
+    // The rule is a receipt, so it opens folded (task 1003). No click needed.
     await expect(rule.locator('[data-rollup="closed"]')).toHaveCount(1);
     await rule.getByRole("button", { name: "Disable", exact: true }).click();
     await expect(rule.getByText("Disabled.", { exact: true })).toBeVisible();

@@ -248,6 +248,31 @@
     1,
     2
    ]
+  },
+  {
+   "name": "a pull request, in any spelling",
+   "text": "PR #1397, pr: #1398, Pull Request #1399, pull-request #1400, MR #5, mr : #6, pull request: #7",
+   "numbers": []
+  },
+  {
+   "name": "a GitHub URL just before",
+   "text": "github.com/o/r/pull/12 #1397",
+   "numbers": []
+  },
+  {
+   "name": "a task and a pull request together",
+   "text": "task #834 fixes PR #1397 and #835",
+   "numbers": [
+    834,
+    835
+   ]
+  },
+  {
+   "name": "a bare number still links",
+   "text": "See #834",
+   "numbers": [
+    834
+   ]
   }
  ],
  "markdown_cases": [
