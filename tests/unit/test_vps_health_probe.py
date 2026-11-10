@@ -242,6 +242,16 @@ def repo(tmp_path: Path) -> tuple[Path, str]:
     sha = subprocess.run(
         ["git", "-C", str(r), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
+    # The delivery job asks origin for `release` and `main` (WS-38, D-daily-release),
+    # so the fixture gives the checkout an origin that holds both at this commit.
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(r), str(origin)], check=True)
+    for branch in ("release", "main"):
+        subprocess.run(
+            ["git", "-C", str(origin), "branch", "-f", branch, sha],
+            check=True, capture_output=True,
+        )
+    subprocess.run(["git", "-C", str(r), "remote", "add", "origin", str(origin)], check=True)
     return r, sha
 
 
