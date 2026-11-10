@@ -114,8 +114,10 @@ def resolve_skill_tools(
             )
             continue
 
+        # A skill may keep tools for a tool pack only (``PACK_ONLY_TOOLS``).
+        pack_only = frozenset(getattr(module, "PACK_ONLY_TOOLS", ()) or ())
         for name in exported:
-            if name in seen:
+            if name in seen or name in pack_only:
                 continue
             if allow is not None and name not in allow:
                 continue

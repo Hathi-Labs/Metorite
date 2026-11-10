@@ -204,8 +204,10 @@ async def test_each_kg4_relation_appears_on_a_seeded_org(kg, app_engine) -> None
     a, b = kg.seeded["a"], kg.seeded["b"]
     result = await _sweep(kg, kg.org_a)
     assert result.total == 10
-    assert set(result.written) == {"deal_contact", "deal_company", "contact_company",
-                                   "activity_on", "origin", "task_link", "attendee"}
+    # The KG-5 forms run too, and this seed holds no address or phone.
+    assert {k for k, v in result.written.items() if v} == {
+        "deal_contact", "deal_company", "contact_company", "activity_on", "origin",
+        "task_link", "attendee"}
     assert _graph_rows(kg, kg.org_a) == _expected(a)
     # The person of org B and the id that is no person give no edge.
     assert _graph_rows(kg, kg.org_b) == set()

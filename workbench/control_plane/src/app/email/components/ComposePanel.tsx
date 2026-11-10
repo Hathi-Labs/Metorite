@@ -558,7 +558,7 @@ export function ComposePanel({
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-secondary/50">
           <span className="text-sm font-medium text-foreground">New Message</span>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={closeComposer} className="rounded">
+          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={closeComposer} aria-label="Close the draft" className="rounded">
             <Icon name="X" size={16} />
           </Button>
         </div>

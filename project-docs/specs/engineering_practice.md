@@ -203,6 +203,13 @@ affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
 A slice with nothing to see skips the preview. Docs, tests, a script and a
 refactor with no change in behaviour go straight to step 4.
 
+**Small screen change (D200).** A small, low-risk change on an existing screen
+skips the wait for approval. The slice is LOW or STANDARD, and it is one field,
+one control, one line of text or a layout fix, or its whole change sits behind
+a flag that is off. It still needs the captures, the verifier and the full
+gates. After the merge, ask the owner "Looks right" or "Change it" on the task.
+D200 lists the cases that do not qualify. When in doubt, preview first.
+
 **3. The owner answers.**
 
 - **Approve:** go to step 4.
@@ -482,7 +489,9 @@ three distinct symptoms, one cause.
 
 **Cap work in flight.** The constraint is not agent capacity; it is integration
 bandwidth, and that is one person. Three or four open branches is the ceiling. A
-queue of six (2026-08-09) is above it.
+queue of six (2026-08-09) is above it. More machines do not raise this cap.
+`docs/dev_capacity.md` sizes lanes, sub-agents and CI to the machines that we
+have, inside this cap.
 
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the

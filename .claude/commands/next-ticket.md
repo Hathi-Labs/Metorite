@@ -147,6 +147,11 @@ behaviour.
 - **No answer in this session:** leave the draft PR and the open question,
   and end the cycle with `AWAITING-OWNER`. The next session finds the answer in
   `my_work`.
+- **Small screen change (D200).** A LOW or STANDARD slice that is a small change
+  on an existing screen does not wait for **Approve**. Run steps 5 to 7 with the
+  captures and the `Visual review:` line. After the merge, post the captures and
+  call `ask_on_task` with "Looks right" and "Change it". The PR body states why
+  the slice qualifies. D200 lists the cases that do not. When in doubt, wait.
 - `engineering_practice.md` §1.3 owns this step.
 
 **5 — Verify.** Dispatch `ws-verifier`. It checks each behaviour criterion on
