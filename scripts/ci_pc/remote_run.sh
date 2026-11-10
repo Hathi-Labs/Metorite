@@ -93,6 +93,32 @@ print(len(d["files"]))' 2>/dev/null)" || nfiles=-1
   for a in "${fwd[@]}"; do [ "$a" = --e2e ] && extra="$CI_E2E_GB"; done
   ci_slot_acquire "$want" "$min" "$extra" || return 3
   echo "ci: slot $CI_SLOT_ID, $CI_SHARDS_GRANTED shard(s), worktree $wt"
+  # CIV-6b. A dropped client (ssh gone, Ctrl-C, a killed ci_local.sh) sends this
+  # shell a HUP, INT or TERM. Run in the foreground, the EXIT trap then removed
+  # the worktree under the live job containers, and a run that would have
+  # finished died with FileNotFoundError (measured 2026-11-06). So:
+  #  * the suite runs in its own process group;
+  #  * the trap is installed BEFORE the launch, so no signal meets the default
+  #    action. A signal that comes before the pid is known sets `stopping`,
+  #    and the code after the launch stops the group;
+  #  * a stop sends TERM to the group, then KILL after CI_STOP_GRACE_S (60 s),
+  #    so a suite that ignores TERM cannot hold the lane for ever;
+  #  * the EXIT trap (worktree removal) runs only after the suite has ended.
+  local suite_pid="" rc=0 stopping=0 waited=0 grace="${CI_STOP_GRACE_S:-60}"
+  trap 'stopping=1; [ -n "$suite_pid" ] && kill -TERM -- "-$suite_pid" 2>/dev/null' HUP INT TERM
   CI_SLOT_GRANTED=1 CI_DEPS_DIR="${CI_DEPS_DIR:-$HOME/ci-deps}" \
-    bash scripts/ci_pc/run_suite.sh --shards "$CI_SHARDS_GRANTED" "${sel_args[@]}" "${fwd[@]}"
+    setsid bash scripts/ci_pc/run_suite.sh --shards "$CI_SHARDS_GRANTED" "${sel_args[@]}" "${fwd[@]}" &
+  suite_pid=$!
+  [ "$stopping" = 1 ] && kill -TERM -- "-$suite_pid" 2>/dev/null
+  while kill -0 "$suite_pid" 2>/dev/null; do
+    if [ "$stopping" = 1 ]; then
+      waited=$(( waited + 1 ))
+      [ "$waited" -gt "$grace" ] && kill -KILL -- "-$suite_pid" 2>/dev/null
+    fi
+    # A trapped signal ends this `wait` at once, so the loop sees `stopping`.
+    sleep 1 & wait $!
+  done
+  wait "$suite_pid"; rc=$?
+  trap - HUP INT TERM
+  return "$rc"
 }

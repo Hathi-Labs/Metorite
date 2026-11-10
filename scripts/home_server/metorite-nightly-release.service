@@ -1,5 +1,6 @@
 # The daily release from the home box (CIV-13, D178). A user unit of `dev`.
-# metorite-nightly-release.timer starts it at 21:30 UTC. It dispatches
+# metorite-nightly-release.timer starts it at 05:30, 13:30 and 21:30 UTC
+# (CIV-21, D194). It dispatches
 # deploy.yml with nightly=true and logs the URL of the run.
 # Install: bash scripts/home_server/nightly_release.sh install
 # Logs:    journalctl --user -u metorite-nightly-release.service

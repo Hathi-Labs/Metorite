@@ -570,14 +570,15 @@ describe("no flash of the empty state on a hard load (fix round 1, P2)", () => {
 });
 
 describe("the mobile bottom bar over the empty state (fix round 1, P2)", () => {
-  it("the page announces the empty state, and AppShell hides the email tabs", () => {
-    expect(PAGE).toContain('new CustomEvent("cc-email-empty", { detail: noAccounts })');
-    expect(PAGE).toContain('new CustomEvent("cc-email-empty", { detail: false })');
+  it("the page reports the empty state in the one phone-bar event, and the shell hides those tabs", () => {
+    // MOB-12: `cc-email-empty` is gone. The page hides its four tabs in `cc-phone-bar`.
+    expect(PAGE).toContain("hide: noAccounts ?");
+    expect(PAGE).not.toContain("cc-email-empty");
     const shell = codeOnly(
       readFileSync(join(EMAIL_APP, "..", "..", "components", "AppShell.tsx"), { encoding: "utf-8" }),
     );
-    expect(shell).toContain('window.addEventListener("cc-email-empty", h)');
-    expect(shell).toContain("{isEmailPage && !emailEmpty && (");
+    expect(shell).toContain("hide: report?.hide");
+    expect(shell).not.toContain("cc-email-empty");
   });
 });
 

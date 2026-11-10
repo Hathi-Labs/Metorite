@@ -298,16 +298,20 @@ async def _ask(feature: str) -> Any:
 
 class TestTheCooldown:
     async def test_a_crm_402_starts_the_cooldown(self, tenant, monkeypatch):
+        _modes(monkeypatch)
         _fake(monkeypatch, raises=acb_llm.DecideUnavailable("insufficient_credits", status=402))
         assert await _ask(nl.FEATURE) is None
         assert df.cooling()
 
     async def test_a_crm_403_starts_no_cooldown(self, tenant, monkeypatch):
+        _modes(monkeypatch)
         _fake(monkeypatch, raises=acb_llm.DecideUnavailable("forbidden", status=403))
         assert await _ask(nl.FEATURE) is None
         assert not df.cooling(), "a CRM 403 must never pause email `on` for the org"
 
     async def test_an_email_403_still_starts_it(self, tenant, monkeypatch):
+        # DEC-1: `ask` reads the mode, so the email feature needs its list.
+        _modes(monkeypatch, "email.rule_match=on", email_orgs=ORG)
         _fake(monkeypatch, raises=acb_llm.DecideUnavailable("forbidden", status=403))
         assert await _ask("email.rule_match") is None
         assert df.cooling()
@@ -747,6 +751,7 @@ class TestTheMemberCheck:
 
 class TestLastNoAnswer:
     async def test_it_names_the_reason_and_clears_on_a_decision(self, tenant, monkeypatch):
+        _modes(monkeypatch)
         _fake(monkeypatch, raises=acb_llm.DecideRequestInvalid(400, {"reason": "x"}))
         assert await _ask(nl.FEATURE) is None
         assert df.last_no_answer() == "request_invalid"

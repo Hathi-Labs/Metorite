@@ -79,9 +79,14 @@ def test_the_scripted_run_passes_through_the_real_orchestrator() -> None:
     assert problems == [], problems
     assert results and all(r.passed for r in results), [
         (r.case.id, r.problems) for r in results if not r.passed]
+    from acb_skills.loader import COPILOT_SPECIALIST_ALLOWED
+
+    # WS-43h: app-builder's label is "maf", but its factory builds the Copilot
+    # agent until MAF_CODING_SCOPE names it, so a script cannot drive it.
     with RoutingHarness():
         maf = {name for name, e in run.registry().items()
-               if name != ORCHESTRATOR and (e.get("agent_runtime") or "maf") == "maf"}
+               if name != ORCHESTRATOR and (e.get("agent_runtime") or "maf") == "maf"
+               and name not in COPILOT_SPECIALIST_ALLOWED}
     expected = {c.expected for c in ds.CASES if c.expected}
     # One driven case for each MAF specialist the set expects, one that the
     # orchestrator answers, and one that asks. Both forms of delegation run.

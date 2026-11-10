@@ -38,12 +38,13 @@ email      ``feature:email``     ``email.transport.accounts.feed_mailboxes``,
 =========  ====================  ==========================================
 
 ⚠️ **Only an org admin gets approval rows** (owner decision, 2026-10-10).
-The router of ``routes/actions.py`` demands ``feature:approvals``, and that
-gate alone is too wide: migration 207 grants ``feature:*`` to ``member`` and
-``manager`` in every org. So the provider ALSO demands ``ADMIN_PERMISSION``,
-the admin test of ``routes/shell/intent.py``. ``GET /auth/me`` reports the
-same test as ``is_admin``. Any other member keeps the Approvals app if they
-hold it, and their feed holds only their own work. ``pending_actions`` has
+The router of ``routes/actions.py`` demands ``feature:approvals`` and
+``ADMIN_PERMISSION`` (AP-BUG-2). The feature gate alone was too wide:
+migration 207 grants ``feature:*`` to ``member`` and ``manager`` in every
+org. ``ADMIN_PERMISSION`` is the admin test of ``routes/shell/intent.py``,
+and ``GET /auth/me`` reports it as ``is_admin``. The provider asks for it too.
+Any other member keeps the nav row of the Approvals app, and sees no queue.
+Their feed holds only their own work. ``pending_actions`` has
 no approver column. A finer Approver role is a later option.
 
 ``GET /actions/pending`` also demands ``require_internal_auth``. That check is

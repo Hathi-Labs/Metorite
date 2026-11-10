@@ -6,7 +6,8 @@ Two holes that let a caller act as the platform:
   ``LITELLM_MASTER_KEY``, and the orchestrator handed agents whichever value it
   resolved to. Every agent therefore held a credential that grants
   ``SERVICE_ACCESS`` — it could call ``/admin/*`` and grant itself anything,
-  defeating the entire org access model.
+  defeating the entire org access model. WS-24b (2026-11-06) removed the
+  fallback. An unset token now fails closed outside ``ACB_ENV=dev``.
 
 * **``/agent/webhook/{source}`` was unauthenticated.** It dispatches an agent
   run, so it was a fourth run path bypassing ``assert_can_run_agent``.
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 
 import pytest
 from fastapi import FastAPI
@@ -43,87 +45,54 @@ def test_the_two_tokens_are_distinct_when_provisioned(split_tokens) -> None:
     assert _get_internal_token() != _get_llm_api_token()
 
 
-def test_identity_falls_back_to_the_llm_key_when_unprovisioned(monkeypatch) -> None:
-    """Upgrade path: an un-migrated deployment must not 401 every internal call.
+def test_identity_never_falls_back_to_the_llm_key(unprovisioned) -> None:
+    """WS-24b (2026-11-06): an unset token is unset. It is never the LLM key.
 
-    The separation is absent while this holds — which is why the resolver logs
-    a warning rather than falling back silently.
+    This test used to pin the fallback (``..._falls_back_to_the_llm_key_when_
+    unprovisioned``). The fallback made the key that every agent holds a
+    platform credential, so the pin now runs the other way.
     """
-    monkeypatch.delenv("GATEWAY_INTERNAL_TOKEN", raising=False)
-    monkeypatch.setenv("LITELLM_MASTER_KEY", LLM_KEY)
-    assert _get_internal_token() == LLM_KEY
-
-
-def test_no_secrets_at_all_disables_bearer_auth(monkeypatch) -> None:
-    monkeypatch.delenv("GATEWAY_INTERNAL_TOKEN", raising=False)
-    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
-    monkeypatch.setattr(
-        "acb_auth.deps._get_llm_api_token", lambda: "", raising=True
-    )
+    assert _get_llm_api_token() == LLM_KEY
     assert _get_internal_token() == ""
 
 
-# ── The fallback, made visible and refusable ────────────────────────────────
+def test_no_secrets_at_all_gives_no_identity_token(unprovisioned, monkeypatch) -> None:
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    assert _get_internal_token() == ""
+
+
+# ── An unprovisioned box fails closed ───────────────────────────────────────
 #
-# While the fallback is in effect the identity token IS the LLM key, so the
-# gateway cannot tell the Next.js BFF from any agent — and an agent (or anyone
-# who obtained that semi-public key) can assert a colleague's X-User-Email.
-# `GATEWAY_REFUSE_LLM_KEY_IDENTITY` is the opt-in refusal. It defaults OFF:
-# the BFF mirrors the same fallback, so refusing by default would 401 every
-# signed-in member on a deployment that has not provisioned the token yet.
+# With no GATEWAY_INTERNAL_TOKEN, no Bearer is service identity, and nothing
+# else stands in for one. Before WS-24b the LLM-key fallback kept the token
+# non-empty, so these checks were closed on every real box. Removing the
+# fallback must not open them.
 
 VICTIM = "someone-else@fracktal.in"
 
 
 @pytest.fixture
-def llm_key_only(monkeypatch):
-    """An un-migrated deployment: identity has fallen back to the LLM key."""
+def unprovisioned(monkeypatch):
+    """A production box that forgot GATEWAY_INTERNAL_TOKEN, LLM key set."""
+    from acb_common import get_settings
+
+    settings = get_settings()
     monkeypatch.delenv("GATEWAY_INTERNAL_TOKEN", raising=False)
+    monkeypatch.setattr(settings, "gateway_internal_token", "", raising=False)
     monkeypatch.setenv("LITELLM_MASTER_KEY", LLM_KEY)
+    monkeypatch.setattr(settings, "acb_env", "prod", raising=False)
+    monkeypatch.delenv("GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS", raising=False)
 
     async def _passthrough(user):
         return user
 
     monkeypatch.setattr("acb_auth.deps._with_resolved_access", _passthrough)
-    return LLM_KEY
+    return settings
 
 
-def test_the_fallback_reports_itself(llm_key_only) -> None:
-    from acb_auth.deps import _internal_token_is_llm_fallback
-
-    assert _internal_token_is_llm_fallback() is True
-
-
-def test_a_provisioned_token_is_not_a_fallback(split_tokens) -> None:
-    from acb_auth.deps import _internal_token_is_llm_fallback
-
-    assert _internal_token_is_llm_fallback() is False
-
-
-async def test_by_default_the_llm_key_may_still_assert_an_identity(
-    llm_key_only, monkeypatch
-) -> None:
-    """The hole, pinned as the DEFAULT so the fix cannot silently change it.
-
-    This is the lockout guard: an un-migrated deployment keeps working exactly
-    as it did, and the hardening is something the owner turns on.
-    """
+async def test_the_llm_key_cannot_assert_an_identity(unprovisioned) -> None:
     from acb_auth.deps import get_current_user
 
-    monkeypatch.delenv("GATEWAY_REFUSE_LLM_KEY_IDENTITY", raising=False)
-    user = await get_current_user(
-        x_user_email=VICTIM, x_user_role=None,
-        authorization=f"Bearer {LLM_KEY}",
-    )
-    assert user.email == VICTIM
-
-
-async def test_the_flag_refuses_an_identity_asserted_on_the_llm_key(
-    llm_key_only, monkeypatch
-) -> None:
-    from acb_auth.deps import get_current_user
-
-    monkeypatch.setenv("GATEWAY_REFUSE_LLM_KEY_IDENTITY", "1")
     user = await get_current_user(
         x_user_email=VICTIM, x_user_role=None,
         authorization=f"Bearer {LLM_KEY}",
@@ -132,17 +101,10 @@ async def test_the_flag_refuses_an_identity_asserted_on_the_llm_key(
     assert not user.has_permission("*")
 
 
-async def test_the_flag_also_refuses_service_access_on_the_llm_key(
-    llm_key_only, monkeypatch
-) -> None:
-    """A bare Bearer resolves to SERVICE_ACCESS (branch 1b) — everything.
-
-    Refusing the assertion but leaving that open would be a fix in name only:
-    the same key would still be the platform, just anonymously.
-    """
+async def test_the_llm_key_is_not_service_access(unprovisioned) -> None:
+    """A bare Bearer that matched would be SERVICE_ACCESS (branch 1b)."""
     from acb_auth.deps import get_current_user
 
-    monkeypatch.setenv("GATEWAY_REFUSE_LLM_KEY_IDENTITY", "1")
     user = await get_current_user(
         x_user_email=None, x_user_role=None,
         authorization=f"Bearer {LLM_KEY}",
@@ -151,17 +113,63 @@ async def test_the_flag_also_refuses_service_access_on_the_llm_key(
     assert not user.has_permission("*")
 
 
-async def test_the_flag_is_inert_once_a_distinct_token_is_provisioned(
+async def test_a_bare_identity_header_is_refused(unprovisioned) -> None:
+    """No token to check means no proof, so the header is not trusted."""
+    from acb_auth.deps import get_current_user
+
+    user = await get_current_user(
+        x_user_email=VICTIM, x_user_role=None, authorization=None,
+    )
+    assert user.email is None
+    assert not user.has_permission("*")
+
+
+def test_identity_routes_answer_401(unprovisioned) -> None:
+    client = _client()
+    assert client.get("/identity").status_code == 401
+    assert client.get(
+        "/identity", headers={"Authorization": f"Bearer {LLM_KEY}"}
+    ).status_code == 401
+    assert client.get(
+        "/identity", headers={"Authorization": "Bearer "}
+    ).status_code == 401
+
+
+def test_v1_still_accepts_the_llm_key(unprovisioned) -> None:
+    """The /v1 key keeps its one job, so agents can still reach their model."""
+    res = _client().get("/v1/models", headers={"Authorization": f"Bearer {LLM_KEY}"})
+    assert res.status_code == 200
+
+
+async def test_a_dev_laptop_stays_open_but_the_llm_key_is_still_no_identity(
+    unprovisioned, monkeypatch
+) -> None:
+    """ACB_ENV=dev keeps the old open behaviour of an unset token. The LLM key
+    is not service identity there either."""
+    from acb_auth.deps import get_current_user
+
+    monkeypatch.setattr(unprovisioned, "acb_env", "dev", raising=False)
+    assert _client().get("/identity").status_code == 200
+    header_only = await get_current_user(
+        x_user_email="dev@fracktal.in", x_user_role=None, authorization=None,
+    )
+    assert header_only.email == "dev@fracktal.in"
+    bare_key = await get_current_user(
+        x_user_email=None, x_user_role=None, authorization=f"Bearer {LLM_KEY}",
+    )
+    assert bare_key.email != "system:internal"
+    assert not bare_key.has_permission("*")
+
+
+async def test_a_provisioned_token_is_identity_and_the_llm_key_is_not(
     split_tokens, monkeypatch
 ) -> None:
-    """Which is why flipping it is safe in that order and only that order."""
     from acb_auth.deps import get_current_user
 
     async def _passthrough(user):
         return user
 
     monkeypatch.setattr("acb_auth.deps._with_resolved_access", _passthrough)
-    monkeypatch.setenv("GATEWAY_REFUSE_LLM_KEY_IDENTITY", "1")
 
     proxied = await get_current_user(
         x_user_email=VICTIM, x_user_role=None,
@@ -169,12 +177,79 @@ async def test_the_flag_is_inert_once_a_distinct_token_is_provisioned(
     )
     assert proxied.email == VICTIM
 
-    # ...and the LLM key no longer matches the internal token at all.
     agent = await get_current_user(
         x_user_email=VICTIM, x_user_role=None,
         authorization=f"Bearer {LLM_KEY}",
     )
     assert agent.email is None
+
+
+# ── No caller sends the LLM key as service identity ─────────────────────────
+
+#: An expression that reads the identity token and then falls back to the LLM
+#: key: ``gateway_internal_token ... or ... litellm_master_key`` in Python, or
+#: ``GATEWAY_INTERNAL_TOKEN ?? process.env.LITELLM_MASTER_KEY`` in TypeScript.
+_FALLBACK = re.compile(
+    r"(?:gateway_internal_token|GATEWAY_INTERNAL_TOKEN)[^\n]{0,80}"
+    r"(?:\n[^\n]{0,80}){0,2}?(?:\bor\b|\?\?)\s*"
+    r"(?:getattr\([^)]*?|os\.environ\.get\(|os\.getenv\(|process\.env\.)\s*"
+    r"[\"']?(?:litellm_master_key|LITELLM_MASTER_KEY)"
+)
+
+#: The nested-default shape of the same fallback.
+_NESTED = re.compile(
+    r"GATEWAY_INTERNAL_TOKEN[\"'],\s*os\.environ\.get\(\s*[\"']LITELLM_MASTER_KEY"
+)
+
+
+def test_the_fallback_pattern_matches_the_old_shapes() -> None:
+    """The fence must see the shapes that WS-24b removed, or it fences nothing."""
+    old_py = (
+        'return (\n    getattr(settings, "gateway_internal_token", "")\n'
+        '    or getattr(settings, "litellm_master_key", "")\n    or "sk-local"\n)'
+    )
+    old_env = 'os.environ.get("GATEWAY_INTERNAL_TOKEN", os.environ.get("LITELLM_MASTER_KEY", ""))'
+    old_ts = "process.env.GATEWAY_INTERNAL_TOKEN ??\n  process.env.LITELLM_MASTER_KEY ??"
+    old_or = 'os.environ.get("GATEWAY_INTERNAL_TOKEN")\n    or os.environ.get("LITELLM_MASTER_KEY")'
+    for shape in (old_py, old_ts, old_or):
+        assert _FALLBACK.search(shape), shape
+    assert _NESTED.search(old_env)
+    # The /v1 key read alone, and the two names side by side, are legal.
+    assert not _FALLBACK.search('key = getattr(settings, "litellm_master_key", "")')
+    assert not _FALLBACK.search(
+        'os.getenv("GATEWAY_INTERNAL_TOKEN", ""),\n        os.getenv("LITELLM_MASTER_KEY", ""),'
+    )
+
+
+def test_no_caller_sends_the_llm_key_as_service_identity() -> None:
+    """WS-24b: every internal caller sends ``gateway_internal_token`` only.
+
+    The gateway no longer accepts the LLM key as identity, so a caller that
+    falls back to it sends a token that gets 401. This scan keeps a new caller
+    from bringing the fallback back.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    trees = [
+        "apps", "packages", "scripts", "evals", "tests/integration",
+        "workbench/control_plane/src", "workbench/operator_console/src",
+    ]
+    found: list[str] = []
+    for tree in trees:
+        base = root / tree
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.suffix not in {".py", ".ts", ".tsx"} or "node_modules" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if _FALLBACK.search(text) or _NESTED.search(text):
+                found.append(str(path.relative_to(root)))
+    assert not found, (
+        "These files fall back to LITELLM_MASTER_KEY for the internal bearer. "
+        f"Send gateway_internal_token only: {found}"
+    )
 
 
 # ── The guards ──────────────────────────────────────────────────────────────

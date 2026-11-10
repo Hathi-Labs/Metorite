@@ -1080,11 +1080,13 @@ def test_avatars_read_and_write_in_the_members_tenant(graph_as_app):  # noqa: F8
 
 @_DB_GATE
 def test_an_avatar_name_that_another_org_holds_cannot_be_saved(graph_as_app):  # noqa: F811
-    """Pins the current behaviour. ``agent_avatars`` keeps its old key,
-    ``agent_name`` alone. Org B's upsert of a name that org A holds meets A's
-    row on the key, and the RLS policy refuses the UPDATE. The PUT is 500 and
-    A's row does not change. Task 1719 owns the key change, and this test
-    changes with it."""
+    """Pins the current behaviour. In the expand phase of H-201d (migration
+    354), ``agent_avatars`` keeps its old key, ``agent_name`` alone. Org B's
+    upsert of a name that org A holds does not match A's row on the new
+    index, so it inserts, and the old key refuses it. The PUT is 500 and A's
+    row does not change. The contract release drops the old key, and this
+    test changes with it. ``test_agent_avatars_key_per_tenant_r8.py`` pins
+    both states."""
     from fastapi import HTTPException
     from gateway.routes.observability import AvatarPut, put_avatar
 
@@ -1095,7 +1097,7 @@ def test_an_avatar_name_that_another_org_holds_cannot_be_saved(graph_as_app):  #
     with pytest.raises(HTTPException) as err:
         asyncio.run(put_avatar(shared, AvatarPut(config={"colour": "blue"}),
                                writer=_user(_CAROL, b)))
-    assert err.value.status_code == 500, "task 1719: the key is still agent_name"
+    assert err.value.status_code == 500, "H-201d: the old key is still agent_name"
     row = _avatar_row(graph_as_app, shared)
     assert row.org == a and row.config == {"colour": "red"}
 

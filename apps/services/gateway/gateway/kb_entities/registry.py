@@ -162,6 +162,9 @@ def page_title(name: Any) -> str:
 #: The bound tenant, as ``people/core.py::has_login`` writes it. ``NULLIF``
 #: fails closed: an unbound GUC matches no row.
 _BOUND = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+#: The bound tenant, for a caller outside this module that must compare an
+#: org with the tenant that :func:`ensure_entity` writes in.
+BOUND_TENANT_SQL = _BOUND
 
 #: Is the owner row in the bound tenant? One check for each ``ref_table``.
 #: ``organization`` has no row level security, so it compares its own id. A
@@ -294,6 +297,94 @@ async def ensure_entity(
         {"ke_table": ref_table, "ke_ref": ref},
     )).first()
     return str(found.id) if found is not None else None
+
+
+async def add_aliases(db: Any, entity_id: Any, aliases: list[str] | None) -> int:
+    """Add *aliases* to one entity of the bound tenant. Answers the number added.
+
+    The other writers of ``kb_entities.aliases`` are :func:`ensure_entity`,
+    when it makes a row, and :func:`remove_aliases`. This one only adds. An alias that ``fold()``
+    of an existing alias equals is not added again, so a second call adds
+    0. A blank alias, an alias longer than :data:`ALIAS_MAX` and each alias
+    past :data:`ALIASES_MAX` are skipped, never refused, because a
+    background caller (the KG-5 sweep) has no one to answer. The tenant is
+    the bound ``app.tenant_id``, so an entity of another org gives 0.
+    """
+    from gateway.kb_entities.resolver import fold
+
+    eid = core.parse_id(entity_id)
+    if eid is None:
+        return 0
+    # An integrity read (listed in the fence): the aliases of one row, locked
+    # until the commit, so two adds never lose each other's alias.
+    row = (await db.execute(
+        text("SELECT aliases FROM kb_entities "
+             f"WHERE organization_id = {_BOUND} AND id = CAST(:ke_id AS uuid) "
+             "FOR UPDATE"),
+        {"ke_id": eid},
+    )).first()
+    if row is None:
+        return 0
+    have = list(row.aliases or [])
+    seen = {fold(a) for a in have}
+    added: list[str] = []
+    for raw in aliases or []:
+        alias = " ".join(str(raw or "").split())
+        key = fold(alias)
+        if not key or len(alias) > ALIAS_MAX or key in seen:
+            continue
+        if len(have) + len(added) >= ALIASES_MAX:
+            break
+        seen.add(key)
+        added.append(alias)
+    if not added:
+        return 0
+    await db.execute(
+        text("UPDATE kb_entities SET aliases = aliases || CAST(:ke_aliases AS text[]), "
+             "updated_at = now() "
+             f"WHERE organization_id = {_BOUND} AND id = CAST(:ke_id AS uuid)"),
+        {"ke_id": eid, "ke_aliases": added},
+    )
+    return len(added)
+
+
+async def remove_aliases(db: Any, entity_id: Any, aliases: list[str] | None) -> int:
+    """Remove *aliases* from one entity of the bound tenant. Answers the
+    number removed.
+
+    An alias goes when ``fold()`` of it equals ``fold()`` of one of
+    *aliases*. The KG-5 sweep calls it for a host alias that no longer
+    names its company: the website changed, or two companies share the
+    host. The tenant is the
+    bound ``app.tenant_id``, so an entity of another org gives 0.
+    """
+    from gateway.kb_entities.resolver import fold
+
+    eid = core.parse_id(entity_id)
+    drop = {fold(a) for a in aliases or [] if fold(a)}
+    if eid is None or not drop:
+        return 0
+    # An integrity read (listed in the fence): the aliases of one row, locked
+    # until the commit, as in add_aliases.
+    row = (await db.execute(
+        text("SELECT aliases FROM kb_entities "
+             f"WHERE organization_id = {_BOUND} AND id = CAST(:ke_id AS uuid) "
+             "FOR UPDATE"),
+        {"ke_id": eid},
+    )).first()
+    if row is None:
+        return 0
+    have = list(row.aliases or [])
+    keep = [a for a in have if fold(a) not in drop]
+    if len(keep) == len(have):
+        return 0
+    await db.execute(
+        text("UPDATE kb_entities SET aliases = CAST(:ke_aliases AS text[]), "
+             "updated_at = now() "
+             f"WHERE organization_id = {_BOUND} AND id = CAST(:ke_id AS uuid)"),
+        {"ke_id": eid, "ke_aliases": keep},
+    )
+    return len(have) - len(keep)
 
 
 #: One create at a time for each org, space, type and folded name, until the commit.

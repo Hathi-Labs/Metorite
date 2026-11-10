@@ -564,15 +564,17 @@ async def test_the_unverified_sso_escape_hatch_does_not_reach_branch_zero(world,
     assert ok.status_code == 200 and ok.json()["email"] == MEMBER
 
 
-async def test_the_llm_key_fallback_does_not_reach_branch_zero(world, monkeypatch):
+async def test_the_llm_key_does_not_reach_branch_zero(world, monkeypatch):
+    """WS-24b removed the LLM-key fallback of service identity. On a box with
+    no internal token the LLM key opens neither branch 0 nor branch 1a."""
     monkeypatch.delenv("GATEWAY_INTERNAL_TOKEN", raising=False)
     monkeypatch.setattr(get_settings(), "gateway_internal_token", "")
     headers = {"Authorization": f"Bearer {LLM_KEY}", "X-User-Email": MEMBER,
                "X-Actor-Via": VIA}
     assert (await _call("GET", TASK, headers)).status_code == 401
-    ok = await _call("GET", TASK, {"Authorization": f"Bearer {LLM_KEY}",
-                                   "X-User-Email": MEMBER})
-    assert ok.status_code == 200, "control: the fallback admits the header alone"
+    alone = await _call("GET", TASK, {"Authorization": f"Bearer {LLM_KEY}",
+                                      "X-User-Email": MEMBER})
+    assert alone.status_code == 401, "the LLM key admits no header on its own"
 
 
 async def test_a_refused_request_leaves_no_tenant_bound(world):

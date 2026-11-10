@@ -6,6 +6,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,8 @@ export async function POST(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
 
     // Forward the multipart body to the gateway
     const upstream = `${GATEWAY_URL}/agent/workspace/${sessionId}/upload`;

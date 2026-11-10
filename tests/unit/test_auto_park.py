@@ -883,23 +883,13 @@ def _seed_personal_root(conn, org: str, email: str) -> None:
 @pytest.fixture(scope="module")
 def world():
     """A dedicated phase-4 catalog, a NOBYPASSRLS role and two orgs."""
-    from tests.unit._tenant_ladder import apply_ladder
+    from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database
 
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_autopark"
-    _drop_database(admin_url, dedicated)
-    maint = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with maint.connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
-    maint.dispose()
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn:
-            _exec_sql_file(conn, (_GENERATED / phase).read_text(encoding="utf-8"))
     _grant_app_role(ded_admin_url, dedicated)
 
     ns = SimpleNamespace(admin_engine=eng)

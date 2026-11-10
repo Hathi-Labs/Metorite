@@ -108,6 +108,83 @@ function normalizeInterview(raw: unknown): Interview | undefined {
   return out;
 }
 
+// ── Celebrations (PZ-43, `personalization.md` §16.6) ──────────────────────
+
+/**
+ * The birthday is a month and a day. The profile keeps NO year, so the type
+ * has no year and the form has no year field. `festivals` holds ids of the
+ * list that the server offers, and `work_anniversary` is off by default.
+ */
+export interface Celebrations {
+  birthday?: { month: number; day: number };
+  festivals: string[];
+  work_anniversary: boolean;
+}
+export interface Festival {
+  id: string;
+  name: string;
+}
+/** What the profile read says about celebrations: the flag of the organization, and the list. */
+export interface CelebrationsGate {
+  enabled: boolean;
+  festivals: Festival[];
+}
+
+export const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const;
+
+/** The most days of a month. February has 29, so a 29 February birthday can be set. */
+const MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+export function daysInMonth(month: number): number {
+  return MONTH_DAYS[month - 1] ?? 31;
+}
+
+export function celebrationsGate(raw: unknown): CelebrationsGate {
+  const r = (raw && typeof raw === "object" ? raw : {}) as {
+    celebrations_enabled?: unknown;
+    festival_catalogue?: unknown;
+  };
+  const list = Array.isArray(r.festival_catalogue) ? r.festival_catalogue : [];
+  const festivals = list.filter(
+    (f): f is Festival =>
+      !!f && typeof f === "object" && typeof (f as Festival).id === "string" && typeof (f as Festival).name === "string",
+  );
+  return { enabled: r.celebrations_enabled === true, festivals };
+}
+
+/** A stored value, read leniently. A part of the wrong shape drops. */
+export function normalizeCelebrations(raw: unknown): Celebrations | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const b = r.birthday as { month?: unknown; day?: unknown } | undefined;
+  const out: Celebrations = {
+    festivals: Array.isArray(r.festivals) ? r.festivals.filter((x): x is string => typeof x === "string") : [],
+    work_anniversary: r.work_anniversary === true,
+  };
+  if (b && Number.isInteger(b.month) && Number.isInteger(b.day)) {
+    out.birthday = { month: b.month as number, day: b.day as number };
+  }
+  return out;
+}
+
+/** The new `celebrations` value: the current one plus one edit. A null birthday clears it. */
+export function mergeCelebrations(
+  current: Celebrations | undefined,
+  edit: { birthday?: { month: number; day: number } | null; festivals?: string[]; work_anniversary?: boolean },
+): Celebrations {
+  const base: Celebrations = current ?? { festivals: [], work_anniversary: false };
+  const { birthday: _old, ...rest } = base;
+  const birthday = "birthday" in edit ? edit.birthday : base.birthday;
+  return {
+    ...rest,
+    ...(edit.festivals ? { festivals: edit.festivals } : {}),
+    ...(edit.work_anniversary !== undefined ? { work_anniversary: edit.work_anniversary } : {}),
+    ...(birthday ? { birthday: { month: birthday.month, day: birthday.day } } : {}),
+  };
+}
+
 export interface Fact {
   id: string;
   text: string;
@@ -127,6 +204,8 @@ export interface Profile {
   learning: boolean;
   /** The interview state (PZ-26). Absent until the member starts or declines. */
   interview?: Interview;
+  /** The birthday, the festival picks and the work anniversary (PZ-43). Absent until the member sets one. */
+  celebrations?: Celebrations;
   address: Address;
   style: Style;
   aliases: Alias[];
@@ -205,10 +284,12 @@ async function call<T>(path: string, method: string, body?: unknown): Promise<T 
 /** Fill the gaps in a stored profile, so a view never meets undefined. */
 export function normalize(raw: Partial<Profile> | null | undefined): Profile {
   const interview = normalizeInterview(raw?.interview);
+  const celebrations = normalizeCelebrations(raw?.celebrations);
   return {
     v: raw?.v ?? 1,
     learning: raw?.learning !== false,
     ...(interview ? { interview } : {}),
+    ...(celebrations ? { celebrations } : {}),
     address: raw?.address ?? {},
     style: raw?.style ?? {},
     aliases: raw?.aliases ?? [],
@@ -234,6 +315,9 @@ export async function saveAddress(value: Address): Promise<Profile> {
 }
 export async function saveStyle(value: Style): Promise<Profile> {
   return normalize(await call<Partial<Profile>>("", "PUT", { key: "style", value }));
+}
+export async function saveCelebrations(value: Celebrations): Promise<Profile> {
+  return normalize(await call<Partial<Profile>>("", "PUT", { key: "celebrations", value }));
 }
 export async function forgetAll(): Promise<Profile> {
   await call("", "DELETE");
@@ -458,9 +542,13 @@ export function summaryGate(raw: unknown): SummaryGate {
 }
 
 /** The profile and the summary gate, from the one GET. */
-export async function fetchProfileAndGate(): Promise<{ profile: Profile; gate: SummaryGate }> {
+export async function fetchProfileAndGate(): Promise<{
+  profile: Profile;
+  gate: SummaryGate;
+  celebrations: CelebrationsGate;
+}> {
   const raw = await call<Partial<Profile>>("", "GET");
-  return { profile: normalize(raw), gate: summaryGate(raw) };
+  return { profile: normalize(raw), gate: summaryGate(raw), celebrations: celebrationsGate(raw) };
 }
 
 /** The switch "Keep chat summaries". Forget keeps it. */

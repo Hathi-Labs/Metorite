@@ -242,6 +242,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, state, run?.client_via, run?.member_email]);
 
+  // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
+  // must not move the Add row and the tab bar. Until the read answers, keep
+  // the space of the "Ask an agent" row, the most common result. A run card
+  // is taller and still moves them, and it is the thing to see. Routes that
+  // are off (`false`) draw nothing.
+  if (enabled === null) {
+    return (
+      <div className="invisible mb-3 flex items-center" aria-hidden data-ask-agent-placeholder="">
+        <Button variant="ghost" size="sm" icon="Bot" tabIndex={-1} disabled>
+          {ASK_COPY.open}
+        </Button>
+      </div>
+    );
+  }
   if (!enabled) return null;
 
   // EA-12d: the caller may ask an agent while they have no open run here.

@@ -71,8 +71,13 @@ SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "pr
 #: After PJP-2 (project_planning.md section 3.3): the 11 report tools left plan, the 10 inbox,
 #: area and notification tools left structure for reminders. PJP-4 added update_tasks to
 #: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
-SIZES = {"projects": 23, "projects-plan": 24, "projects-structure": 24, "projects-bulk": 22,
-         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 3}
+#: WS-39 TPL-1a added the three template tools to structure. WS-39 LP-1a added
+#: the three update tools to authority.
+SIZES = {"projects": 23, "projects-plan": 25, "projects-structure": 27, "projects-bulk": 22,
+         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 6}
+#: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
+#: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
+OWNER_SLUGS = (*SLUGS, "calendar-day")
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -125,14 +130,16 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     tool is in two packs. Mutation: drop a tool from a family, add a name the
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
-    assert len(union) == 126 == len(set(union)), "no tool is in two packs"
+    # SP-12 added get_plan (127). WS-39 LP-1a added the three update tools (130),
+    # and WS-39 TPL-1a the three template tools (133).
+    assert len(union) == 133 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
         assert len(_family(slug)) == SIZES[slug], slug
         assert len(_family(slug)) <= tp.MAX_PACK_TOOLS
         assert list(_family(slug)) == sorted(_family(slug)), "the family is sorted"
-    assert tp.owner_packs(PA) == SLUGS
+    assert tp.owner_packs(PA) == OWNER_SLUGS
 
 
 def test_no_projects_tool_is_in_an_email_or_crm_pack() -> None:
@@ -480,7 +487,7 @@ def test_the_persona_lines_are_one_constant_that_a_pack_can_take_out() -> None:
     assert persona.count(mod.PROJECTS_DELEGATION_BULLETS) == 1
     assert _bullets()[PA] == mod.PROJECTS_DELEGATION_BULLETS
     assert PA not in tp.NO_PERSONA_BULLETS
-    left = tp.persona_for(persona, [(s, False) for s in SLUGS], _bullets())
+    left = tp.persona_for(persona, [(s, False) for s in OWNER_SLUGS], _bullets())
     assert mod.PROJECTS_DELEGATION_BULLETS not in left
     assert tp.persona_for(persona, [], _bullets()) == persona
 
@@ -508,7 +515,7 @@ def test_with_some_projects_packs_the_rules_keep_a_path_to_the_owner() -> None:
     rules = tp._rules_block(tp.PACKS["projects"], False, ("projects",))
     assert tp._PROJECTS_NO_AGENT_LINE not in rules
     assert tp._PROJECTS_ROUTE_LINE in rules
-    every = tp._rules_block(tp.PACKS["projects"], False, SLUGS)
+    every = tp._rules_block(tp.PACKS["projects"], False, OWNER_SLUGS)
     assert tp._PROJECTS_NO_AGENT_LINE in every and tp._PROJECTS_ROUTE_LINE not in every
 
 
@@ -523,7 +530,7 @@ def test_every_projects_pack_says_no_agent_exists_and_refuses_the_hand_off() -> 
     turn = _turn(words="")
     some = tp.PackRun.of(turn, tp.Choice((), {}, {}), [("projects", False)])
     assert some.replaced == frozenset() and some.refusal(PA) is None
-    allp = tp.PackRun.of(turn, tp.Choice((), {}, {}), [(s, False) for s in SLUGS])
+    allp = tp.PackRun.of(turn, tp.Choice((), {}, {}), [(s, False) for s in OWNER_SLUGS])
     assert allp.refusal(PA) == tp.PACKS["projects"].delegation_refusal
     assert allp.replaced == {PA}
 
@@ -684,7 +691,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 126
+    assert seen == 133  # SP-12 get_plan, three update tools (LP-1a), three template tools (TPL-1a)
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -720,7 +727,7 @@ async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -
     with _in_run(loader):
         answer, passed = await _call(loader, "projects-plan", live)
     assert passed is False
-    assert answer.startswith("Loaded the Projects planning tools (24 tools)"), answer
+    assert answer.startswith("Loaded the Projects planning tools (25 tools)"), answer
     assert "PROJECTS PLANNING TOOLS." in answer
     added = live[5:]
     assert [_name(t) for t in added] == list(_family("projects-plan"))
@@ -758,7 +765,7 @@ async def test_layer_c_adds_the_core_pack_before_the_first_request(store) -> Non
 
 # ── 10. The loader reaches the Projects owner (OA-7i, `plan_loader`) ────────
 
-PROJ = frozenset(SLUGS)
+PROJ = frozenset(OWNER_SLUGS)
 NO_WORDS = "Tell Anil that we pay on Friday"
 
 
@@ -790,12 +797,12 @@ async def test_projects_is_reached_with_no_pack_held_and_the_texts_agree(
     assert persona.count(bullet) == 1, "non-vacuity"
     assert agents[0].default_options["instructions"] == persona.replace(bullet, "", 1)
     provider = L._provider(agents[0])
-    assert provider is not None and provider.loader.offered == SLUGS
+    assert provider is not None and provider.loader.offered == OWNER_SLUGS
     with L._in_run(applied):
         refused = await L.agent_tools.call_agent(PA, "Show my overdue tasks")
         background = await L.agent_tools.call_agent_background(PA, "Sync")
         await L.asyncio.sleep(0.05)
-    assert refused == tp.LOADER_HANDOFF_REFUSED.format(owner=PA, packs=", ".join(SLUGS))
+    assert refused == tp.LOADER_HANDOFF_REFUSED.format(owner=PA, packs=", ".join(OWNER_SLUGS))
     assert "load_skill_tools" in refused and "projects-plan" in refused
     for slug in SLUGS:
         assert "No Projects agent exists" in tp.PACKS[slug].rules
@@ -1098,7 +1105,7 @@ async def test_the_specialist_leaves_when_the_run_holds_every_projects_pack() ->
     -> red."""
     turn = _turn(words="")
     empty = tp.Choice((), {}, {})
-    assert tp.PackRun.of(turn, empty, [(s, False) for s in SLUGS]).replaced == {PA}
+    assert tp.PackRun.of(turn, empty, [(s, False) for s in OWNER_SLUGS]).replaced == {PA}
     assert tp.PackRun.of(turn, empty, [("projects", False)], via_loader={PA}).replaced == {PA}
     assert tp.PackRun.of(turn, empty, [("projects", False)]).replaced == frozenset()
     assert tp.PackRun.of(turn, empty, [("email", False)]).replaced == {EA}
@@ -1112,7 +1119,7 @@ def test_the_catalog_offers_no_projects_pack_to_an_owner_that_cannot_load() -> N
     plan = tp.plan_loader(PROJ, (), current=56, removable={PA: 1}, available=lambda _o: False)
     assert plan.offered == () and plan.via_loader == frozenset()
     ok = tp.plan_loader(PROJ, (), current=56, removable={PA: 1}, available=lambda _o: True)
-    assert ok.offered == SLUGS and ok.via_loader == {PA}
+    assert ok.offered == OWNER_SLUGS and ok.via_loader == {PA}
 
 
 async def test_a_covered_org_is_offered_no_projects_pack(store, agents, _broker) -> None:
@@ -1252,7 +1259,10 @@ def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
     """The case of ``test_pack_room.py``: ``crm-records``, ``projects`` and
     ``projects-plan`` are sticky (turns 5, 6 and 7), and "remind me" adds the
     reminders pack. The cap moves ``crm-records`` out first, then the core pack.
-    The plan and reminders packs stay (99 tools), and the owner is reached.
+    SP-12 grew the plan pack from 24 to 25 tools, so the two packs hold 100
+    tools and do not keep the owner reached beside each other: the step-aside
+    moves the plan pack out too, and the reminders pack stays alone. Before
+    SP-12 both stayed (99 tools).
     Mutation: run the step-aside before the cap -> ``crm-records`` stays and
     both newer Projects packs leave -> red."""
     turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 9,
@@ -1260,8 +1270,8 @@ def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
                         tp.Sticky("projects-plan", (1, 2), 7)),
                        "remind me to call Ravi at 5", True)
     choice = tp.choose(turn, allowed=EVERY, base_tools=56)
-    assert choice.slugs == ("projects-plan", "projects-reminders"), choice
-    assert choice.evicted == ("crm-records", "projects"), choice
+    assert choice.slugs == ("projects-reminders",), choice
+    assert choice.evicted == ("crm-records", "projects", "projects-plan"), choice
     assert _owner_reached(choice, base=56, removable={})
 
 
@@ -1519,7 +1529,9 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     organising = {"capture_intake", "intake_queue", "triage_intake", "create_area",
                   "delete_area", "rename_area", "my_areas", "my_contexts",
                   "notifications", "mark_notifications_read"}  # PJP-2: moved from structure
-    authority = {"pin_authority", "project_authorities", "unpin_authority"}
+    # WS-39 LP-1a: the two tools of a project update sit with the authority page.
+    authority = {"pin_authority", "project_authorities", "unpin_authority",
+                 "list_project_updates", "post_project_update", "delete_project_update"}
     assert set(_family("projects-reminders")) == seven | organising | {"answer_decision", "my_decisions"}
     assert not organising & set(_family("projects-structure"))
     assert set(_family("projects-authority")) == authority

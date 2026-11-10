@@ -31,11 +31,11 @@ import { useMobileDrawer } from "@/components/AppShell";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ContextMenu } from "@/components/ContextMenu";
 import { EmptyState } from "@/components/EmptyState";
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { ShellJob } from "@/lib/shell/doJob";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 
 import { canUseFeature } from "@/lib/access";
 
@@ -65,7 +65,7 @@ function IntegrationsPageInner() {
   const canRead = hasFeature && consoleGate.canRead;
   const canManage = hasFeature && consoleGate.canManage;
   const { isMobile } = useViewMode();
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
   const rail = useRailFold();
   // The same cached read the Connections view makes: one request. A 404 gives
   // `null`, and then a new MCP server would have no list to land in, so the
@@ -90,11 +90,44 @@ function IntegrationsPageInner() {
 
   function openMenu(): void {
     const r = addRef.current?.getBoundingClientRect();
-    setMenu({ x: r?.left ?? 0, y: (r?.bottom ?? 0) + 4 });
+    // On a phone the bar's Add tab holds the button, so the menu rises from
+    // the bottom right, above the bar (the menu clamps to the viewport).
+    if (!r) setMenu({ x: window.innerWidth - 220, y: window.innerHeight - 240 });
+    else setMenu({ x: r.left, y: r.bottom + 4 });
   }
 
+  // The phone bar (MOB-12): Views opens the views rail, as the title button
+  // does, and Add opens the menu. Add hides for a member who cannot manage.
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
+  // Views hides when the member has one view or none: a sheet of one row is a
+  // dead tap. It stays while access loads, so the bar does not reflow.
+  const hide = [
+    ...(canManage ? [] : ["integrations-add"]),
+    ...(!accessLoading && views.length <= 1 ? ["integrations-views"] : []),
+  ];
+  usePhoneBar({ active: sheetTab, hide });
+  const openViews = () => {
+    markSheetTab("integrations-views");
+    openDrawer(
+      <nav aria-label="Integrations views" className="p-2">
+        <IntegrationsRail view={view} onSelect={choose} views={views} />
+      </nav>,
+    );
+  };
+  const barRef = useRef({ openViews, openMenu });
+  barRef.current = { openViews, openMenu };
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "integrations-views") barRef.current.openViews();
+      else if (tab === "integrations-add") barRef.current.openMenu();
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
   const actions =
-    canManage ? (
+    canManage && !isMobile ? (
       <div ref={addRef}>
         <Button variant="secondary" size="sm" icon="Plus" onClick={openMenu} aria-haspopup="menu">
           Add
@@ -108,26 +141,9 @@ function IntegrationsPageInner() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       <AppTopBar
         rail={{ open: rail.open, onToggle: rail.toggle, noun: "the views" }}
-        title={
-          isMobile ? (
-            <button
-              type="button"
-              onClick={() =>
-                openDrawer(
-                  <nav aria-label="Integrations views" className="p-2">
-                    <IntegrationsRail view={view} onSelect={choose} views={views} />
-                  </nav>,
-                )
-              }
-              className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
-            >
-              <span className="truncate">{current.label}</span>
-              <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
-            </button>
-          ) : (
-            "Integrations"
-          )
-        }
+        // Plain text. On a phone the Views tab opens the rail, so a title that
+        // opened it too would repeat a tab (navigation_shell.md §9.2 rule 5).
+        title={isMobile ? current.label : "Integrations"}
         subtitle={viewLine(view)}
         actions={actions}
       />

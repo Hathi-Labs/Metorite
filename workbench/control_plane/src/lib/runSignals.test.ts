@@ -689,7 +689,7 @@ describe("the phone's agent pill", () => {
     expect(html).not.toMatch(/(^|[\s"])animate-pulse/);
     expect(html).not.toMatch(/#[0-9a-f]{3,8}\b|\b(bg|text|border)-(red|blue|green|amber|sky|yellow|slate|gray|zinc)-\d/);
     const css = read("app/globals.css");
-    expect(css).toMatch(/\.agent-pill-bottom \{\s*bottom: calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\) \+ 0\.5rem\);/);
+    expect(css).toMatch(/\.agent-pill-bottom \{\s*bottom: calc\(var\(--phone-bar-h\) \+ 0\.5rem\);/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*\.agent-pill-progress \{\s*animation:/);
     // The only animation of the line sits inside the motion query.
     expect(css.match(/animation: agent-pill-progress/g)).toHaveLength(1);
