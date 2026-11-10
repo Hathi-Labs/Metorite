@@ -48,6 +48,9 @@ EXAMPLE_NAMES: frozenset[str] = frozenset(
         "NOTES.md",
         "SCRIPTS.md",
         "PLAYBOOK.md",
+        # Files of other coding agents that the kit pack of KIT-0 names (orchestration_playbook.md section 6a).
+        "GEMINI.md",
+        "AGENTS.override.md",
         # Example file names inside a spec's worked examples and mockups.
         "notes.md",
         "q3_summary.md",
