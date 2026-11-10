@@ -8,6 +8,10 @@ topic is named in its section.
 Task 2519 wrote this page on 2026-11-09. Before then, most of it lived only in
 a session scratchpad and on the owner's PC.
 
+This page is the worked case for one machine. `docs/dev_capacity.md` holds
+the method for any machine: how to size the work, and how to add or retire a
+machine.
+
 ---
 
 ## 1. What the box is
