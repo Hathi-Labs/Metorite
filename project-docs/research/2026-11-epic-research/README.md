@@ -11,3 +11,5 @@ Each file is the research that one epic was planned from. The spec slice of that
 | `crm_inventory.md` | WS-CX, CRM complete (task 2732) | CRX-0 (task 2733) |
 | `crm_prior_art.md` | WS-CX, CRM complete (task 2732) | CRX-0 (task 2733) |
 | `crm_connectors_research.md` | WS-MIR, CRM mirror and connectors (task 2790) | MIR-0 (task 2791) |
+| `marketplace_and_operations_inventory.md` | WS-MKT, the app marketplace, and WS-OPS, the operations apps | MKT-0 and OPM-0 |
+| `marketplace_and_operations_prior_art.md` | WS-MKT and WS-OPS: the marketplace model, the upgrade merge, the operations modules and the accounting boundary | MKT-0 and OPM-0 |
