@@ -1267,7 +1267,7 @@ class TestTheTips:
     * PB4-M5. ``_tip_applies`` is always true for ``stalled``.
       ``test_no_stalled_tip_without_a_quiet_run``.
     * PB4-M6. ``_tips`` drops the cap.
-      ``test_the_text_is_fixed_and_within_its_limits``.
+      ``test_the_cap_of_two_tips_holds``.
     * PB4-M7. the tips key joins the protocol block.
       ``test_the_tips_are_apart_from_the_protocol_block``.
     """
@@ -1339,6 +1339,18 @@ class TestTheTips:
             assert rule.topic in rule.text, rule.id
             assert rule.tool in {"claim_task", "my_work"}, rule.id
 
+    async def test_the_cap_of_two_tips_holds(self, quiet, tips_redis, monkeypatch):
+        rules = tuple(tools.Tip(f"t{i}", "my_work", "failures", "Read failures.") for i in range(3))
+        monkeypatch.setattr(tools, "TIP_RULES", rules)
+        monkeypatch.setattr(tools, "_tip_applies", lambda tip, result: True)
+        assert len((await self._result())["tips"]) == tools.TIPS_MAX
+
+    async def test_no_post_write_time_means_no_tip_and_no_store_call(
+            self, quiet, tips_redis, monkeypatch):
+        monkeypatch.setattr(tools, "_post_write_budget", lambda: 0.0)
+        assert "tips" not in await self._result()
+        assert tips_redis.calls == []
+
     def test_each_tip_names_a_topic_that_the_playbook_holds(self):
         pytest.importorskip("acb_playbook")
         from acb_playbook import load_topic
@@ -1349,6 +1361,11 @@ class TestTheTips:
         for rule in tools.TIP_RULES:
             for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
                 assert term not in rule.text, (rule.id, term)
+
+    def test_the_tips_pass_the_neutral_fixture(self):
+        from tests.unit.test_playbook_org_neutral import hits
+        for rule in tools.TIP_RULES:
+            assert hits(rule.text) == [], rule.id
 
     async def test_the_tips_are_apart_from_the_protocol_block(self, quiet, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")

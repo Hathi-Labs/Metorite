@@ -403,7 +403,7 @@ Each slice ships dark behind `LEARNING_ORGS`. Each slice that adds a rule names 
 | PB-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py` |
 | PB-2 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | PB-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py` |
-| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
+| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_claim.py tests/unit/test_mcp_edge_prompts.py` |
 | PB-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_org_neutral.py tests/unit/test_agent_guidance_r8.py` |
 | PB-6 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_setup_proposal_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | PB-7 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_doctor_r8.py tests/unit/test_needs_attention_r8.py` |

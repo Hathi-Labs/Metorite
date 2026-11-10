@@ -3767,8 +3767,13 @@ async def _tip_unseen(ctx: Context, scope: str, tip: Tip) -> bool:
     """True the first time this connection sees *tip* for *scope* (a run id, or
     the session). A store failure reads as seen: no tip, no error."""
     lookup = ctx.caller.lookup
+    # A claim that landed is never reported as busy (EA-6d): the read takes the
+    # post-write budget when it is smaller than 2 seconds, and no time means no tip.
+    limit = min(2.0, _post_write_budget())
+    if limit <= 0:
+        return False
     try:
-        async with asyncio.timeout(2.0):
+        async with asyncio.timeout(limit):
             return await idempotency.first_time(
                 lookup, TIPS_NAMESPACE, (scope, tip.id), ttl_s=TIPS_TTL_S)
     except Exception as exc:
