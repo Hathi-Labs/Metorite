@@ -199,8 +199,9 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
     ``in_progress``), or when the blocker's epic has a started slice: another
     child of the blocker's parent, in ``in_progress`` or ``done``. A plan
     whose tasks all wait in the Backlog raises no row until work starts.
-    The row names the oldest counted link, an active blocked task first, and
-    ``blocked_count`` says how many tasks the blocker blocks.
+    The row names the reader's own blocked task first, then an active one,
+    then the oldest link. ``blocked_count`` says how many of the blocker's
+    blocked tasks count under this rule.
 
     ``open_where`` is Load's open-work predicate over the scope, for the
     blocked task ``t``. ``blocking_where`` is the same predicate over every
@@ -246,7 +247,13 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
         f"                 JOIN pm_task_statuses s ON s.id = t.status_id"
         f"                WHERE t.id = b.id AND ({blocking_where})"
         f"                  AND ({holder_label_sql()}) IS NULL)"
-        f" ORDER BY b.id, (s.category IN ({active})) DESC, l.created_at ASC, t.id ASC"
+        # The row names the reader's own blocked task first, so ``mine`` never
+        # shows a row about another person's task. Then an active task, then
+        # the oldest link.
+        f" ORDER BY b.id,"
+        f" EXISTS (SELECT 1 FROM pm_task_assignees y"
+        f"          WHERE y.task_id = t.id AND lower(y.assignee) = :me) DESC,"
+        f" (s.category IN ({active})) DESC, l.created_at ASC, t.id ASC"
     )
 
 
