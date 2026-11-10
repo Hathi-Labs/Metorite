@@ -125,7 +125,14 @@ def _addendum_for_scope(scope: frozenset[str] | None) -> str:
     from orchestrator._tool_injection import (  # noqa: PLC0415
         _build_injected_tools_addendum,
     )
-    return _build_injected_tools_addendum(effective_scope=scope)
+    from acb_common.assistant_profile import image_analysis_for  # noqa: PLC0415
+    from acb_common.db import current_tenant  # noqa: PLC0415
+
+    # WS-VOX VOX-3: the text depends on the org flag, so the key says it.
+    return _build_injected_tools_addendum(
+        effective_scope=scope,
+        image_org_on=bool(image_analysis_for(current_tenant())),
+    )
 
 
 def _count_tokens(text: str) -> int:

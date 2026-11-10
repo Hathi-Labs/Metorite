@@ -1,5 +1,7 @@
 # Calendar — events, meetings and reminders
 
+> **Dated 2026-11-11, booking (D205.2).** BK-0 (task 2676) writes the booking section of this spec. Until it merges, build no booking slice.
+
 <!-- ste-tier: strict -->
 
 - **Status:** **Events (§3, §4, §8) are DECIDED, 2026-10-29 (D138).** **Reminders
@@ -2031,6 +2033,8 @@ directly.
 | Q10 | The gate of the new acts | `feature:tasks`, as D54.1 |
 
 ## 12. Out of scope
+
+> **Booking is now in scope (D205.2).** A guest sees free slots and never a calendar view. Rooms stay out. Metorite's own sender stays off. Read the booking lines below as superseded.
 
 - A team or company calendar, and free and busy of a colleague (D54.4).
 - Several blocks for one task, and the WS-21 kinds `break`, `batch` and

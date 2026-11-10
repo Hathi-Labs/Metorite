@@ -70,6 +70,7 @@ from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
     append_signature_text,
+    resolve_signature,
     sign_html,
     strip_signature_text,
 )
@@ -86,13 +87,14 @@ from sqlalchemy import text
 
 async def _account_signature(db: Any, account_id: str) -> str:
     """The account's configured signature (HTML/plain, '' when unset) — for the
-    draft-write paths that don't already hold it via _load_assistant_about."""
+    draft-write paths that don't already hold it via _load_assistant_about.
+
+    WS-17 SG-2 (D-EM-66): the resolver gives it. Each draft path asks for the
+    kind ``new``, because a draft row holds no kind field. SG-5 passes the
+    kind of the draft. The send keeps a ``new`` form that it finds in the body
+    (``SignatureForms.for_body``), so a reply carries one signature."""
     try:
-        row = (await db.execute(text(
-            "SELECT signature FROM email_assistant_settings "
-            "WHERE account_id = :aid"
-        ), {"aid": account_id})).fetchone()
-        return (row.signature if row else "") or ""
+        return await resolve_signature(db, account_id, "new")
     except Exception:  # noqa: BLE001 — a draft save must not fail on settings
         return ""
 
@@ -1824,6 +1826,12 @@ def _salutation_name(recipient_name: str) -> str:
     tokens = [t for t in tokens if t]
     if not tokens:
         return ""
+    # A first token with no letter (an emoji, a symbol, digits) is not a name.
+    # When no token has a letter, the tokens stay as they are.
+    for skip, token in enumerate(tokens):
+        if any(ch.isalpha() for ch in token):
+            tokens = tokens[skip:]
+            break
     lead: list[tuple[str, honorifics.Honorific]] = []
     idx = 0
     while idx < len(tokens) - 1:
@@ -1831,6 +1839,20 @@ def _salutation_name(recipient_name: str) -> str:
         if h is None:
             break
         lead.append((tokens[idx], h))
+        idx += 1
+    # A spoken suffix form (Sir, Madam, Sahab, Ji) before a name is no name. It
+    # is skipped like a title and not shown. Only the forms in the catalogue set
+    # are skipped, as a kinship form can be a given name (Bhau, Dada). A name
+    # that is only the form stays too (see below).
+    while idx < len(tokens) - 1:
+        lead_suffix = honorifics.find_suffix(tokens[idx])
+        if (
+            lead_suffix is None
+            or lead_suffix.form not in honorifics.LEADING_SKIPPED_SUFFIX_FORMS
+            or honorifics.find_suffix(tokens[idx + 1]) is not None
+            or honorifics.find_prefix(tokens[idx + 1]) is not None
+        ):
+            break
         idx += 1
     last_title = honorifics.find_prefix(tokens[idx])
     if last_title is not None:
@@ -4132,11 +4154,10 @@ async def send_draft_endpoint(
             # without an update/send-draft primitive (IMAP) fall back to a
             # thread-aware fresh send.
             from gateway.routes.email.signature import build_signed_bodies  # noqa: PLC0415
-            sig_row = (await db.execute(text(
-                "SELECT signature FROM email_assistant_settings "
-                "WHERE account_id = :aid"
-            ), {"aid": req.account_id})).fetchone()
-            signature = (sig_row.signature if sig_row else "") or ""
+            # WS-17 SG-2 (D-EM-66): the resolver gives the signature. The
+            # draft row holds no kind field, so the send asks for ``new``, as
+            # each draft path does (SG-5 adds the kind of the draft).
+            signature = await resolve_signature(db, req.account_id, "new")
             if req.expect is not None:
                 await _check_chat_send(provider, drow, req.expect, signature)
             # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
