@@ -40,6 +40,8 @@ SECRET_PATTERNS = [
     re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}"),
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     re.compile(r"\bmbt_[A-Za-z0-9_-]{10,}"),
+    # Vendor token prefixes: GitHub, Anthropic and OpenAI style keys, Slack.
+    re.compile(r"\b(?:gh[pousr]_|github_pat_|sk-|xox[bapr]-)[A-Za-z0-9_-]{16,}"),
 ]
 
 
@@ -93,6 +95,8 @@ def test_a_pack_file_holds_no_org_term(path):
         "A" * 44,
         "deadbeef" * 5,
         "mbt_" + "x" * 43,
+        "ghp_" + "a1B2" * 9,
+        "sk-ant-" + "q9" * 12,
     ],
 )
 def test_a_planted_secret_fails_the_scan(planted):
