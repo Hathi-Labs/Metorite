@@ -97,8 +97,8 @@ PENDING_OP6: dict[str, str] = {}
 #: the slice that moves the route to class A. Keep this list short: a route
 #: waits here only while its chat tool is being built.
 PENDING_TOOL: dict[str, str] = {
-    # PJP-6a (task 1483) built the one plan engine and its read route.
-    "GET /projects/plan/analysis": "PJP-6b",
+    # Empty since SP-12 (task 2295): the plan route of PJP-6a got its chat
+    # tool, get_plan, and is class A.
     # PKG-14a (task 1252) built the dark door of the extension values.
     "GET /projects/tasks/{task_id}/package-fields": "PKG-14b",
     "PUT /projects/tasks/{task_id}/package-fields/{install_id}/{field_key}": "PKG-14b",
@@ -142,8 +142,8 @@ def test_the_counts_the_spec_states() -> None:
     PJP-6a and PKG-14a add three routes that wait for a chat tool: 32."""
     assert len(STAYS_X) == 29
     assert len(PENDING_OP6) == 0
-    assert len(PENDING_TOOL) == 3
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 32
+    assert len(PENDING_TOOL) == 2
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 31
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:

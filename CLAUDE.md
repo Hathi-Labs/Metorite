@@ -44,6 +44,7 @@ grandfathered. Do not open a pull request that only repairs old text.
 | # | File | What it owns |
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), and which are deferred or historical (you may not). A spec missing from INDEX is a defect. Say so. |
+| 1a | **`project-docs/specs/building_blocks.md`** | The product shape and the seams (D205). Read it before you add a table, registry, manifest, queue, engine or spec. A vertical is a preset over core blocks. |
 | 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract and the standing **R** rules. Binding on every PR. |
 | 3 | **The HathiLabs project Metorite**, then **`project-docs/work_plan.md` §2** | **Metorite holds the state (D118):** the status, the priority, the owner and the order of each work item. Call `my_work` through the Metorite MCP, then `claim_task`. §2 is the index: one row per workstream, with its owning spec and its Metorite epic. Start at **§2.0**, the roadmap (M0 to M4). For scope, the spec wins. For order and owner, Metorite wins. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**, unless §3a opens them. |
@@ -87,11 +88,12 @@ reference tied to code. Do not put product specs in `docs/`.
   palette, bell or assistant rail. A team view is a filter, never a Center.
   `specs/navigation_shell.md` owns it, and `workbench/control_plane/AGENTS.md`
   rule 10 carries it to UI work.
-- **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
-  (`core`), everything live included. `specs/launch_surface.md` §4 is the
-  shape of record. `saas_multitenancy.md` §2.4b is the superseded D23/D24
-  record. Still binding: D19.3's hard cap, D32.5's three counts, the
-  entitlement seam.
+- **Pricing is SEAT TIERS with base pricing (D152, final: owner 2026-11-10, D204
+  point 9)**, plus AI credits. The flat ₹500 seat ends (D190.3) when PLN-0
+  merges. Until then the code sells the flat seat (`core`).
+  `specs/launch_surface.md` §4 is the old shape. The Billing project (epic
+  WS-PLN) builds the tiers. Still binding: D19.3's hard cap, D32.5's three
+  counts, the entitlement seam.
 - **Tenancy is a ROW, not a deployment.** `organization_id` + Postgres FORCE ROW
   LEVEL SECURITY, bound at the `get_db()` seam. We are **multi-tenant from
   customer #1**. "Silo" describes *placement* only. No phase accepts
@@ -387,7 +389,11 @@ Rules that make it work:
   Windows PC with Ubuntu 24.04 in WSL, on the tailnet as `metorite-home`.
   From this PC, `ssh metorite-home` reaches user `dev`, and
   `ssh metorite-home-admin` reaches `acb`, who has sudo.
-  `scripts/home_server/` sets it up.
+  `scripts/home_server/` sets it up. **To give the box a session, or to run
+  CI there, read `docs/home_box.md`.** It holds the lane start and wake
+  commands, the keeper, the merge queue, the accounts and the traps. **To size
+  lanes, sub-agents, runners and CI to the machines you have, or to add a
+  machine such as a cloud VPS, read `docs/dev_capacity.md`.**
 - **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
   **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
   distro takes the run only when the home server is busy or does not answer.

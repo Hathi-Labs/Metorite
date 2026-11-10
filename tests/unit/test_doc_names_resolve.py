@@ -48,6 +48,16 @@ EXAMPLE_NAMES: frozenset[str] = frozenset(
         "NOTES.md",
         "SCRIPTS.md",
         "PLAYBOOK.md",
+        # Files of other coding agents that the kit pack of KIT-0 names (orchestration_playbook.md section 6a).
+        "GEMINI.md",
+        # Specs that an epic writes in its first slice (INDEX.md section PLANNED, D205). Delete each name when its file lands.
+        "whatsapp_bots.md",
+        "knowledge_shared.md",
+        "crm_complete.md",
+        "crm_connectors.md",
+        "app_marketplace.md",
+        "operations_apps.md",
+        "AGENTS.override.md",
         # Example file names inside a spec's worked examples and mockups.
         "notes.md",
         "q3_summary.md",

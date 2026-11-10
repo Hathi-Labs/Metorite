@@ -127,6 +127,10 @@ class _Resp:
     def raise_for_status(self) -> None:
         return None
 
+    @property
+    def content(self) -> bytes:
+        return json.dumps(self._payload).encode()
+
     def json(self) -> dict[str, Any]:
         return self._payload
 
