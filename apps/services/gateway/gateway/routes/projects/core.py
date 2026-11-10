@@ -49,7 +49,7 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from gateway.db import tenant_session as _tenant_session
+from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
 # The shared seam (BO-10 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason

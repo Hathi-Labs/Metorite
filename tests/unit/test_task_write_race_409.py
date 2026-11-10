@@ -73,6 +73,8 @@ def test_other_errors_and_http_errors_pass_through():
         ("bulk.py", '@router.post("/tasks/bulk")'),
         ("merge.py", '@router.post("/tasks/{task_id}/merge")'),
         ("tasks.py", '@router.delete("/tasks/{task_id}")'),
+        ("tasks.py", '@router.post("/tasks/{task_id}/agent-delete")'),
+        ("personal.py", '@router.delete("/my/tasks/{task_id}")'),
         ("imports.py", '@router.post("/import/runs/{run_id}/discard"'),
     ],
 )

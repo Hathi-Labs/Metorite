@@ -2180,6 +2180,7 @@ def _agent_delete_via(user: UserContext) -> str:
 
 
 @router.post("/tasks/{task_id}/agent-delete")
+@transient_as_409
 async def agent_delete_task(
     task_id: str, payload: AgentDeleteIn,
     user: UserContext = Depends(get_current_user),
