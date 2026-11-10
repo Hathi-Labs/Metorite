@@ -105,6 +105,7 @@ An app ships one manifest. `package_host.md` §3.1 owns the envelope. Each secti
 4. **The app joins the shell through its manifest.** It mounts no palette, bell or dock (fence `src/lib/shell/seams.test.ts`, V).
 5. **The app reads other apps through their seams.** It never copies their rows. It never writes its own visibility predicate.
 6. **A new need becomes a contribution point.** It never becomes a second manifest or a second registry.
+7. **One capability set (D207.8).** A standard app that ships with Metorite and an app from the marketplace use the same manifest, blocks and doors. A standard app gets no private API, table or hook. A company customizes both with the same overlay and both take updates through the same merge.
 
 ### 3.3 Two examples
 
@@ -140,7 +141,10 @@ A preset is a set of packages, settings, templates and setup items. It is data, 
 
 A preset never adds a table. It installs packages and fills settings.
 
-### 4.3 AI Studio apps
+### 4.3 Standard apps and AI Studio apps
+
+Metorite ships standard apps, such as the operations and ERP apps of WS-OPS (MRP, inventory, procurement, production, maintenance, costing). An organization turns one on from Apps and customizes it with the overlay of WS-MKT (D207.7). A company can also start from the marketplace or build its own app.
+
 
 A company builds an app in four shapes: a skill, a workflow, an app, or an app with a skill (`ai_studio.md` §2). The app uses the blocks of §2 only. A logic module returns proposed writes, and the platform applies them (`ai_studio.md` §3.7).
 

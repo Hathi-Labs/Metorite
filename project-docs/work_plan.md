@@ -5995,6 +5995,21 @@ The owner approved each recommendation of decision pack task 2816 on 2026-11-11.
 
 Fence: none new. Each slice names its test (R7).
 
+### D207 — The app marketplace, the operations apps, and one capability set for every app (2026-11-11)
+
+The owner approved every recommendation of decision pack task 2852 in chat on 2026-11-11, and added points 7 and 8 in the same message.
+
+1. **A staged marketplace (MKT-Q1).** Stage 1 is first-party apps that Metorite reviews and publishes. Stage 2 is a private catalog for an organization's own apps. Each install runs inside its own organization, so D187 holds. This amends the marketplace ban of `package_host.md` and `ai_studio.md` for stages 1 and 2.
+2. **First-party and private apps are free inside the seat (MKT-Q2).** They spend AI credits. STU-Q7 stays.
+3. **Third-party publishers and paid apps wait (MKT-Q3)** for a later decision on review, the sandbox SBX-9 and commerce.
+4. **An installed app is a versioned base plus a customer overlay (MKT-Q4).** An upgrade is a three-way merge. A clash pauses only that one part.
+5. **Operational accounting, not a statutory ledger (OPS-Q1).** Receivables, payables, cost and margin, stock valuation, and GST-correct invoices and challans. A voucher export goes to Tally Prime and then Zoho Books. An e-invoice or an e-way bill through a licensed GSP stays behind a flag that is off.
+6. **An item is the CRM catalog product with a stock facet (OPS-Q2).** Fracktal Works is the pilot, with inventory, procurement, BOM and production first (OPS-Q3).
+7. **Standard apps.** Metorite ships MRP, inventory, procurement, production, maintenance, costing and the other operations and ERP apps as standard apps. An organization turns a standard app on from Apps, with no marketplace step, and customizes it with the same overlay (point 4). A standard app takes updates through the same merge.
+8. **One capability set.** A marketplace app and a standard app have the same capabilities. Both use the same manifest, the same building blocks, the same door classes and the same chat, MCP and harness points. A standard app gets no private API, table or hook that a package cannot use. A need that only a standard app has becomes a contribution point for every app.
+
+Fence: `tests/unit/test_app_capability_parity.py` (new, task of WS-MKT) proves that each standard app installs through the package path and uses no capability outside the manifest. Until it exists, point 8 is advisory (R7).
+
 Re-check this number at merge. The first merge wins a D-number.
 
 ## 4. Single-owner registry (who owns duplicated work)
