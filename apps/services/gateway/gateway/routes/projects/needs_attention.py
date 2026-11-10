@@ -13,8 +13,10 @@ names one task and the one next action that ends it:
    (``agent_runs.resume_agent_run``), and Close the run is the second one.
 2. ``dangling``. An open run of a closed task (``filters.task_closed_sql``).
    The action is Close the run, which is the release of EA-14a.
-3. ``blocked``. An open task that an open ``blocks`` link
-   (``filters.open_block_sql``) blocks, where the blocker is parked: a
+3. ``blocked``. One row for each parked blocker of an open ``blocks`` link
+   (``filters.open_block_sql``), with the count of tasks it blocks. A link
+   counts when the blocked task is active, or the blocker's epic has a
+   started slice (spec §12.7). The blocker is parked: a
    ``backlog`` status and nobody holds it by RA-1's holder rule
    (``analytics.holder_label_sql``). The action opens the blocker.
 
@@ -98,6 +100,11 @@ STALLED_CONNECTION_GONE: tuple[str, ...] = (ACTION_CLOSE_RUN,)
 
 #: The status category of a parked blocker.
 PARKED_CATEGORY = "backlog"
+
+#: A blocked task is active in these categories. Its blocker raises a row.
+ACTIVE_CATEGORIES: tuple[str, ...] = ("todo", "in_progress")
+#: A slice of the blocker's epic has started in these categories.
+STARTED_CATEGORIES: tuple[str, ...] = ("in_progress", "done")
 
 #: The most rows that one kind reads, the oldest first. Its count stays
 #: exact, and ``capped`` says when a kind holds more.
@@ -185,8 +192,15 @@ def dangling_sql(scope_sql: str, vis: Any) -> str:
 
 
 def blocked_sql(open_where: str, blocking_where: str) -> str:
-    """The ``blocked`` kind: one row for each open ``blocks`` link whose
-    blocker is parked.
+    """The ``blocked`` kind: one row for each parked blocker that blocks work
+    which matters (spec §12.7, task 2545).
+
+    A link counts when the blocked task is active (``todo`` or
+    ``in_progress``), or when the blocker's epic has a started slice: another
+    child of the blocker's parent, in ``in_progress`` or ``done``. A plan
+    whose tasks all wait in the Backlog raises no row until work starts.
+    The row names the oldest counted link, an active blocked task first, and
+    ``blocked_count`` says how many tasks the blocker blocks.
 
     ``open_where`` is Load's open-work predicate over the scope, for the
     blocked task ``t``. ``blocking_where`` is the same predicate over every
@@ -196,13 +210,17 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
     copy. A NULL holder label is nobody: no assignee and no open run that
     keeps the task. Binds ``:closed``, ``:parked`` and ``:me``.
     """
+    active = ", ".join(f"'{c}'" for c in ACTIVE_CATEGORIES)
+    started = ", ".join(f"'{c}'" for c in STARTED_CATEGORIES)
     return (
-        f"SELECT {_TASK_COLUMNS},"
+        f"SELECT DISTINCT ON (b.id) {_TASK_COLUMNS},"
         f"       b.id AS blocker_id, b.task_number AS blocker_number,"
         f"       b.title AS blocker_title, l.created_at AS since,"
         f"       ow.owner, {_name('ow.owner')} AS owner_name,"
-        f"       EXISTS (SELECT 1 FROM pm_task_assignees y"
-        f"                WHERE y.task_id = t.id AND lower(y.assignee) = :me) AS yours"
+        f"       count(*) OVER (PARTITION BY b.id) AS blocked_count,"
+        f"       bool_or(EXISTS (SELECT 1 FROM pm_task_assignees y"
+        f"                WHERE y.task_id = t.id AND lower(y.assignee) = :me))"
+        f"         OVER (PARTITION BY b.id) AS yours"
         f"  FROM pm_task_links l"
         f"  JOIN pm_tasks t ON t.id = l.target_task_id"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -218,10 +236,17 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
         f" WHERE {open_block_sql('l', 'bs')}"
         f"   AND bs.category = :parked"
         f"   AND ({open_where})"
+        f"   AND (s.category IN ({active})"
+        f"        OR EXISTS (SELECT 1 FROM pm_tasks sib"
+        f"                     JOIN pm_task_statuses ss ON ss.id = sib.status_id"
+        f"                    WHERE sib.parent_task_id = b.parent_task_id"
+        f"                      AND sib.id <> b.id AND sib.archived_at IS NULL"
+        f"                      AND ss.category IN ({started})))"
         f"   AND EXISTS (SELECT 1 FROM pm_tasks t"
         f"                 JOIN pm_task_statuses s ON s.id = t.status_id"
         f"                WHERE t.id = b.id AND ({blocking_where})"
         f"                  AND ({holder_label_sql()}) IS NULL)"
+        f" ORDER BY b.id, (s.category IN ({active})) DESC, l.created_at ASC, t.id ASC"
     )
 
 
@@ -275,6 +300,11 @@ def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
             else None
         ),
         "blocker_title": getattr(hit, "blocker_title", None),
+        # How many tasks the parked blocker blocks. Null on a run row.
+        "blocked_count": (
+            int(hit.blocked_count) if getattr(hit, "blocked_count", None) is not None
+            else None
+        ),
         "action": actions[0],
         "actions": list(actions),
         # The rule of Release. A blocked row only opens a task, so any reader
