@@ -100,7 +100,7 @@ describe("AgentRunPanel", () => {
 
   it("draws the held-by line, the stale word and a Release behind a confirm", () => {
     expect(source).toContain("data-agent-held-by");
-    expect(source).toContain("heldByLine(run, personLabels)");
+    expect(source).toContain("holderLine(");
     expect(source).toContain("run.lease_expired");
     expect(source).toContain("STALE_HOLD_TEXT");
     expect(source).toContain("data-agent-release");

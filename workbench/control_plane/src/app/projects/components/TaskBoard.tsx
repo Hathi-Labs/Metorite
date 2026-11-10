@@ -42,6 +42,7 @@ import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { agentCardLook } from "../lib/agentCardLook";
+import { holderLine } from "../lib/agentHolder";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -1092,6 +1093,16 @@ export function TaskBoard({
               <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
             ) : null}
             <span className="truncate">{agentLook.line}</span>
+          </p>
+        ) : null}
+        {/* SW-5: who holds the task, and since when. */}
+        {task.held_by && task.held_by.stale !== true ? (
+          <p
+            data-agent-holder
+            className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
+            title={holderLine(task.held_by, personLabels)}
+          >
+            {holderLine(task.held_by, personLabels)}
           </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />

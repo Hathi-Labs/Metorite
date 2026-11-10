@@ -44,7 +44,7 @@
  * draws what these return.
  */
 
-import type { AgentFocus } from "./agentRuns";
+import type { AnyAgentFocus } from "./agentRuns";
 import { type Filters, type SubtaskMode, toQuery } from "./grouping";
 import { statusLaneOf } from "./statusOrder";
 import { subtaskReadParams } from "./subtaskView";
@@ -90,7 +90,7 @@ export function boardReadParams(input: {
   /** The "Waiting on me" toggle. It wins over `agentFocus`, as the page sets one at a time. */
   waitingOnMe: boolean;
   /** The strip's focus, or null. */
-  agentFocus: AgentFocus | null;
+  agentFocus: AnyAgentFocus | null;
   /** The "Agent work" toggle. */
   agentWork: boolean;
 }): Record<string, string | number | boolean> {
@@ -119,7 +119,7 @@ export function boardReadParams(input: {
  * is on, else the strip's focus, else none. The server takes ONE focus, so the
  * page clears the other when it sets one (`onWaitingOnMe`, `onAgentFocus`).
  */
-export function agentFocusParam(waitingOnMe: boolean, agentFocus: AgentFocus | null): AgentFocus | null {
+export function agentFocusParam(waitingOnMe: boolean, agentFocus: AnyAgentFocus | null): AnyAgentFocus | null {
   return waitingOnMe ? "waiting" : agentFocus;
 }
 
@@ -130,7 +130,7 @@ export function agentFocusParam(waitingOnMe: boolean, agentFocus: AgentFocus | n
  */
 export function agentReadParams(
   waitingOnMe: boolean,
-  agentFocus: AgentFocus | null,
+  agentFocus: AnyAgentFocus | null,
   agentWork: boolean,
 ): Record<string, string | boolean> {
   const focus = agentFocusParam(waitingOnMe, agentFocus);
